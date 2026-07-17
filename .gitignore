@@ -1,5 +1,5 @@
-data
 .zcode
+
 # Speaker Identification project
 logs/*
 checkpoints/*
@@ -9,3 +9,29 @@ checkpoints/*
 *.pth
 data/processed/*
 !data/processed/.gitkeep
+Competition-Guide
+__pycache__
+
+# Environment
+.env
+.venv/
+
+# MLOps / ZenML
+zenml_config/
+zenml_metadata.sqlite3
+*.db
+*.sqlite3
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# DagsHub
+.dagshub/
+
+# Streamlit
+.streamlit/
+
+# OS
+Thumbs.db
+.DS_Store

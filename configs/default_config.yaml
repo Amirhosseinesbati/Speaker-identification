@@ -1,5 +1,5 @@
 hardware:
-  mode: vastai
+  mode: local
   profiles:
     local:
       description: GTX 1660 Ti (6GB VRAM)
@@ -21,7 +21,7 @@ audio:
   hop_length: 160
 model:
   base_model: microsoft/wavlm-base-plus
-  freeze_feature_extractor: false
+  freeze_feature_extractor: true
   embedding_dim: 768
 training:
   epochs: 20
