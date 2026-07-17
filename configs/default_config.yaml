@@ -1,5 +1,5 @@
 hardware:
-  mode: vastai
+  mode: local
   profiles:
     local:
       description: GTX 1660 Ti (6GB VRAM)
@@ -21,7 +21,7 @@ audio:
   hop_length: 160
 model:
   base_model: microsoft/wavlm-base-plus
-  freeze_feature_extractor: false
+  freeze_feature_extractor: true
   embedding_dim: 768
 training:
   epochs: 20
@@ -36,3 +36,26 @@ data:
 logging:
   log_dir: logs
   checkpoint_dir: checkpoints
+
+# ─────────────────────────────────────────────────────
+# MLOps Configuration (ZenML + MLflow + DagsHub)
+# ─────────────────────────────────────────────────────
+mlops:
+  enabled: true
+  experiment_name: speaker-identification
+  pipeline_name: speaker_id_pipeline
+  tracking:
+    uri: "https://dagshub.com/amiresbati52/Speaker-identification.mlflow"
+    username: "${DAGSHUB_REPO_OWNER}"
+    password: "${DAGSHUB_USER_TOKEN}"
+  model_registry:
+    type: mlflow
+    name: speaker-identification
+  artifact_store:
+    type: local
+    path: data/artifacts
+  vast:
+    default_gpu: "RTX_3090"
+    alternative_gpu: "RTX_3060"
+    disk_size: 40
+    image: "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel"

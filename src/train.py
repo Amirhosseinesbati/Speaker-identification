@@ -463,4 +463,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Run full training (not the quick test)
+    train()
