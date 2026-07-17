@@ -1,0 +1,38 @@
+hardware:
+  mode: vastai
+  profiles:
+    local:
+      description: GTX 1660 Ti (6GB VRAM)
+      device: cuda
+      batch_size: 8
+      num_workers: 2
+      mixed_precision: true
+    vastai:
+      description: Cloud GPU (24GB+ VRAM)
+      device: cuda
+      batch_size: 32
+      num_workers: 4
+      mixed_precision: true
+audio:
+  sample_rate: 16000
+  duration_seconds: 3.0
+  n_mels: 80
+  n_fft: 400
+  hop_length: 160
+model:
+  base_model: microsoft/wavlm-base-plus
+  freeze_feature_extractor: false
+  embedding_dim: 768
+training:
+  epochs: 20
+  learning_rate: 0.0001
+  weight_decay: 1.0e-05
+  warmup_steps: 500
+  max_grad_norm: 5.0
+data:
+  labels_path: data/raw/labels.csv
+  audio_dir: data/raw
+  processed_labels: data/processed/cleaned_labels.csv
+logging:
+  log_dir: logs
+  checkpoint_dir: checkpoints

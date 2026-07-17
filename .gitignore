@@ -1,1 +1,11 @@
 data
+.zcode
+# Speaker Identification project
+logs/*
+checkpoints/*
+!logs/.gitkeep
+!checkpoints/.gitkeep
+*.pt
+*.pth
+data/processed/*
+!data/processed/.gitkeep
