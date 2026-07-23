@@ -23,6 +23,9 @@ dependencies = [
     "streamlit",
     "python-dotenv",
     "vastai",
+    # Data Version Control (for DagsHub S3 remote)
+    "dvc",
+    "dvc-s3",
 ]
 
 [project.optional-dependencies]

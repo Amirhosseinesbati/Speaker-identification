@@ -73,14 +73,15 @@ echo ""
 echo "🗄️  Setting up DVC and pulling raw data from DagsHub..."
 
 # Authenticate DVC with DagsHub S3-compatible storage
-dvc remote remove origin 2>/dev/null || true
-dvc remote add -d origin s3://dvc
-dvc remote modify origin endpointurl "https://dagshub.com/${DAGSHUB_USERNAME}/${DAGSHUB_REPO_NAME}.s3"
-dvc remote modify origin --local access_key_id "${DAGSHUB_TOKEN}"
-dvc remote modify origin --local secret_access_key "${DAGSHUB_TOKEN}"
+# Use 'uv run dvc' to ensure the command is found (installed via pyproject.toml)
+uv run dvc remote remove origin 2>/dev/null || true
+uv run dvc remote add -d origin s3://dvc
+uv run dvc remote modify origin endpointurl "https://dagshub.com/${DAGSHUB_USERNAME}/${DAGSHUB_REPO_NAME}.s3"
+uv run dvc remote modify origin --local access_key_id "${DAGSHUB_TOKEN}"
+uv run dvc remote modify origin --local secret_access_key "${DAGSHUB_TOKEN}"
 
 echo "   Pulling data from DagsHub..."
-dvc pull -r origin
+uv run dvc pull -r origin
 
 if [ -d "data/raw" ]; then
     echo "✅ Raw data successfully pulled!"
