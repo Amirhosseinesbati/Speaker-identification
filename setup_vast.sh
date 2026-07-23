@@ -46,10 +46,18 @@ echo ""
 echo "📦 Installing system dependencies..."
 apt-get update -qq && apt-get install -y -qq git libgl1-mesa-glx libglib2.0-0 2>/dev/null || true
 
-# Ensure /tmp exists (some Vast.ai images don't have it by default)
-mkdir -p /tmp
-chmod 1777 /tmp
-echo "   ✅ /tmp directory ready"
+# Ensure /tmp exists and is writable (some Vast.ai images don't have it)
+if mkdir -p /tmp 2>/dev/null && touch /tmp/.dvc_test_write 2>/dev/null; then
+    rm -f /tmp/.dvc_test_write
+    chmod 1777 /tmp
+    echo "   ✅ /tmp directory ready and writable"
+else
+    echo "   ⚠ /tmp not writable, using fallback TMPDIR in workspace..."
+    export TMPDIR="/workspace/project/.tmp"
+    mkdir -p "$TMPDIR"
+    chmod 1777 "$TMPDIR"
+    echo "   ✅ Fallback TMPDIR set to $TMPDIR"
+fi
 
 echo "📦 Installing uv (Python package manager)..."
 curl -LsSf https://astral.sh/uv/install.sh | sh
