@@ -46,6 +46,11 @@ echo ""
 echo "📦 Installing system dependencies..."
 apt-get update -qq && apt-get install -y -qq git libgl1-mesa-glx libglib2.0-0 2>/dev/null || true
 
+# Ensure /tmp exists (some Vast.ai images don't have it by default)
+mkdir -p /tmp
+chmod 1777 /tmp
+echo "   ✅ /tmp directory ready"
+
 echo "📦 Installing uv (Python package manager)..."
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
