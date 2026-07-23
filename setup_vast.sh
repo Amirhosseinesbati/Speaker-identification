@@ -33,7 +33,7 @@ cleanup() {
 
 # Enable trap: cleanup on EXIT, ERR, or any signal
 # Comment out the line below to keep the instance alive for debugging:
-trap cleanup EXIT ERR
+#trap cleanup EXIT ERR
 
 # ============================================================================
 #  Phase 1: System Setup
