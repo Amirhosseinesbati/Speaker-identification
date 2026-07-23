@@ -129,15 +129,17 @@ with tab1:
     if st.button("🔥 Launch on Vast.ai", type="primary", use_container_width=True):
         st.info(f"🚀 Connecting to Vast.ai to rent {gpu_choice}...")
 
-        # Inject choices into environment
+        # Inject ALL user choices into environment for deploy.py
         os.environ["GPU_TARGET"] = gpu_choice
         os.environ["TARGET_PIPELINE"] = pipeline_choice
+        os.environ["FREEZE_FEATURE_EXTRACTOR"] = str(freeze_fe).lower()
 
         with st.spinner("Renting GPU instance and starting pipeline..."):
             try:
                 result = subprocess.run(
                     ["uv", "run", "python", str(DEPLOY_SCRIPT)],
                     capture_output=True, text=True, timeout=60,
+                    cwd=str(PROJECT_ROOT),
                 )
                 st.success("✅ Server launched successfully!")
 
@@ -229,6 +231,7 @@ with tab2:
             try:
                 result = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=7200,
+                    cwd=str(PROJECT_ROOT),
                 )
 
                 if result.returncode == 0:

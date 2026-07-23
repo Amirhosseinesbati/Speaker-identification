@@ -8,9 +8,15 @@ hardware:
       num_workers: 2
       mixed_precision: true
     vastai:
-      description: Cloud GPU (24GB+ VRAM)
+      description: RTX 3090 / 4090 / A5000 (24GB+ VRAM)
       device: cuda
       batch_size: 32
+      num_workers: 4
+      mixed_precision: true
+    vastai_3060:
+      description: RTX 3060 (12GB VRAM)
+      device: cuda
+      batch_size: 16
       num_workers: 4
       mixed_precision: true
 audio:

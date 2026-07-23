@@ -108,12 +108,35 @@ export AWS_SECRET_ACCESS_KEY="${DAGSHUB_TOKEN}"
 export AWS_DEFAULT_REGION="us-east-1"
 export MLFLOW_S3_ENDPOINT_URL="https://dagshub.com/${DAGSHUB_USERNAME}/${DAGSHUB_REPO_NAME}.s3"
 
-# Update config to use vastai profile (unfreeze feature extractor)
-echo "   Switching config to 'vastai' hardware profile..."
-sed -i 's/mode: local/mode: vastai/' configs/default_config.yaml
-sed -i 's/freeze_feature_extractor: true/freeze_feature_extractor: false/' configs/default_config.yaml
+# ── Select hardware profile based on GPU target ──
+# RTX 3090/4090/A5000 → vastai (batch_size=32)
+# RTX 3060           → vastai_3060 (batch_size=16)
+GPU_TARGET="${GPU_TARGET:-RTX_3090}"
+case "$GPU_TARGET" in
+    RTX_3060)
+        echo "   Switching config to 'vastai_3060' profile (batch_size=16)..."
+        sed -i 's/mode: local/mode: vastai_3060/' configs/default_config.yaml
+        ;;
+    *)
+        echo "   Switching config to 'vastai' profile (batch_size=32)..."
+        sed -i 's/mode: local/mode: vastai/' configs/default_config.yaml
+        ;;
+esac
+
+# ── Apply freeze choice from user selection ──
+# FREEZE_FEATURE_EXTRACTOR comes from deploy_app.py → deploy.py → env var
+FREEZE_FE="${FREEZE_FEATURE_EXTRACTOR:-true}"
+if [ "$FREEZE_FE" = "true" ]; then
+    echo "   Keeping feature extractor FROZEN (as selected by user)..."
+    # Ensure it's set to true in config
+    sed -i 's/freeze_feature_extractor: false/freeze_feature_extractor: true/' configs/default_config.yaml 2>/dev/null || true
+else
+    echo "   Unfreezing feature extractor for full fine-tune (as selected by user)..."
+    sed -i 's/freeze_feature_extractor: true/freeze_feature_extractor: false/' configs/default_config.yaml
+fi
 
 echo "✅ Environment configured for DagsHub MLflow tracking."
+echo "   GPU: $GPU_TARGET | Freeze: $FREEZE_FE | Pipeline: $TARGET_PIPELINE"
 
 # ============================================================================
 #  Phase 5: Run Pipeline

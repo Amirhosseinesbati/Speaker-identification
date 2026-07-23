@@ -44,6 +44,7 @@ def load_environment() -> dict:
     # Runtime overrides (set by deploy_app.py or CLI)
     config["GPU_TARGET"] = os.getenv("GPU_TARGET", "RTX_3090")
     config["TARGET_PIPELINE"] = os.getenv("TARGET_PIPELINE", "all")
+    config["FREEZE_FEATURE_EXTRACTOR"] = os.getenv("FREEZE_FEATURE_EXTRACTOR", "true")
 
     # Validate required variables
     missing = [k for k, v in config.items()
@@ -145,6 +146,7 @@ def main():
         sys.exit(1)
 
     # ── Build environment string for the remote instance ──
+    # Include ALL settings so setup_vast.sh knows what the user chose
     env_vars = " ".join(
         f"-e {k}={v}"
         for k, v in {
@@ -156,7 +158,9 @@ def main():
             "DAGSHUB_TRACKING_URI": config["DAGSHUB_TRACKING_URI"],
             "GIT_REPO_URL": config["GIT_REPO_URL"],
             "GIT_BRANCH": config["GIT_BRANCH"],
+            "GPU_TARGET": config["GPU_TARGET"],
             "TARGET_PIPELINE": config["TARGET_PIPELINE"],
+            "FREEZE_FEATURE_EXTRACTOR": config["FREEZE_FEATURE_EXTRACTOR"],
             "KAGGLE_USERNAME": config["KAGGLE_USERNAME"],
             "KAGGLE_KEY": config["KAGGLE_KEY"],
         }.items()
