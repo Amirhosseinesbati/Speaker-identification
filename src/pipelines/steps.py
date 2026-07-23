@@ -14,17 +14,15 @@ Pipeline flow:
 
 import os
 import sys
-import json
-import tempfile
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple
 
 import mlflow
+import numpy as np
 import pandas as pd
 import torch
-import yaml
 from zenml import step
-from zenml.client import Client
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 # Ensure project root is on sys.path for local imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -37,7 +35,6 @@ from src.data_pipeline import (
     create_class_mapping,
     stratified_split,
     SpeakerDataset,
-    get_dataloaders as build_dataloaders,
 )
 from src.model import TwoHeadedWavLM
 from src.train import (
@@ -51,20 +48,15 @@ from src.train import (
 
 
 # ─────────────────────────────────────────────────────────
-#  Helper: Active MLflow run from ZenML stack
+#  Helper: MLflow active check
 # ─────────────────────────────────────────────────────────
+# ZenML automatically activates an MLflow run before each step
+# when the stack has an MLflow experiment tracker configured.
+# We just need to check if it's active before logging.
 
-def _get_mlflow_tracker() -> Optional[object]:
-    """Return the active MLflow experiment tracker from the ZenML stack."""
-    try:
-        client = Client()
-        stack = client.active_stack
-        tracker = stack.experiment_tracker
-        if tracker is not None and hasattr(tracker, "configure_mlflow_run"):
-            return tracker
-    except Exception:
-        pass
-    return None
+def _mlflow_active() -> bool:
+    """Check if MLflow has an active run (set up by ZenML pipeline)."""
+    return mlflow.active_run() is not None
 
 
 # ─────────────────────────────────────────────────────────
@@ -108,18 +100,16 @@ def prepare_data(
     print(f"  ✓ Train: {len(train_df)} samples | Val: {len(val_df)} samples")
     print(f"  ✓ Classes: {len(class_map)} (0=unknown, 1..{len(class_map)-1}=known)")
 
-    # Log data params to MLflow
-    tracker = _get_mlflow_tracker()
-    if tracker is not None:
-        with tracker.configure_mlflow_run():
-            mlflow.log_params({
-                "num_classes": len(class_map),
-                "num_known": len(class_map) - 1,
-                "train_samples": len(train_df),
-                "val_samples": len(val_df),
-                "train_known": int((train_df["label"] != 0).sum()),
-                "train_unknown": int((train_df["label"] == 0).sum()),
-            })
+    # Log data params to MLflow (ZenML auto-activates MLflow run)
+    if _mlflow_active():
+        mlflow.log_params({
+            "num_classes": len(class_map),
+            "num_known": len(class_map) - 1,
+            "train_samples": len(train_df),
+            "val_samples": len(val_df),
+            "train_known": int((train_df["label"] != 0).sum()),
+            "train_unknown": int((train_df["label"] == 0).sum()),
+        })
 
     return config, class_map, train_df, val_df
 
@@ -146,12 +136,8 @@ def build_model(
     num_known = len(class_map) - 1
     model = TwoHeadedWavLM(config, num_known_speakers=num_known)
 
-    # Respect hardware profile for freeze/unfreeze
-    hw_profile = get_active_profile(config)
-    if not hw_profile.get("mixed_precision", True):
-        # vastai profile → unfreeze
-        model.unfreeze_feature_extractor()
-
+    # Note: freeze/unfreeze is handled inside TwoHeadedWavLM.__init__
+    # based on config["model"]["freeze_feature_extractor"]
     model.print_summary()
 
     # Save initial state dict to a temp checkpoint
@@ -167,15 +153,13 @@ def build_model(
     print(f"  ✓ Initial model saved to {init_path}")
 
     # Log model architecture params
-    tracker = _get_mlflow_tracker()
-    if tracker is not None:
-        with tracker.configure_mlflow_run():
-            mlflow.log_params({
-                "base_model": config["model"]["base_model"],
-                "freeze_feature_extractor": config["model"].get("freeze_feature_extractor", True),
-                "num_known_speakers": num_known,
-                "total_params": model.get_trainable_params(),
-            })
+    if _mlflow_active():
+        mlflow.log_params({
+            "base_model": config["model"]["base_model"],
+            "freeze_feature_extractor": config["model"].get("freeze_feature_extractor", True),
+            "num_known_speakers": num_known,
+            "total_params": model.get_trainable_params(),
+        })
 
     return init_path
 
@@ -225,9 +209,6 @@ def train_model(
         duration_seconds=audio_cfg["duration_seconds"],
         augment=False,
     )
-
-    import numpy as np
-    from torch.utils.data import DataLoader, WeightedRandomSampler
 
     train_labels = train_df["label"].values
     class_counts = np.bincount(train_labels, minlength=len(class_map))
@@ -285,7 +266,8 @@ def train_model(
     best_epoch = -1
     history = []
 
-    tracker = _get_mlflow_tracker()
+    # MLflow is auto-activated by ZenML — log directly
+    mlflow_on = _mlflow_active()
 
     for epoch in range(1, train_cfg["epochs"] + 1):
         # Train
@@ -298,18 +280,17 @@ def train_model(
         scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
 
-        # Log metrics per epoch
-        if tracker is not None:
-            with tracker.configure_mlflow_run():
-                mlflow.log_metrics({
-                    "train_loss": train_metrics["loss"],
-                    "train_ood_acc": train_metrics["ood_acc"],
-                    "train_speaker_acc": train_metrics["speaker_acc"],
-                    "val_loss": val_metrics["loss"],
-                    "val_ood_acc": val_metrics["ood_acc"],
-                    "val_speaker_acc": val_metrics["speaker_acc"],
-                    "learning_rate": current_lr,
-                }, step=epoch)
+        # Log metrics per epoch (directly to the active MLflow run)
+        if mlflow_on:
+            mlflow.log_metrics({
+                "train_loss": train_metrics["loss"],
+                "train_ood_acc": train_metrics["ood_acc"],
+                "train_speaker_acc": train_metrics["speaker_acc"],
+                "val_loss": val_metrics["loss"],
+                "val_ood_acc": val_metrics["ood_acc"],
+                "val_speaker_acc": val_metrics["speaker_acc"],
+                "learning_rate": current_lr,
+            }, step=epoch)
 
         # Print progress
         print(f"\n  Epoch {epoch:2d}/{train_cfg['epochs']} — "
@@ -362,17 +343,16 @@ def train_model(
         "total_epochs": train_cfg["epochs"],
     }
 
-    if tracker is not None:
-        with tracker.configure_mlflow_run():
-            mlflow.log_params({
-                "epochs": train_cfg["epochs"],
-                "learning_rate": train_cfg["learning_rate"],
-                "weight_decay": train_cfg["weight_decay"],
-                "batch_size": hw_profile["batch_size"],
-            })
-            mlflow.log_metrics(summary)
-            # Log the best model artifact
-            mlflow.log_artifact(final_best_path, artifact_path="models")
+    if mlflow_on:
+        mlflow.log_params({
+            "epochs": train_cfg["epochs"],
+            "learning_rate": train_cfg["learning_rate"],
+            "weight_decay": train_cfg["weight_decay"],
+            "batch_size": hw_profile["batch_size"],
+        })
+        mlflow.log_metrics(summary)
+        # Log the best model artifact
+        mlflow.log_artifact(final_best_path, artifact_path="models")
 
     print(f"\n  ✓ Training complete! Best val loss: {best_val_loss:.4f} (epoch {best_epoch})")
     print(f"  ✓ Best model: {final_best_path}")
@@ -462,19 +442,17 @@ def evaluate_model(
     print(f"    OOD Acc:    {metrics['final_val_ood_acc']:.3f}")
     print(f"    Speaker Acc: {metrics['final_val_speaker_acc']:.3f}")
 
-    # Log to MLflow
-    tracker = _get_mlflow_tracker()
-    if tracker is not None:
-        with tracker.configure_mlflow_run():
-            mlflow.log_metrics(metrics)
-            # Register the model in MLflow model registry
-            try:
-                mlflow.pytorch.log_model(
-                    model,
-                    artifact_path="model",
-                    registered_model_name="speaker-identification",
-                )
-            except Exception as e:
-                print(f"  ⚠ Could not log model to MLflow registry: {e}")
+    # Log to MLflow (directly to the active run)
+    if _mlflow_active():
+        mlflow.log_metrics(metrics)
+        # Register the model in MLflow model registry
+        try:
+            mlflow.pytorch.log_model(
+                model,
+                artifact_path="model",
+                registered_model_name="speaker-identification",
+            )
+        except Exception as e:
+            print(f"  ⚠ Could not log model to MLflow registry: {e}")
 
     return metrics

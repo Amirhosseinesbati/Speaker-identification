@@ -139,7 +139,15 @@ echo "✅ Environment configured for DagsHub MLflow tracking."
 echo "   GPU: $GPU_TARGET | Freeze: $FREEZE_FE | Pipeline: $TARGET_PIPELINE"
 
 # ============================================================================
-#  Phase 5: Run Pipeline
+#  Phase 5: Initialize ZenML
+# ============================================================================
+echo ""
+echo "🔧 Initializing ZenML repository..."
+uv run zenml init 2>/dev/null || true
+echo "✅ ZenML initialized."
+
+# ============================================================================
+#  Phase 6: Run Pipeline
 # ============================================================================
 echo ""
 echo "🔥 Starting Pipeline: $TARGET_PIPELINE"
@@ -149,7 +157,7 @@ echo ""
 uv run python -m src.pipelines.run_pipeline --run "$TARGET_PIPELINE"
 
 # ============================================================================
-#  Phase 6: Complete
+#  Phase 7: Complete
 # ============================================================================
 echo ""
 echo "🎉 Pipeline '$TARGET_PIPELINE' completed successfully!"
