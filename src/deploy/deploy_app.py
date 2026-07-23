@@ -151,11 +151,17 @@ with tab1:
 
         with st.spinner("Renting GPU instance and starting pipeline (may take 1-2 min)..."):
             try:
+                # Force UTF-8 encoding for both child process and captured output
+                # (fixes UnicodeEncodeError with emojis on Windows cp1252 terminal)
+                proc_env = os.environ.copy()
+                proc_env["PYTHONIOENCODING"] = "utf-8"
+
                 # Use sys.executable instead of 'uv run python' for reliability
                 # on Windows/Git Bash where 'uv' may be a shell script
                 result = subprocess.run(
                     [sys.executable, str(DEPLOY_SCRIPT)],
-                    capture_output=True, text=True, timeout=180,
+                    capture_output=True, text=True, encoding="utf-8",
+                    env=proc_env, timeout=180,
                     cwd=str(PROJECT_ROOT),
                     check=True,  # ← raise CalledProcessError if exit code != 0
                 )
