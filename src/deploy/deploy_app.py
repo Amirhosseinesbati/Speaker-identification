@@ -75,12 +75,22 @@ with st.sidebar:
     model_cfg = config.get("model", {})
     if "encoder_config" in model_cfg:
         encoder_type = model_cfg.get("encoder_type", "wavlm")
-        base_model = model_cfg["encoder_config"].get(encoder_type, {}).get("base_model", "N/A")
-        freeze_fe = model_cfg["encoder_config"].get(encoder_type, {}).get("freeze_feature_extractor", True)
+        enc_cfg = model_cfg["encoder_config"].get(encoder_type, {})
+        base_model = enc_cfg.get("base_model", enc_cfg.get("source", "N/A"))
+        freeze_fe = enc_cfg.get("freeze_feature_extractor",
+                                 enc_cfg.get("freeze_encoder", True))
     else:
+        encoder_type = "wavlm"
         base_model = model_cfg.get("base_model", "N/A")
         freeze_fe = model_cfg.get("freeze_feature_extractor", True)
+    
+    pooling_type = model_cfg.get("pooling_type", "statistical")
+    head_type = model_cfg.get("speaker_head_type", "linear")
+    
+    st.markdown(f"- Encoder: `{encoder_type}`")
     st.markdown(f"- Base: `{base_model}`")
+    st.markdown(f"- Pooling: `{pooling_type}`")
+    st.markdown(f"- Head: `{head_type}`")
     st.markdown(f"- Classes: 447 (1 unknown + 446 known)")
     st.markdown(f"- Epochs: {config['training']['epochs']}")
 
