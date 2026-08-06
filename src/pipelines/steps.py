@@ -124,7 +124,7 @@ def build_model(
     class_map: Dict,
 ) -> str:
     """
-    Instantiate the TwoHeadedWavLM model and save its initial state.
+    Instantiate the TwoHeadedSpeakerModel via factory and save its initial state.
 
     Returns:
         checkpoint_path: path to the saved initial model checkpoint (state_dict only).
@@ -134,10 +134,9 @@ def build_model(
     print("=" * 55)
 
     num_known = len(class_map) - 1
-    model = TwoHeadedWavLM(config, num_known_speakers=num_known)
+    from src.model_factory import create_model_from_config
+    model = create_model_from_config(config, num_known_speakers=num_known)
 
-    # Note: freeze/unfreeze is handled inside TwoHeadedWavLM.__init__
-    # based on config["model"]["freeze_feature_extractor"]
     model.print_summary()
 
     # Save initial state dict to a temp checkpoint
@@ -152,11 +151,25 @@ def build_model(
     }, init_path)
     print(f"  ✓ Initial model saved to {init_path}")
 
-    # Log model architecture params
+    # Log model architecture params (backward-compat config reading)
+    model_cfg = config.get("model", {})
+    encoder_type = model_cfg.get("encoder_type", "wavlm")
+    if "encoder_config" in model_cfg:
+        enc_cfg = model_cfg["encoder_config"].get(encoder_type, {})
+        base_model = enc_cfg.get("base_model", enc_cfg.get("source", "unknown"))
+        freeze_fe = enc_cfg.get("freeze_feature_extractor",
+                                enc_cfg.get("freeze_encoder", True))
+    else:
+        base_model = model_cfg.get("base_model", "unknown")
+        freeze_fe = model_cfg.get("freeze_feature_extractor", True)
+
     if _mlflow_active():
         mlflow.log_params({
-            "base_model": config["model"]["base_model"],
-            "freeze_feature_extractor": config["model"].get("freeze_feature_extractor", True),
+            "encoder_type": encoder_type,
+            "base_model": base_model,
+            "freeze_encoder": freeze_fe,
+            "pooling_type": model_cfg.get("pooling_type", "statistical"),
+            "speaker_head_type": model_cfg.get("speaker_head_type", "linear"),
             "num_known_speakers": num_known,
             "total_params": model.get_trainable_params(),
         })
@@ -239,7 +252,8 @@ def train_model(
 
     # ── Load model ──
     num_known = len(class_map) - 1
-    model = TwoHeadedWavLM(config, num_known_speakers=num_known)
+    from src.model_factory import create_model_from_config
+    model = create_model_from_config(config, num_known_speakers=num_known)
     checkpoint = torch.load(model_checkpoint_path, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)
@@ -404,7 +418,8 @@ def evaluate_model(
 
     # Load model
     num_known = len(class_map) - 1
-    model = TwoHeadedWavLM(config, num_known_speakers=num_known)
+    from src.model_factory import create_model_from_config
+    model = create_model_from_config(config, num_known_speakers=num_known)
     checkpoint = torch.load(best_model_path, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)
