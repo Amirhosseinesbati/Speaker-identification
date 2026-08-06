@@ -29,7 +29,8 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.model import TwoHeadedWavLM
+from src.model import TwoHeadedSpeakerModel
+from src.model_factory import create_model_from_config
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -126,8 +127,8 @@ def load_model(
     print(f"  Loaded class map: {len(class_map)} classes "
           f"(0=unknown, 1..{num_known}=known)")
 
-    # Build model
-    model = TwoHeadedWavLM(config, num_known_speakers=num_known)
+    # Build model via factory (supports any encoder/head combo)
+    model = create_model_from_config(config, num_known_speakers=num_known)
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)
     model.eval()
