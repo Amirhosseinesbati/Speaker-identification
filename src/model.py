@@ -100,12 +100,15 @@ class TwoHeadedWavLM(nn.Module):
             print("  🔓 Feature extractor: UNFROZEN (for Vast.ai training)")
 
         # ── Pooling ──
-        self.pooling = StatisticalPooling()
-
         # WavLM-base-plus hidden size = 768 → pooled dim = 768 * 2 = 1536
         wavlm_hidden_size = self.wavlm.config.hidden_size
         pooled_dim = wavlm_hidden_size * 2
         print(f"  📐 WavLM hidden size: {wavlm_hidden_size} | Pooled dim: {pooled_dim}")
+
+        from src.pooling import create_pooling
+        pooling_type = model_cfg.get("pooling_type", "statistical")
+        self.pooling = create_pooling(pooling_type, wavlm_hidden_size)
+        print(f"  📊 Pooling: {pooling_type} → pooled dim: {wavlm_hidden_size * 2}")
 
         # ── Head 1: OOD / Unknown Detector ──
         # Single neuron with Sigmoid → P(unknown)
