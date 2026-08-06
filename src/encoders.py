@@ -128,6 +128,66 @@ class WavLMEncoder(BaseEncoder):
 
 
 # ═══════════════════════════════════════════════════════════
+#  HuBERT Encoder
+# ═══════════════════════════════════════════════════════════
+
+class HuBERTEncoder(BaseEncoder):
+    """
+    Facebook HuBERT encoder for speaker recognition.
+
+    HuBERT (Hidden-Unit BERT) is a self-supervised speech model that
+    learns discrete hidden units via clustering. While primarily designed
+    for ASR, it produces strong speaker-discriminative features when
+    fine-tuned, especially at intermediate layers.
+
+    Supported models:
+        facebook/hubert-base-ls960      (95M, 768-dim)
+        facebook/hubert-large-ls960-ft  (317M, 1024-dim) ← default
+        facebook/hubert-xlarge-ll60k    (1B, 1280-dim)
+    """
+
+    def __init__(
+        self,
+        base_model: str = "facebook/hubert-large-ls960-ft",
+        freeze_feature_extractor: bool = True,
+    ):
+        super().__init__()
+        self.base_model_name = base_model
+
+        from transformers import HubertModel
+        self.hubert = HubertModel.from_pretrained(base_model)
+
+        if freeze_feature_extractor:
+            self.freeze()
+            print(f"  🔒 HuBERT feature extractor: FROZEN")
+        else:
+            print(f"  🔓 HuBERT feature extractor: UNFROZEN")
+
+    def forward(
+        self,
+        waveforms: torch.Tensor,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        input_values = waveforms.squeeze(1)  # (batch, T)
+        outputs = self.hubert(input_values=input_values, output_hidden_states=False)
+        return outputs.last_hidden_state, None
+
+    @property
+    def output_dim(self) -> int:
+        return self.hubert.config.hidden_size
+
+    def freeze(self) -> None:
+        if hasattr(self.hubert, "feature_extractor"):
+            for param in self.hubert.feature_extractor.parameters():
+                param.requires_grad = False
+
+    def unfreeze(self) -> None:
+        if hasattr(self.hubert, "feature_extractor"):
+            for param in self.hubert.feature_extractor.parameters():
+                param.requires_grad = True
+        print("  🔓 HuBERT feature extractor UNFROZEN.")
+
+
+# ═══════════════════════════════════════════════════════════
 #  ECAPA-TDNN Encoder (SpeechBrain)
 # ═══════════════════════════════════════════════════════════
 
@@ -274,8 +334,9 @@ def create_encoder(config: dict) -> BaseEncoder:
             freeze_encoder=enc_cfg.get("freeze_encoder", True),
         )
     elif encoder_type == "hubert":
-        raise NotImplementedError(
-            "HuBERT encoder will be added in Phase 3.1."
+        return HuBERTEncoder(
+            base_model=enc_cfg.get("base_model", "facebook/hubert-large-ls960-ft"),
+            freeze_feature_extractor=enc_cfg.get("freeze_feature_extractor", True),
         )
     else:
         raise ValueError(
