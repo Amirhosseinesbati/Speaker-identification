@@ -29,6 +29,7 @@ dependencies = [
     "audiomentations>=0.43.1",
     "speechbrain>=1.1.0",
     "ruamel-yaml<0.18",
+    "faiss-cpu>=1.15.0",
 ]
 
 [project.optional-dependencies]
