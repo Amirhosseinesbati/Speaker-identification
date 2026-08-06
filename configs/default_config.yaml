@@ -1,3 +1,9 @@
+# ═══════════════════════════════════════════════════════════
+#  Speaker Identification — Default Configuration
+#  IAAA Competition 2026
+# ═══════════════════════════════════════════════════════════
+
+# ── Hardware Profiles ──
 hardware:
   mode: local
   profiles:
@@ -19,33 +25,72 @@ hardware:
       batch_size: 16
       num_workers: 4
       mixed_precision: true
+
+# ── Audio Processing ──
 audio:
   sample_rate: 16000
-  duration_seconds: 3.0
+  duration_seconds: 5.0            # Increased from 3.0 — 90% of files > 30s, 5s optimal for speaker identity
+  min_valid_duration: 1.0          # Skip files shorter than this (corrupted / near-empty)
   n_mels: 80
   n_fft: 400
   hop_length: 160
+
+# ── Model Architecture ──
 model:
-  base_model: microsoft/wavlm-base-plus
-  freeze_feature_extractor: true
-  embedding_dim: 768
+  # Encoder backbone selection
+  encoder_type: wavlm              # wavlm | ecapa | hubert
+  encoder_config:
+    wavlm:
+      base_model: microsoft/wavlm-base-plus
+      freeze_feature_extractor: true
+    ecapa:
+      source: speechbrain/spkrec-ecapa-voxceleb
+      freeze_encoder: true
+    hubert:
+      base_model: facebook/hubert-large-ls960-ft
+      freeze_feature_extractor: true
+
+  # Pooling method
+  pooling_type: attentive          # statistical | attentive
+
+  # Speaker classification head
+  speaker_head_type: linear        # linear | arcface
+  speaker_head_config:
+    arcface:
+      embedding_dim: 192
+      margin: 0.3
+      scale: 15.0
+    linear:
+      hidden_dims: []              # Empty = single Linear layer (current behavior)
+
+  # OOD detection head
+  ood_head_config:
+    hidden_dim: 256                # Hidden dim in OOD head MLP (if empty, single Linear)
+
+  # Ensemble fusion (Phase 3)
+  fusion:
+    ensemble_method: none           # none | average | learned_mlp
+
+# ── Training ──
 training:
   epochs: 20
   learning_rate: 0.0001
   weight_decay: 1.0e-05
   warmup_steps: 500
   max_grad_norm: 5.0
+
+# ── Data Paths ──
 data:
   labels_path: data/raw/labels.csv
   audio_dir: data/raw
   processed_labels: data/processed/cleaned_labels.csv
+
+# ── Logging ──
 logging:
   log_dir: logs
   checkpoint_dir: checkpoints
 
-# ─────────────────────────────────────────────────────
-# MLOps Configuration (ZenML + MLflow + DagsHub)
-# ─────────────────────────────────────────────────────
+# ── MLOps Configuration (ZenML + MLflow + DagsHub) ──
 mlops:
   enabled: true
   experiment_name: speaker-identification

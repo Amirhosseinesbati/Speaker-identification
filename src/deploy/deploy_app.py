@@ -71,7 +71,16 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Model:**")
-    st.markdown(f"- Base: `{config['model']['base_model']}`")
+    # Backward-compat: support both old flat and new nested config formats
+    model_cfg = config.get("model", {})
+    if "encoder_config" in model_cfg:
+        encoder_type = model_cfg.get("encoder_type", "wavlm")
+        base_model = model_cfg["encoder_config"].get(encoder_type, {}).get("base_model", "N/A")
+        freeze_fe = model_cfg["encoder_config"].get(encoder_type, {}).get("freeze_feature_extractor", True)
+    else:
+        base_model = model_cfg.get("base_model", "N/A")
+        freeze_fe = model_cfg.get("freeze_feature_extractor", True)
+    st.markdown(f"- Base: `{base_model}`")
     st.markdown(f"- Classes: 447 (1 unknown + 446 known)")
     st.markdown(f"- Epochs: {config['training']['epochs']}")
 
@@ -97,7 +106,7 @@ with tab1:
 
         freeze_fe = st.checkbox(
             "🔒 Freeze Feature Extractor",
-            value=config["model"].get("freeze_feature_extractor", True),
+            value=freeze_fe,
             help="Freeze WavLM CNN layers to save VRAM. "
                  "Uncheck for full fine-tune (requires 24GB+ GPU).",
         )

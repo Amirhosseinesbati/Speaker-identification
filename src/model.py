@@ -77,11 +77,23 @@ class TwoHeadedWavLM(nn.Module):
         model_cfg = config["model"]
         audio_cfg = config["audio"]
 
+        # ── Resolve encoder config (backward-compat: old flat format → new nested) ──
+        encoder_type = model_cfg.get("encoder_type", "wavlm")
+        if "encoder_config" in model_cfg:
+            enc_cfg = model_cfg["encoder_config"].get(encoder_type, {})
+            base_model = enc_cfg.get("base_model", model_cfg.get("base_model", "microsoft/wavlm-base-plus"))
+            freeze_fe = enc_cfg.get("freeze_feature_extractor",
+                                    model_cfg.get("freeze_feature_extractor", False))
+        else:
+            # Old flat config format
+            base_model = model_cfg.get("base_model", "microsoft/wavlm-base-plus")
+            freeze_fe = model_cfg.get("freeze_feature_extractor", False)
+
         # ── Base WavLM Model ──
-        self.wavlm = WavLMModel.from_pretrained(model_cfg["base_model"])
+        self.wavlm = WavLMModel.from_pretrained(base_model)
 
         # Feature extractor freeze toggle
-        if model_cfg.get("freeze_feature_extractor", False):
+        if freeze_fe:
             self._freeze_feature_extractor()
             print("  🔒 Feature extractor: FROZEN (for local 6GB VRAM)")
         else:
