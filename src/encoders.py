@@ -128,6 +128,106 @@ class WavLMEncoder(BaseEncoder):
 
 
 # ═══════════════════════════════════════════════════════════
+#  ECAPA-TDNN Encoder (SpeechBrain)
+# ═══════════════════════════════════════════════════════════
+
+class ECAPAEncoder(BaseEncoder):
+    """
+    ECAPA-TDNN encoder from SpeechBrain, pretrained on VoxCeleb.
+
+    ECAPA-TDNN is a state-of-the-art speaker embedding model that uses:
+    - Squeeze-Excitation Res2Blocks
+    - Multi-layer feature aggregation
+    - Attentive Statistical Pooling (built-in)
+
+    The built-in pooling produces utterance-level 192-dim embeddings.
+    When using this encoder, set pooling_type="identity" in config.
+
+    Reference:
+        Desplanques et al., "ECAPA-TDNN: Emphasized Channel Attention,
+        Propagation and Aggregation in TDNN Based Speaker Verification"
+        (INTERSPEECH 2020)
+
+    Supported sources:
+        speechbrain/spkrec-ecapa-voxceleb  (192-dim, VoxCeleb1+2, 0.80% EER)
+    """
+
+    def __init__(
+        self,
+        source: str = "speechbrain/spkrec-ecapa-voxceleb",
+        freeze_encoder: bool = True,
+        device: str = "cpu",
+    ):
+        super().__init__()
+        self.source = source
+        self._output_dim = 192  # ECAPA-TDNN embedding dimension
+        self._frozen = freeze_encoder
+
+        import os
+        os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+        from speechbrain.inference.speaker import EncoderClassifier
+
+        print(f"  Loading ECAPA-TDNN from {source}...")
+        # Do NOT pass savedir on Windows — it causes symlink permission errors.
+        # The model will be cached in HF Hub cache (~/.cache/huggingface).
+        self.classifier = EncoderClassifier.from_hparams(
+            source=source,
+            run_opts={"device": device},
+        )
+
+        if freeze_encoder:
+            self.freeze()
+            print(f"  🔒 ECAPA-TDNN encoder: FROZEN")
+        else:
+            print(f"  🔓 ECAPA-TDNN encoder: UNFROZEN (full fine-tune)")
+
+    def forward(
+        self,
+        waveforms: torch.Tensor,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Args:
+            waveforms: (batch, 1, T)
+
+        Returns:
+            hidden_states: (batch, 1, 192) — seq_len=1 because ECAPA has
+                           internal pooling that produces utterance-level embeddings.
+                           We add a dummy seq dim for compatibility.
+            lengths: None
+        """
+        # SpeechBrain expects (batch, T) — squeeze channel dim
+        wav = waveforms.squeeze(1)  # (batch, T)
+
+        # encode_batch returns (batch, 192) utterance-level embeddings
+        embeddings = self.classifier.encode_batch(wav)  # (batch, 192)
+        # If output has extra dim, squeeze it
+        if embeddings.ndim == 3:
+            embeddings = embeddings.squeeze(1)  # (batch, 192)
+
+        # Add dummy sequence dimension for pooling compatibility
+        # IdentityPooling will squeeze this back
+        hidden_states = embeddings.unsqueeze(1)  # (batch, 1, 192)
+
+        return hidden_states, None
+
+    @property
+    def output_dim(self) -> int:
+        return self._output_dim
+
+    def freeze(self) -> None:
+        """Freeze all ECAPA-TDNN parameters."""
+        for param in self.classifier.parameters():
+            param.requires_grad = False
+
+    def unfreeze(self) -> None:
+        """Unfreeze for fine-tuning."""
+        for param in self.classifier.parameters():
+            param.requires_grad = True
+        print("  🔓 ECAPA-TDNN encoder UNFROZEN.")
+
+
+# ═══════════════════════════════════════════════════════════
 #  Encoder Factory
 # ═══════════════════════════════════════════════════════════
 
@@ -169,9 +269,9 @@ def create_encoder(config: dict) -> BaseEncoder:
             freeze_feature_extractor=enc_cfg.get("freeze_feature_extractor", True),
         )
     elif encoder_type == "ecapa":
-        raise NotImplementedError(
-            "ECAPA encoder will be added in Phase 2.3. "
-            "Install speechbrain first: uv add speechbrain"
+        return ECAPAEncoder(
+            source=enc_cfg.get("source", "speechbrain/spkrec-ecapa-voxceleb"),
+            freeze_encoder=enc_cfg.get("freeze_encoder", True),
         )
     elif encoder_type == "hubert":
         raise NotImplementedError(

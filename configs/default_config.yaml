@@ -51,7 +51,7 @@ model:
       freeze_feature_extractor: true
 
   # Pooling method
-  pooling_type: attentive          # statistical | attentive
+  pooling_type: attentive          # statistical | attentive | identity (for ECAPA)
 
   # Speaker classification head
   speaker_head_type: linear        # linear | arcface

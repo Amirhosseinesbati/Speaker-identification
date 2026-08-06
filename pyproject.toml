@@ -27,6 +27,8 @@ dependencies = [
     "dvc",
     "dvc-s3",
     "audiomentations>=0.43.1",
+    "speechbrain>=1.1.0",
+    "ruamel-yaml<0.18",
 ]
 
 [project.optional-dependencies]

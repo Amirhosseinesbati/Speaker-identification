@@ -128,6 +128,35 @@ class AttentiveStatisticalPooling(nn.Module):
         return 2
 
 
+class IdentityPooling(nn.Module):
+    """
+    Identity pooling — passes input through unchanged.
+
+    Used when the encoder already produces utterance-level embeddings
+    (e.g., ECAPA-TDNN has internal attentive pooling).
+
+    Input:  (batch, seq_len_or_1, feat_dim)
+    Output: (batch, feat_dim)
+    """
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if x.ndim == 3:
+            # Squeeze the sequence dimension if it's 1
+            if x.size(1) == 1:
+                return x.squeeze(1)
+            # Otherwise mean-pool (fallback)
+            return x.mean(dim=1)
+        return x
+
+    @property
+    def output_multiplier(self) -> int:
+        return 1
+
+
 # ═══════════════════════════════════════════════════════════
 #  Pooling Factory
 # ═══════════════════════════════════════════════════════════
@@ -152,10 +181,12 @@ def create_pooling(
         return StatisticalPooling()
     elif pooling_type == "attentive":
         return AttentiveStatisticalPooling(input_dim)
+    elif pooling_type == "identity":
+        return IdentityPooling()
     else:
         raise ValueError(
             f"Unknown pooling_type: '{pooling_type}'. "
-            f"Expected 'statistical' or 'attentive'."
+            f"Expected 'statistical', 'attentive', or 'identity'."
         )
 
 
