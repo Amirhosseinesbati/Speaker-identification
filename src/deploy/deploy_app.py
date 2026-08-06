@@ -125,8 +125,23 @@ with tab1:
             delta=f"~{est_hours}h on {gpu_choice}",
         )
 
+    # ── Pre-flight checks ──
+    env_path = PROJECT_ROOT / ".env"
+    if not env_path.exists():
+        st.warning(
+            "⚠️ **`.env` file not found!**\n\n"
+            "Copy `.env.example` to `.env` and fill in your credentials:\n"
+            "```\nVAST_API_KEY=your_key_here\nDAGSHUB_USER_TOKEN=your_token_here\n"
+            "DAGSHUB_REPO_OWNER=amiresbati52\nDAGSHUB_REPO_NAME=Speaker-identification\n"
+            "GIT_REPO_URL=https://github.com/amiresbati52/Speaker-identification\n```"
+        )
+
     # Launch button
     if st.button("🔥 Launch on Vast.ai", type="primary", use_container_width=True):
+        if not env_path.exists():
+            st.error("❌ Cannot launch: `.env` file is missing! Please create it first.")
+            st.stop()
+
         st.info(f"🚀 Connecting to Vast.ai to rent {gpu_choice}...")
 
         # Inject ALL user choices into environment for deploy.py
@@ -134,12 +149,21 @@ with tab1:
         os.environ["TARGET_PIPELINE"] = pipeline_choice
         os.environ["FREEZE_FEATURE_EXTRACTOR"] = str(freeze_fe).lower()
 
-        with st.spinner("Renting GPU instance and starting pipeline..."):
+        with st.spinner("Renting GPU instance and starting pipeline (may take 1-2 min)..."):
             try:
+                # Force UTF-8 encoding for both child process and captured output
+                # (fixes UnicodeEncodeError with emojis on Windows cp1252 terminal)
+                proc_env = os.environ.copy()
+                proc_env["PYTHONIOENCODING"] = "utf-8"
+
+                # Use sys.executable instead of 'uv run python' for reliability
+                # on Windows/Git Bash where 'uv' may be a shell script
                 result = subprocess.run(
-                    ["uv", "run", "python", str(DEPLOY_SCRIPT)],
-                    capture_output=True, text=True, timeout=60,
+                    [sys.executable, str(DEPLOY_SCRIPT)],
+                    capture_output=True, text=True, encoding="utf-8",
+                    env=proc_env, timeout=180,
                     cwd=str(PROJECT_ROOT),
+                    check=True,  # ← raise CalledProcessError if exit code != 0
                 )
                 st.success("✅ Server launched successfully!")
 
@@ -153,17 +177,36 @@ with tab1:
                     "the pipeline completes. No manual cleanup needed."
                 )
 
-            except subprocess.TimeoutExpired:
-                st.warning(
-                    "⏳ The deployment request was sent. It may take a few "
-                    "minutes for the server to be ready."
-                )
             except subprocess.CalledProcessError as e:
                 st.error("❌ Deployment failed!")
-                with st.expander("Error Details"):
-                    st.code(e.stdout)
-                    if e.stderr:
+                with st.expander("📋 Error Details (stdout)"):
+                    st.code(e.stdout or "No output")
+                if e.stderr:
+                    with st.expander("📋 Error Details (stderr)"):
                         st.code(e.stderr)
+                st.info(
+                    "💡 **Possible causes:**\n"
+                    "1. `.env` credentials are incorrect or missing\n"
+                    "2. Vast.ai API key is invalid\n"
+                    "3. No GPU instances available for the selected type\n"
+                    "4. Check your Vast.ai account balance\n\n"
+                    "Run this in terminal to see raw output:\n"
+                    "```\nuv run python src/deploy/deploy.py\n```"
+                )
+            except FileNotFoundError:
+                st.error(
+                    "❌ **`uv` command not found!**\n\n"
+                    "Make sure `uv` is installed and on your system PATH:\n"
+                    "```\ncurl -LsSf https://astral.sh/uv/install.sh | sh\n```"
+                )
+            except subprocess.TimeoutExpired:
+                st.error(
+                    "⏰ **Timed out waiting for Vast.ai response!**\n\n"
+                    "The API might be slow. Try again later or check:\n"
+                    "- Your internet connection\n"
+                    "- Vast.ai service status\n"
+                    "- Try with a different GPU type"
+                )
 
 # ═══════════════════════════════════════════
 #  Tab 2: Local Run
@@ -210,7 +253,7 @@ with tab2:
 
     if st.button("▶️ Run Locally", type="primary", use_container_width=True):
         cmd = [
-            "uv", "run", "python", str(PIPELINE_SCRIPT),
+            sys.executable, str(PIPELINE_SCRIPT),
             "--run", local_stage,
             "--config", str(CONFIG_PATH),
         ]

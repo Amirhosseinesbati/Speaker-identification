@@ -20,6 +20,13 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Fix Unicode encoding for Windows terminals (cp1252 → utf-8)
+# Allows emoji and non-ASCII characters in print() statements
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except Exception:
+    pass  # Not all Python versions/terminals support reconfigure
+
 
 # ─────────────────────────────────────────────────────────
 #  Config Loader

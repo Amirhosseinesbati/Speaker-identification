@@ -33,7 +33,7 @@ cleanup() {
 
 # Enable trap: cleanup on EXIT, ERR, or any signal
 # Comment out the line below to keep the instance alive for debugging:
-trap cleanup EXIT ERR
+#trap cleanup EXIT ERR
 
 # ============================================================================
 #  Phase 1: System Setup
@@ -45,6 +45,19 @@ echo ""
 
 echo "📦 Installing system dependencies..."
 apt-get update -qq && apt-get install -y -qq git libgl1-mesa-glx libglib2.0-0 2>/dev/null || true
+
+# Ensure /tmp exists and is writable (some Vast.ai images don't have it)
+if mkdir -p /tmp 2>/dev/null && touch /tmp/.dvc_test_write 2>/dev/null; then
+    rm -f /tmp/.dvc_test_write
+    chmod 1777 /tmp
+    echo "   ✅ /tmp directory ready and writable"
+else
+    echo "   ⚠ /tmp not writable, using fallback TMPDIR in workspace..."
+    export TMPDIR="/workspace/project/.tmp"
+    mkdir -p "$TMPDIR"
+    chmod 1777 "$TMPDIR"
+    echo "   ✅ Fallback TMPDIR set to $TMPDIR"
+fi
 
 echo "📦 Installing uv (Python package manager)..."
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -73,14 +86,15 @@ echo ""
 echo "🗄️  Setting up DVC and pulling raw data from DagsHub..."
 
 # Authenticate DVC with DagsHub S3-compatible storage
-dvc remote remove origin 2>/dev/null || true
-dvc remote add -d origin s3://dvc
-dvc remote modify origin endpointurl "https://dagshub.com/${DAGSHUB_USERNAME}/${DAGSHUB_REPO_NAME}.s3"
-dvc remote modify origin --local access_key_id "${DAGSHUB_TOKEN}"
-dvc remote modify origin --local secret_access_key "${DAGSHUB_TOKEN}"
+# Use 'uv run dvc' to ensure the command is found (installed via pyproject.toml)
+uv run dvc remote remove origin 2>/dev/null || true
+uv run dvc remote add -d origin s3://dvc
+uv run dvc remote modify origin endpointurl "https://dagshub.com/${DAGSHUB_USERNAME}/${DAGSHUB_REPO_NAME}.s3"
+uv run dvc remote modify origin --local access_key_id "${DAGSHUB_TOKEN}"
+uv run dvc remote modify origin --local secret_access_key "${DAGSHUB_TOKEN}"
 
 echo "   Pulling data from DagsHub..."
-dvc pull -r origin
+uv run dvc pull -r origin
 
 if [ -d "data/raw" ]; then
     echo "✅ Raw data successfully pulled!"
@@ -139,7 +153,15 @@ echo "✅ Environment configured for DagsHub MLflow tracking."
 echo "   GPU: $GPU_TARGET | Freeze: $FREEZE_FE | Pipeline: $TARGET_PIPELINE"
 
 # ============================================================================
-#  Phase 5: Run Pipeline
+#  Phase 5: Initialize ZenML
+# ============================================================================
+echo ""
+echo "🔧 Initializing ZenML repository..."
+uv run zenml init 2>/dev/null || true
+echo "✅ ZenML initialized."
+
+# ============================================================================
+#  Phase 6: Run Pipeline
 # ============================================================================
 echo ""
 echo "🔥 Starting Pipeline: $TARGET_PIPELINE"
@@ -149,7 +171,7 @@ echo ""
 uv run python -m src.pipelines.run_pipeline --run "$TARGET_PIPELINE"
 
 # ============================================================================
-#  Phase 6: Complete
+#  Phase 7: Complete
 # ============================================================================
 echo ""
 echo "🎉 Pipeline '$TARGET_PIPELINE' completed successfully!"
