@@ -18,6 +18,7 @@ from typing import Optional, Tuple, Dict
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 import yaml
@@ -51,6 +52,83 @@ def setup_device(config: dict) -> torch.device:
 
 
 # ─────────────────────────────────────────────────────────
+#  Focal Loss
+# ─────────────────────────────────────────────────────────
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for addressing class imbalance.
+
+    FL(p_t) = -(1 - p_t)^γ * log(p_t)
+
+    where p_t is the model's estimated probability for the target class.
+    The modulating factor (1 - p_t)^γ down-weights easy examples and
+    focuses training on hard, misclassified samples.
+
+    Reference: Lin et al., "Focal Loss for Dense Object Detection" (2017)
+
+    Args:
+        gamma: Focusing parameter. γ=0 → standard cross-entropy.
+               Recommended: 2.0 for strong imbalance, 1.0 for mild.
+        ignore_index: Target value to ignore (default: -100)
+        reduction: 'mean' | 'sum' | 'none'
+    """
+
+    def __init__(
+        self,
+        gamma: float = 2.0,
+        ignore_index: int = -100,
+        reduction: str = "mean",
+    ):
+        super().__init__()
+        self.gamma = gamma
+        self.ignore_index = ignore_index
+        self.reduction = reduction
+
+    def forward(
+        self,
+        logits: torch.Tensor,   # (batch, num_classes)
+        targets: torch.Tensor,  # (batch,)
+    ) -> torch.Tensor:
+        """
+        Compute focal loss.
+
+        Args:
+            logits:  Raw logits from the model (before softmax)
+            targets: Integer class labels (ignored if == ignore_index)
+
+        Returns:
+            Scalar loss tensor
+        """
+        # Standard cross-entropy with no reduction
+        ce_loss = F.cross_entropy(
+            logits, targets,
+            reduction="none",
+            ignore_index=self.ignore_index,
+        )
+
+        # p_t = exp(-CE_loss)
+        pt = torch.exp(-ce_loss)
+
+        # Focal scaling factor
+        focal_weight = (1.0 - pt) ** self.gamma
+
+        # Apply focal weight
+        focal_loss = focal_weight * ce_loss
+
+        if self.reduction == "mean":
+            # Average over valid (non-ignored) samples
+            valid_mask = targets != self.ignore_index
+            if valid_mask.sum() == 0:
+                return torch.tensor(0.0, device=logits.device, requires_grad=True)
+            return focal_loss[valid_mask].mean()
+        elif self.reduction == "sum":
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
+
+# ─────────────────────────────────────────────────────────
 #  Two-Part Loss Function
 # ─────────────────────────────────────────────────────────
 
@@ -59,17 +137,28 @@ class TwoPartLoss(nn.Module):
     Two-part loss for the two-headed architecture:
 
     Loss 1 (OOD): BCEWithLogitsLoss — target=1 if label==0 (unknown), else 0.
-    Loss 2 (Speaker): CrossEntropyLoss — ONLY for known samples (label != 0).
+    Loss 2 (Speaker): CrossEntropyLoss or FocalLoss — ONLY for known samples.
                        Unknown samples are masked via ignore_index.
 
     total_loss = loss_ood + loss_speaker
     """
 
-    def __init__(self, ignore_index: int = -100):
+    def __init__(
+        self,
+        ignore_index: int = -100,
+        use_focal: bool = True,
+        focal_gamma: float = 2.0,
+    ):
         super().__init__()
         self.ignore_index = ignore_index
         self.bce_loss = nn.BCEWithLogitsLoss()
-        self.ce_loss = nn.CrossEntropyLoss(ignore_index=ignore_index)
+
+        if use_focal:
+            self.ce_loss = FocalLoss(gamma=focal_gamma, ignore_index=ignore_index)
+            print(f"  🎯 Speaker loss: FocalLoss (γ={focal_gamma})")
+        else:
+            self.ce_loss = nn.CrossEntropyLoss(ignore_index=ignore_index)
+            print(f"  📊 Speaker loss: CrossEntropyLoss")
 
     def forward(
         self,
