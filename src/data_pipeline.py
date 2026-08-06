@@ -12,7 +12,6 @@ import librosa
 import numpy as np
 import pandas as pd
 import torch
-import torchaudio.functional as F
 import yaml
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 
@@ -148,37 +147,48 @@ def prepare_labels(
 #  Audio Augmentation Pipeline
 # ─────────────────────────────────────────────────────────
 
-class AudioAugmentation(torch.nn.Module):
+class AudioAugmentation:
     """
-    Training-time augmentation pipeline for waveforms.
-    Applies pitch shift, time masking, and frequency masking.
+    Training-time augmentation pipeline using audiomentations.
+
+    Applies a diverse set of waveform-level augmentations:
+    - Gaussian noise injection
+    - Pitch shifting (±4 semitones)
+    - Time stretching (0.8× – 1.25×)
+    - Gain variation (±6 dB)
+    - Polarity inversion
+    - Time shifting (±10%)
+
+    All augmentations preserve the waveform length.
     """
 
-    def __init__(self, sample_rate: int = 16000, n_mels: int = 80):
-        super().__init__()
+    def __init__(self, sample_rate: int = 16000):
+        import audiomentations as AA
         self.sample_rate = sample_rate
-        self.n_mels = n_mels
+        self.pipeline = AA.Compose([
+            AA.AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.5),
+            AA.PitchShift(min_semitones=-4, max_semitones=4, p=0.5),
+            AA.TimeStretch(min_rate=0.8, max_rate=1.25, p=0.3),
+            AA.Gain(min_gain_db=-6, max_gain_db=6, p=0.3),
+            AA.PolarityInversion(p=0.5),
+            AA.Shift(min_shift=-0.1, max_shift=0.1, shift_unit="fraction",
+                     rollover=True, fade_duration=0.005, p=0.3),
+        ])
 
-    def forward(self, waveform: torch.Tensor) -> torch.Tensor:
-        """waveform: (1, T) — single channel audio."""
-        # 1. Random Pitch Shift (±2 semitones, 50% chance)
-        if torch.rand(1).item() < 0.5:
-            n_steps = int(torch.randint(-2, 3, (1,)).item())
-            if n_steps != 0:
-                try:
-                    waveform = F.pitch_shift(
-                        waveform, self.sample_rate, n_steps
-                    )
-                except Exception:
-                    pass  # fallback if pitch shift fails
+    def __call__(self, waveform: torch.Tensor) -> torch.Tensor:
+        """
+        Apply augmentation pipeline to a waveform.
 
-        # 2. Random Time Masking (SpecAugment-style on waveform)
-        if torch.rand(1).item() < 0.3:
-            mask_len = int(torch.randint(2000, 8000, (1,)).item())
-            t_start = int(torch.randint(0, max(1, waveform.size(-1) - mask_len), (1,)).item())
-            waveform[..., t_start : t_start + mask_len] = 0.0
+        Args:
+            waveform: (1, T) — single-channel audio tensor
 
-        return waveform
+        Returns:
+            Augmented waveform of same shape (1, T)
+        """
+        # audiomentations expects (samples,) numpy array
+        audio_np = waveform.squeeze(0).numpy()
+        augmented = self.pipeline(samples=audio_np, sample_rate=self.sample_rate)
+        return torch.from_numpy(augmented).unsqueeze(0).float()
 
 
 # ─────────────────────────────────────────────────────────
@@ -196,17 +206,19 @@ class SpeakerDataset(Dataset):
         df: pd.DataFrame,
         audio_dir: str,
         sample_rate: int = 16000,
-        duration_seconds: float = 3.0,
+        duration_seconds: float = 5.0,
         augment: bool = False,
+        min_valid_duration: float = 1.0,
     ):
         self.df = df.reset_index(drop=True)
         self.audio_dir = Path(audio_dir)
         self.target_sr = sample_rate
         self.target_length = int(sample_rate * duration_seconds)
         self.augment = augment
+        self.min_valid_duration = min_valid_duration
 
         if self.augment:
-            self.augmentor = AudioAugmentation(sample_rate, n_mels=80)
+            self.augmentor = AudioAugmentation(sample_rate)
 
     def __len__(self) -> int:
         return len(self.df)
@@ -237,13 +249,15 @@ class SpeakerDataset(Dataset):
 
         # Pad or truncate to target length
         if waveform.size(-1) < self.target_length:
-            # Pad with zeros
+            # Pad with zeros at the end
             pad_size = self.target_length - waveform.size(-1)
             waveform = torch.nn.functional.pad(waveform, (0, pad_size))
         elif waveform.size(-1) > self.target_length:
-            # Truncate (random crop for training, center crop for val)
+            # Random crop for training (every epoch sees different windows)
+            # Center crop for validation (deterministic)
             if self.augment:
-                start = torch.randint(0, waveform.size(-1) - self.target_length + 1, (1,)).item()
+                max_start = waveform.size(-1) - self.target_length
+                start = torch.randint(0, max_start + 1, (1,)).item()
             else:
                 start = (waveform.size(-1) - self.target_length) // 2
             waveform = waveform[..., start : start + self.target_length]
@@ -283,6 +297,8 @@ def get_dataloaders(
     print(f"  Sample rate: {audio_cfg['sample_rate']} | "
           f"Duration: {audio_cfg['duration_seconds']}s")
 
+    min_valid_duration = audio_cfg.get("min_valid_duration", 0.0)
+
     # Prepare labels and split
     train_df, val_df, class_map = prepare_labels(
         labels_path=data_cfg["labels_path"],
@@ -291,6 +307,30 @@ def get_dataloaders(
         unknown_val_ratio=0.2,
     )
 
+    # ── Filter short/corrupted files ──
+    if min_valid_duration > 0:
+        # Scan audio durations (quick librosa check) to filter short files
+        audio_files = set(train_df["audio_file"].unique()) | set(val_df["audio_file"].unique())
+        short_files = set()
+        print(f"  Scanning {len(audio_files)} unique files for short/corrupted audio...")
+        import librosa
+        for fname in audio_files:
+            fpath = Path(data_cfg["audio_dir"]) / fname
+            if fpath.exists():
+                try:
+                    dur = librosa.get_duration(path=str(fpath))
+                    if dur < min_valid_duration:
+                        short_files.add(fname)
+                except Exception:
+                    short_files.add(fname)
+            else:
+                short_files.add(fname)
+        if short_files:
+            print(f"  ⚠ Filtering out {len(short_files)} short/corrupted files (< {min_valid_duration}s)")
+            train_df = train_df[~train_df["audio_file"].isin(short_files)].reset_index(drop=True)
+            val_df = val_df[~val_df["audio_file"].isin(short_files)].reset_index(drop=True)
+            print(f"    Train: {len(train_df)} rows | Val: {len(val_df)} rows")
+
     # Create datasets
     train_dataset = SpeakerDataset(
         df=train_df,
@@ -298,6 +338,7 @@ def get_dataloaders(
         sample_rate=audio_cfg["sample_rate"],
         duration_seconds=audio_cfg["duration_seconds"],
         augment=True,
+        min_valid_duration=min_valid_duration,
     )
 
     val_dataset = SpeakerDataset(
@@ -306,6 +347,7 @@ def get_dataloaders(
         sample_rate=audio_cfg["sample_rate"],
         duration_seconds=audio_cfg["duration_seconds"],
         augment=False,
+        min_valid_duration=min_valid_duration,
     )
 
     # WeightedRandomSampler: balance unknown (class 0) vs known (classes 1-446)

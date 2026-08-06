@@ -26,6 +26,7 @@ dependencies = [
     # Data Version Control (for DagsHub S3 remote)
     "dvc",
     "dvc-s3",
+    "audiomentations>=0.43.1",
 ]
 
 [project.optional-dependencies]
