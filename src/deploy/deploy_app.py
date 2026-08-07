@@ -47,7 +47,7 @@ def _enc_val(key, default=None):
 
 def _stream_logs(instance_id: str, queue: Queue, stop_event: threading.Event):
     """Background thread: wait for instance to boot, then stream logs via retry loop."""
-    max_retries = 12       # ~60 seconds total
+    max_retries = 24       # ~2 minutes total
     retry_delay = 5        # seconds between retries
 
     for attempt in range(max_retries):
@@ -61,9 +61,12 @@ def _stream_logs(instance_id: str, queue: Queue, stop_event: threading.Event):
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1,
             )
-            # Read first line to check for errors
+            # Read first line to check for errors (container not ready yet)
             first_line = proc.stdout.readline()
-            if "404" in first_line or "Invalid instance" in first_line:
+            is_retryable = any(x in first_line for x in [
+                "404", "Invalid instance", "No such container",
+            ])
+            if is_retryable:
                 proc.terminate()
                 if attempt == 0:
                     queue.put(f"⏳ Instance booting... waiting for logs (attempt {attempt+1}/{max_retries})")
@@ -88,7 +91,7 @@ def _stream_logs(instance_id: str, queue: Queue, stop_event: threading.Event):
             time.sleep(retry_delay)
 
     else:
-        queue.put("⚠️ Could not connect to logs after 60s. Instance may still be provisioning.")
+        queue.put("⚠️ Could not connect to logs after 2min. Instance may still be provisioning.")
     queue.put("__STREAM_END__")
 
 
