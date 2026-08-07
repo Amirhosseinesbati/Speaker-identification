@@ -260,10 +260,10 @@ class ECAPAEncoder(BaseEncoder):
         wav = waveforms.squeeze(1)  # (batch, T)
 
         # Disable AMP autocast for frozen ECAPA encoder.
-        # ECAPA-TDNN's pretrained weights are float32 and SpeechBrain's
-        # Conv1d layers are not autocast-compatible, causing:
-        #   "Input type (float) and bias type (c10::Half) should be the same"
-        with torch.amp.autocast(device_type="cuda", enabled=False):
+        # torch.no_grad() simultaneously:
+        #   1. Skips gradient tracking (encoder is frozen anyway)
+        #   2. Prevents AMP autocast from converting to Half (stays float32)
+        with torch.no_grad():
             # encode_batch returns (batch, 192) utterance-level embeddings
             embeddings = self.classifier.encode_batch(wav)  # (batch, 192)
         # If output has extra dim, squeeze it
