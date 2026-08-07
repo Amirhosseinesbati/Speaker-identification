@@ -80,8 +80,25 @@ def prepare_data(
     config = load_config(config_path)
     data_cfg = config["data"]
 
+    # ── Auto-fallback to raw data if WAV files don't exist (remote server) ──
+    labels_path = data_cfg["labels_path"]
+    audio_dir = data_cfg["audio_dir"]
+    
+    if not os.path.exists(labels_path):
+        fallback_labels = "data/raw/labels.csv"
+        if os.path.exists(fallback_labels):
+            print(f"  ⚠ Labels not found at {labels_path}, falling back to {fallback_labels}")
+            labels_path = fallback_labels
+            data_cfg["labels_path"] = fallback_labels
+    
+    if not os.path.exists(data_cfg["audio_dir"]):
+        fallback_audio = "data/raw"
+        if os.path.exists(fallback_audio):
+            print(f"  ⚠ Audio dir not found at {data_cfg['audio_dir']}, falling back to {fallback_audio}")
+            data_cfg["audio_dir"] = fallback_audio
+
     # Load raw labels
-    df = pd.read_csv(data_cfg["labels_path"])
+    df = pd.read_csv(labels_path)
     df.columns = df.columns.str.strip()
     df = df.drop_duplicates().reset_index(drop=True)
     df = df.dropna(subset=["speaker_id", "audio_file"]).reset_index(drop=True)

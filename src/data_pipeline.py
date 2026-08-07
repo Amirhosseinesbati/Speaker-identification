@@ -299,9 +299,31 @@ def get_dataloaders(
 
     min_valid_duration = audio_cfg.get("min_valid_duration", 0.0)
 
+    # ── Auto-fallback: if configured paths don't exist, use raw data ──
+    audio_dir = data_cfg["audio_dir"]
+    labels_path = data_cfg["labels_path"]
+    
+    if not os.path.exists(audio_dir):
+        print(f"  ⚠ Audio dir not found: {audio_dir}")
+        fallback_audio = "data/raw"
+        fallback_labels = "data/raw/labels.csv"
+        if os.path.exists(fallback_audio):
+            print(f"  → Falling back to raw audio: {fallback_audio}")
+            audio_dir = fallback_audio
+            labels_path = fallback_labels
+        else:
+            raise FileNotFoundError(f"Neither {audio_dir} nor {fallback_audio} exists!")
+    
+    if not os.path.exists(labels_path):
+        print(f"  ⚠ Labels not found: {labels_path}")
+        fallback_labels = "data/raw/labels.csv"
+        if os.path.exists(fallback_labels):
+            print(f"  → Falling back to raw labels: {fallback_labels}")
+            labels_path = fallback_labels
+
     # Prepare labels and split
     train_df, val_df, class_map = prepare_labels(
-        labels_path=data_cfg["labels_path"],
+        labels_path=labels_path,
         output_path=data_cfg["processed_labels"],
         val_per_known=1,
         unknown_val_ratio=0.2,
@@ -315,7 +337,7 @@ def get_dataloaders(
         print(f"  Scanning {len(audio_files)} unique files for short/corrupted audio...")
         import librosa
         for fname in audio_files:
-            fpath = Path(data_cfg["audio_dir"]) / fname
+            fpath = Path(audio_dir) / fname  # ← resolved path
             if fpath.exists():
                 try:
                     dur = librosa.get_duration(path=str(fpath))
@@ -334,7 +356,7 @@ def get_dataloaders(
     # Create datasets
     train_dataset = SpeakerDataset(
         df=train_df,
-        audio_dir=data_cfg["audio_dir"],
+        audio_dir=audio_dir,           # ← resolved path
         sample_rate=audio_cfg["sample_rate"],
         duration_seconds=audio_cfg["duration_seconds"],
         augment=True,
@@ -343,7 +365,7 @@ def get_dataloaders(
 
     val_dataset = SpeakerDataset(
         df=val_df,
-        audio_dir=data_cfg["audio_dir"],
+        audio_dir=audio_dir,           # ← resolved path
         sample_rate=audio_cfg["sample_rate"],
         duration_seconds=audio_cfg["duration_seconds"],
         augment=False,

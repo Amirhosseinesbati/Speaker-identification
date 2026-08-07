@@ -93,49 +93,62 @@ def ensure_mlflow_stack(config: dict) -> bool:
     if dagshub_user and dagshub_token:
         os.environ["MLFLOW_TRACKING_USERNAME"] = dagshub_user
         os.environ["MLFLOW_TRACKING_PASSWORD"] = dagshub_token
-        if _HAS_DAGSHUB:
+        # MLflow env vars are sufficient for DagsHub tracking.
+        # We skip dagshub.init() on headless servers (no OAuth browser).
+        # Only call dagshub.init() if running interactively with a display.
+        if _HAS_DAGSHUB and os.environ.get("DISPLAY") or os.environ.get("SSH_TTY"):
             try:
                 dagshub.init(repo_owner=dagshub_user, repo_name=os.getenv("DAGSHUB_REPO_NAME", "Speaker-identification"), mlflow=True)
                 print(f"  ✓ DagsHub authenticated: {dagshub_user}")
             except Exception as e:
-                print(f"  ⚠ DagsHub init error (non-fatal): {e}")
+                print(f"  ⚠ DagsHub init skipped (headless server): {e}")
         else:
-            print("  ⚠ dagshub package not installed. MLflow auth via env vars only.")
+            print(f"  ✓ MLflow env vars set for DagsHub (token-based auth)")
 
     try:
         client = Client()
 
-        # Register MLflow experiment tracker
+        # Register MLflow experiment tracker (API varies by ZenML version)
         tracker_name = "dagshub_tracker"
         try:
             client.get_experiment_tracker(tracker_name)
             print(f"  ✓ Using existing experiment tracker: {tracker_name}")
-        except KeyError:
+        except (KeyError, AttributeError):
             print(f"  ➕ Creating MLflow experiment tracker: {tracker_name}")
-            client.create_experiment_tracker(
-                name=tracker_name,
-                flavor="mlflow",
-                tracking_uri=tracking_uri,
-            )
+            try:
+                client.create_experiment_tracker(
+                    name=tracker_name,
+                    flavor="mlflow",
+                    tracking_uri=tracking_uri,
+                )
+            except AttributeError:
+                print(f"  ⚠ ZenML version doesn't support experiment trackers. "
+                      f"MLflow will work via env vars directly.")
 
         # Register stack
         stack_name = "speaker_stack"
         try:
             client.get_stack(stack_name)
             print(f"  ✓ Using existing stack: {stack_name}")
-        except KeyError:
+        except (KeyError, AttributeError):
             print(f"  ➕ Creating stack: {stack_name}")
-            client.create_stack(
-                name=stack_name,
-                components={
-                    "orchestrator": "default",
-                    "artifact_store": "default",
-                    "experiment_tracker": tracker_name,
-                },
-            )
+            try:
+                client.create_stack(
+                    name=stack_name,
+                    components={
+                        "orchestrator": "default",
+                        "artifact_store": "default",
+                        "experiment_tracker": tracker_name,
+                    },
+                )
+            except Exception:
+                print(f"  ⚠ Could not create ZenML stack. MLflow tracking via env vars.")
 
-        client.activate_stack(stack_name)
-        print(f"  ✓ Active stack: {stack_name}")
+        try:
+            client.activate_stack(stack_name)
+            print(f"  ✓ Active stack: {stack_name}")
+        except Exception:
+            print(f"  ⚠ Could not activate stack. Using default.")
 
         # AWS/DagsHub S3 credentials for artifact logging
         if dagshub_token:
