@@ -96,13 +96,71 @@ uv run dvc remote modify origin --local secret_access_key "${DAGSHUB_TOKEN}"
 echo "   Pulling data from DagsHub..."
 uv run dvc pull -r origin
 
-if [ -d "data/raw" ]; then
-    echo "✅ Raw data successfully pulled!"
-    echo "   Files: $(ls data/raw/*.mp3 2>/dev/null | wc -l) MP3 files"
-else
-    echo "❌ ERROR: data/raw not found after DVC pull!"
-    exit 1
-fi
+	if [ -d "data/raw" ]; then
+	    echo "✅ Raw data successfully pulled!"
+	    echo "   Files: $(ls data/raw/*.mp3 2>/dev/null | wc -l) MP3 files"
+	else
+	    echo "❌ ERROR: data/raw not found after DVC pull!"
+	    exit 1
+	fi
+	
+	# ============================================================================
+	#  Phase 3.5: Convert MP3 → WAV (mono 16kHz) for reliable dataloading
+	# ============================================================================
+	echo ""
+	echo "🔄 Converting MP3 files to WAV (mono 16kHz)..."
+	
+	WAV_DIR="data/processed/audio_wav"
+	WAV_LABELS="data/processed/audio_wav_labels.csv"
+	
+	# Skip if already converted (more than 4000 WAV files exist)
+	if [ -d "$WAV_DIR" ] && [ $(ls "$WAV_DIR"/*.wav 2>/dev/null | wc -l) -gt 4000 ]; then
+	    echo "✅ WAV files already exist ($(ls $WAV_DIR/*.wav | wc -l) files). Skipping conversion."
+	else
+	    mkdir -p "$WAV_DIR"
+	    
+	    # Try FFmpeg first (fast, available on most Linux Docker images)
+	    if command -v ffmpeg &> /dev/null; then
+	        echo "   Using FFmpeg for fast conversion..."
+	        CONVERTED=0
+	        FAILED=0
+	        for f in data/raw/*.mp3; do
+	            fname=$(basename "$f" .mp3).wav
+	            if ffmpeg -i "$f" -ac 1 -ar 16000 -sample_fmt s16 -v error "$WAV_DIR/$fname" 2>/dev/null; then
+	                CONVERTED=$((CONVERTED + 1))
+	            else
+	                FAILED=$((FAILED + 1))
+	            fi
+	        done
+	        echo "   ✅ FFmpeg: $CONVERTED converted, $FAILED failed"
+	    else
+	        # Fallback: Python librosa + soundfile (slower but always works)
+	        echo "   FFmpeg not found. Using Python librosa (slower)..."
+	        uv run python -c "
+import sys
+sys.path.insert(0, '.')
+from scripts.convert_mp3_to_wav import main
+main()
+" 2>&1 | tail -5
+	    fi
+	    
+	    # Generate updated labels CSV pointing to WAV
+	    uv run python -c "
+import pandas as pd
+df = pd.read_csv('data/raw/labels.csv')
+df.columns = df.columns.str.strip()
+from pathlib import Path
+df['audio_file'] = df['audio_file'].apply(lambda x: Path(x).stem + '.wav')
+df.to_csv('$WAV_LABELS', index=False)
+print(f'Labels updated: {len(df)} rows → $WAV_LABELS')
+"
+	    echo "   ✅ WAV conversion complete!"
+	    echo "   Files: $(ls $WAV_DIR/*.wav 2>/dev/null | wc -l) WAV files"
+	fi
+	
+	# Update config to point to WAV files (replaces the raw MP3 paths)
+	sed -i 's|labels_path: data/raw/labels.csv|labels_path: data/processed/audio_wav_labels.csv|' configs/default_config.yaml
+	sed -i 's|audio_dir: data/raw|audio_dir: data/processed/audio_wav|' configs/default_config.yaml
 
 # ============================================================================
 #  Phase 4: ZenML & MLflow Configuration
