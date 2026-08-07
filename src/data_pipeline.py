@@ -238,10 +238,28 @@ class SpeakerDataset(Dataset):
         return waveform, label
 
     def _load_audio(self, path: Path) -> torch.Tensor:
-        """Load and preprocess audio file using librosa (handles MP3 on Windows)."""
+        """
+        Load and preprocess audio file.
+
+        WAV files: uses soundfile backend (fast, no mpg123 dependency)
+        Other formats: falls back to librosa
+        """
+        suffix = path.suffix.lower()
         try:
-            waveform, sr = librosa.load(str(path), sr=self.target_sr, mono=True)
-            waveform = torch.from_numpy(waveform).unsqueeze(0).float()  # (1, T)
+            if suffix in (".wav",):
+                # Use soundfile for WAV — no mpg123, fast, reliable
+                import soundfile as sf
+                waveform, sr = sf.read(str(path), dtype="float32")
+                if waveform.ndim > 1:
+                    waveform = waveform.mean(axis=1)  # stereo → mono
+                if sr != self.target_sr:
+                    import librosa
+                    waveform = librosa.resample(waveform, orig_sr=sr, target_sr=self.target_sr)
+                waveform = torch.from_numpy(waveform).unsqueeze(0).float()  # (1, T)
+            else:
+                # librosa for MP3 and other formats
+                waveform, sr = librosa.load(str(path), sr=self.target_sr, mono=True)
+                waveform = torch.from_numpy(waveform).unsqueeze(0).float()  # (1, T)
         except Exception as e:
             # Return silence for corrupted files
             print(f"  ⚠ Warning: Could not load {path.name}: {e}")
@@ -299,27 +317,24 @@ def get_dataloaders(
 
     min_valid_duration = audio_cfg.get("min_valid_duration", 0.0)
 
-    # ── Auto-fallback: if configured paths don't exist, use raw data ──
+    # ── Verify audio directory exists ──
     audio_dir = data_cfg["audio_dir"]
     labels_path = data_cfg["labels_path"]
-    
+
     if not os.path.exists(audio_dir):
-        print(f"  ⚠ Audio dir not found: {audio_dir}")
-        fallback_audio = "data/raw"
-        fallback_labels = "data/raw/labels.csv"
-        if os.path.exists(fallback_audio):
-            print(f"  → Falling back to raw audio: {fallback_audio}")
-            audio_dir = fallback_audio
-            labels_path = fallback_labels
-        else:
-            raise FileNotFoundError(f"Neither {audio_dir} nor {fallback_audio} exists!")
-    
+        raise FileNotFoundError(
+            f"Audio directory not found: {audio_dir}\n"
+            f"Run: python scripts/convert_mp3_to_wav.py\n"
+            f"Or update config to point to existing audio files."
+        )
     if not os.path.exists(labels_path):
-        print(f"  ⚠ Labels not found: {labels_path}")
-        fallback_labels = "data/raw/labels.csv"
-        if os.path.exists(fallback_labels):
-            print(f"  → Falling back to raw labels: {fallback_labels}")
-            labels_path = fallback_labels
+        raise FileNotFoundError(f"Labels file not found: {labels_path}")
+
+    # Count WAV files for info
+    wav_count = len([f for f in os.listdir(audio_dir) if f.endswith('.wav')])
+    mp3_count = len([f for f in os.listdir(audio_dir) if f.endswith('.mp3')])
+    print(f"  Audio dir: {audio_dir}")
+    print(f"  Files: {wav_count} WAV + {mp3_count} MP3")
 
     # Prepare labels and split
     train_df, val_df, class_map = prepare_labels(

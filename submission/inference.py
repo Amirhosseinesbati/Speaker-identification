@@ -51,10 +51,20 @@ NUM_CLASSES = 448  # 0 (unknown) + 447 known speakers (competition spec)
 def load_audio(file_path: str) -> Optional[np.ndarray]:
     """
     Load audio file and resample to 16kHz mono.
+    Uses soundfile for WAV (fast, no mpg123), librosa for other formats.
     Returns numpy array of shape (T,) or None on failure.
     """
     try:
-        waveform, _ = librosa.load(str(file_path), sr=SAMPLE_RATE, mono=True)
+        fpath = Path(file_path)
+        if fpath.suffix.lower() in (".wav",):
+            import soundfile as sf
+            waveform, sr = sf.read(str(fpath), dtype="float32")
+            if waveform.ndim > 1:
+                waveform = waveform.mean(axis=1)
+            if sr != SAMPLE_RATE:
+                waveform = librosa.resample(waveform, orig_sr=sr, target_sr=SAMPLE_RATE)
+        else:
+            waveform, _ = librosa.load(str(file_path), sr=SAMPLE_RATE, mono=True)
         return waveform
     except Exception as e:
         print(f"  ⚠ Error loading {Path(file_path).name}: {e}", file=sys.stderr)
