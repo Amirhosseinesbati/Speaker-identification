@@ -167,13 +167,17 @@ with tab_cfg:
 # ── TAB: Cloud ──
 with tab_cloud:
     st.header("☁️ Vast.ai — Live Logs")
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         gpu = st.selectbox("GPU", ["RTX_3090", "RTX_3060"], key="cgpu")
     with c2:
         stage = st.selectbox("Stage", ["all","data","train","eval"],
                              format_func=lambda x: {"all":"🚀 Full","data":"📊 Data","train":"🏋️ Train","eval":"📈 Eval"}[x],
                              key="cstage")
+    with c3:
+        disk_gb = st.slider("💾 Disk (GB)", 20, 200,
+                            config.get("mlops",{}).get("vast",{}).get("disk_size", 60), 10,
+                            help="More disk for bigger models/datasets.")
 
     if not (PROJECT_ROOT / ".env").exists():
         st.warning("⚠️ `.env` missing — copy from `.env.example`")
@@ -199,6 +203,7 @@ with tab_cloud:
             os.environ["GPU_TARGET"] = gpu
             os.environ["TARGET_PIPELINE"] = stage
             os.environ["FREEZE_FEATURE_EXTRACTOR"] = str(freeze).lower()
+            os.environ["DISK_SIZE_GB"] = str(disk_gb)
             with st.spinner("Creating instance..."):
                 try:
                     env = os.environ.copy(); env["PYTHONIOENCODING"] = "utf-8"

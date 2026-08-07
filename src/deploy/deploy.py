@@ -179,12 +179,13 @@ def main():
         import yaml
         with open("configs/default_config.yaml") as f:
             cfg = yaml.safe_load(f)
-        disk_size = cfg.get("mlops", {}).get("vast", {}).get("disk_size", 40)
+        disk_size = int(os.getenv("DISK_SIZE_GB",
+                       cfg.get("mlops", {}).get("vast", {}).get("disk_size", 60)))
         image = cfg.get("mlops", {}).get("vast", {}).get(
             "image", "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel"
         )
     except Exception:
-        disk_size = 40
+        disk_size = int(os.getenv("DISK_SIZE_GB", 60))
         image = "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel"
 
     # ── Create the instance with onstart script ──

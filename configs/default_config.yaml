@@ -1,9 +1,3 @@
-# ═══════════════════════════════════════════════════════════
-#  Speaker Identification — Default Configuration
-#  IAAA Competition 2026
-# ═══════════════════════════════════════════════════════════
-
-# ── Hardware Profiles ──
 hardware:
   mode: local
   profiles:
@@ -25,20 +19,15 @@ hardware:
       batch_size: 16
       num_workers: 4
       mixed_precision: true
-
-# ── Audio Processing ──
 audio:
   sample_rate: 16000
-  duration_seconds: 5.0            # Increased from 3.0 — 90% of files > 30s, 5s optimal for speaker identity
-  min_valid_duration: 1.0          # Skip files shorter than this (corrupted / near-empty)
+  duration_seconds: 8.0
+  min_valid_duration: 1.0
   n_mels: 80
   n_fft: 400
   hop_length: 160
-
-# ── Model Architecture ──
 model:
-  # Encoder backbone selection
-  encoder_type: wavlm              # wavlm | ecapa | hubert
+  encoder_type: ecapa
   encoder_config:
     wavlm:
       base_model: microsoft/wavlm-base-plus
@@ -49,57 +38,40 @@ model:
     hubert:
       base_model: facebook/hubert-large-ls960-ft
       freeze_feature_extractor: true
-
-  # Pooling method (identity auto-set when encoder=ecapa)
-  pooling_type: attentive          # attentive | identity
-
-  # Speaker classification head (ArcFace — best for open-set)
-  speaker_head_type: arcface        # arcface (linear removed — inferior for OOD)
+  pooling_type: identity
+  speaker_head_type: arcface
   speaker_head_config:
     arcface:
       embedding_dim: 192
       margin: 0.3
       scale: 15.0
-    # linear removed — always worse than ArcFace for open-set speaker ID
     linear:
-      hidden_dims: []              # Empty = single Linear layer (current behavior)
-
-  # OOD detection head
+      hidden_dims: []
   ood_head_config:
-    hidden_dim: 256                # Hidden dim in OOD head MLP (if empty, single Linear)
-
-  # Ensemble fusion (Phase 3)
+    hidden_dim: 256
   fusion:
-    ensemble_method: none           # none | average | learned_mlp
-
-# ── Training ──
+    ensemble_method: none
 training:
   epochs: 20
   learning_rate: 0.0001
   weight_decay: 1.0e-05
   warmup_steps: 500
   max_grad_norm: 5.0
-
-# ── Data Paths ──
 data:
   labels_path: data/raw/labels.csv
   audio_dir: data/raw
   processed_labels: data/processed/cleaned_labels.csv
-
-# ── Logging ──
 logging:
   log_dir: logs
   checkpoint_dir: checkpoints
-
-# ── MLOps Configuration (ZenML + MLflow + DagsHub) ──
 mlops:
   enabled: true
   experiment_name: speaker-identification
   pipeline_name: speaker_id_pipeline
   tracking:
-    uri: "https://dagshub.com/amiresbati52/Speaker-identification.mlflow"
-    username: "${DAGSHUB_REPO_OWNER}"
-    password: "${DAGSHUB_USER_TOKEN}"
+    uri: https://dagshub.com/amiresbati52/Speaker-identification.mlflow
+    username: ${DAGSHUB_REPO_OWNER}
+    password: ${DAGSHUB_USER_TOKEN}
   model_registry:
     type: mlflow
     name: speaker-identification
@@ -107,7 +79,7 @@ mlops:
     type: local
     path: data/artifacts
   vast:
-    default_gpu: "RTX_3090"
-    alternative_gpu: "RTX_3060"
-    disk_size: 40
-    image: "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel"
+    default_gpu: RTX_3090
+    alternative_gpu: RTX_3060
+    disk_size: 60
+    image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel
