@@ -364,6 +364,40 @@ def train_model(
     data_cfg = config["data"]
     hw_profile = get_active_profile(config)
 
+    # ── Filter short/corrupted files (min_valid_duration) ──
+    min_valid_duration = audio_cfg.get("min_valid_duration", 0.0)
+    if min_valid_duration > 0:
+        import librosa
+        all_files = set(train_df["audio_file"].unique()) | set(val_df["audio_file"].unique())
+        short_files = set()
+        audio_dir_path = Path(data_cfg["audio_dir"])
+        corrupted_log = []
+        for fname in all_files:
+            fpath = audio_dir_path / fname
+            if fpath.exists():
+                try:
+                    dur = librosa.get_duration(path=str(fpath))
+                    if dur < min_valid_duration:
+                        short_files.add(fname)
+                        corrupted_log.append({"file": fname, "duration": round(dur, 4), "reason": "too_short"})
+                except Exception:
+                    short_files.add(fname)
+                    corrupted_log.append({"file": fname, "duration": 0, "reason": "load_error"})
+            else:
+                short_files.add(fname)
+                corrupted_log.append({"file": fname, "duration": 0, "reason": "missing"})
+        if short_files:
+            print(f"  ⚠ Filtering {len(short_files)} short/corrupted files (< {min_valid_duration}s)")
+            train_df = train_df[~train_df["audio_file"].isin(short_files)].reset_index(drop=True)
+            val_df = val_df[~val_df["audio_file"].isin(short_files)].reset_index(drop=True)
+            # Save corrupted list for debugging
+            import json
+            ckpt_dir = Path(config.get("logging", {}).get("checkpoint_dir", "checkpoints"))
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            with open(ckpt_dir / "corrupted_files.json", "w") as f:
+                json.dump(corrupted_log, f, indent=2)
+            print(f"    Corrupted list saved to {ckpt_dir / 'corrupted_files.json'}")
+
     train_dataset = SpeakerDataset(
         df=train_df,
         audio_dir=data_cfg["audio_dir"],
