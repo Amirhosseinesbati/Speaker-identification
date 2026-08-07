@@ -260,10 +260,10 @@ class ECAPAEncoder(BaseEncoder):
         wav = waveforms.squeeze(1)  # (batch, T)
 
         # Disable AMP autocast for frozen ECAPA encoder.
-        # torch.no_grad() simultaneously:
-        #   1. Skips gradient tracking (encoder is frozen anyway)
-        #   2. Prevents AMP autocast from converting to Half (stays float32)
-        with torch.no_grad():
+        # torch.no_grad() does NOT block autocast in PyTorch — we must
+        # explicitly disable it. Using the old torch.cuda.amp API which
+        # is battle-tested for nested autocast contexts.
+        with torch.cuda.amp.autocast(enabled=False):
             # encode_batch returns (batch, 192) utterance-level embeddings
             embeddings = self.classifier.encode_batch(wav)  # (batch, 192)
         # If output has extra dim, squeeze it
