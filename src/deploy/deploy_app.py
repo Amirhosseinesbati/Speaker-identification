@@ -46,26 +46,50 @@ def _enc_val(key, default=None):
 # ═══════════════════════════════════════════════════════════
 
 def _stream_logs(instance_id: str, queue: Queue, stop_event: threading.Event):
-    """Background thread: run 'vastai logs <id>' and put lines into queue."""
-    try:
-        proc = subprocess.Popen(
-            ["vastai", "logs", instance_id],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        for line in iter(proc.stdout.readline, ""):
-            if stop_event.is_set():
+    """Background thread: wait for instance to boot, then stream logs via retry loop."""
+    max_retries = 12       # ~60 seconds total
+    retry_delay = 5        # seconds between retries
+
+    for attempt in range(max_retries):
+        if stop_event.is_set():
+            queue.put("__STREAM_END__")
+            return
+
+        try:
+            proc = subprocess.Popen(
+                ["vastai", "logs", instance_id],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+            # Read first line to check for errors
+            first_line = proc.stdout.readline()
+            if "404" in first_line or "Invalid instance" in first_line:
                 proc.terminate()
-                break
-            queue.put(line.rstrip())
-        proc.stdout.close()
-        proc.wait()
-    except Exception as e:
-        queue.put(f"[log stream error] {e}")
-    finally:
-        queue.put("__STREAM_END__")
+                if attempt == 0:
+                    queue.put(f"⏳ Instance booting... waiting for logs (attempt {attempt+1}/{max_retries})")
+                elif attempt % 3 == 0:
+                    queue.put(f"⏳ Still waiting... (attempt {attempt+1}/{max_retries})")
+                time.sleep(retry_delay)
+                continue
+
+            # Success — stream the rest
+            queue.put(first_line.rstrip())
+            for line in iter(proc.stdout.readline, ""):
+                if stop_event.is_set():
+                    proc.terminate()
+                    break
+                queue.put(line.rstrip())
+            proc.stdout.close()
+            proc.wait()
+            break  # normal exit
+
+        except Exception as e:
+            queue.put(f"[log error] {e}")
+            time.sleep(retry_delay)
+
+    else:
+        queue.put("⚠️ Could not connect to logs after 60s. Instance may still be provisioning.")
+    queue.put("__STREAM_END__")
 
 
 # ═══════════════════════════════════════════════════════════
