@@ -240,10 +240,16 @@ class ECAPAEncoder(BaseEncoder):
         else:
             print(f"  🔓 ECAPA-TDNN encoder: UNFROZEN (full fine-tune)")
 
+        # Put SpeechBrain modules in eval mode. Even when the outer
+        # model.train() is called, this encoder stays in eval to prevent
+        # BatchNorm running statistics from being corrupted by training data.
+        self.classifier.mods.eval()
+        self.eval()  # also set nn.Module training flag
+
     def to(self, *args, **kwargs):
         """
         Override nn.Module.to() to also move the SpeechBrain classifier.
-        
+
         SpeechBrain's EncoderClassifier is NOT an nn.Module — it's a
         Pretrainer wrapper that stores its own `device` attribute.
         Without this override, model.to('cuda') leaves the internal
@@ -254,28 +260,42 @@ class ECAPAEncoder(BaseEncoder):
             self.classifier.to(*args, **kwargs)
         return self
 
+    def train(self, mode: bool = True):
+        """
+        Override to keep encoder frozen + eval even when outer model trains.
+        This prevents BatchNorm running stats from being silently corrupted
+        by training data flowing through the frozen encoder.
+        """
+        super().train(False)  # encoder always stays in eval
+        return self
+
     def forward(
         self,
         waveforms: torch.Tensor,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
-        Args:
-            waveforms: (batch, 1, T)
+        Bypasses SpeechBrain's encode_batch() to avoid:
+          - Implicit wav.to(self.device) that causes CPU/CUDA mismatch
+          - Implicit wav.float() inside AMP autocast → Half conversion crash
+          - BatchNorm stats corruption when outer model is in train mode
 
-        Returns:
-            hidden_states: (batch, 1, 192) — ECAPA internal pooling produces
-                           utterance-level embeddings. Dummy seq dim for compat.
-            lengths: None
+        Directly calls: compute_features → mean_var_norm → embedding_model
         """
-        # SpeechBrain expects (batch, T) — squeeze channel dim
-        wav = waveforms.squeeze(1)  # (batch, T)
+        # SpeechBrain modules are always in eval (see __init__ + train() override)
+        mods = self.classifier.mods
+        dev = next(mods.embedding_model.parameters()).device
 
-        # TWO fixes are needed for ECAPA-TDNN with AMP training:
-        # 1. self.to() override: keeps SpeechBrain modules on correct device
-        # 2. autocast(enabled=False): prevents float32→float16 conversion
-        #    in Conv1d layers that aren't autocast-compatible
-        with torch.cuda.amp.autocast(enabled=False):
-            embeddings = self.classifier.encode_batch(wav)  # (batch, 192)
+        # (batch, 1, T) → (batch, T)
+        wav = waveforms.squeeze(1).to(dev)
+
+        # Full-length assumption (no padding)
+        wav_lens = torch.ones(wav.shape[0], device=dev)
+
+        with torch.no_grad():
+            feats = mods.compute_features(wav)
+            feats = mods.mean_var_norm(feats, wav_lens)
+            embeddings = mods.embedding_model(feats, wav_lens)  # (batch, 192)
+
         # If output has extra dim, squeeze it
         if embeddings.ndim == 3:
             embeddings = embeddings.squeeze(1)  # (batch, 192)
