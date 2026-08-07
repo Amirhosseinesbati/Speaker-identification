@@ -106,11 +106,19 @@ class FocalLoss(nn.Module):
         if self.label_smoothing > 0 and self.training:
             num_classes = logits.size(-1)
             with torch.no_grad():
-                smooth_targets = torch.full_like(logits, self.label_smoothing / (num_classes - 1))
-                smooth_targets.scatter_(1, targets.unsqueeze(1), 1.0 - self.label_smoothing)
-                # Mask ignored positions
+                # Mask ignored targets before scatter (avoid out-of-bounds)
                 if self.ignore_index is not None:
                     ignore_mask = targets == self.ignore_index
+                    safe_targets = targets.clone()
+                    safe_targets[ignore_mask] = 0  # temporary valid index
+                else:
+                    ignore_mask = torch.zeros_like(targets, dtype=torch.bool)
+                    safe_targets = targets
+
+                smooth_targets = torch.full_like(logits, self.label_smoothing / (num_classes - 1))
+                smooth_targets.scatter_(1, safe_targets.unsqueeze(1), 1.0 - self.label_smoothing)
+                # Zero out ignored positions (they contribute 0 to CE)
+                if self.ignore_index is not None:
                     smooth_targets[ignore_mask] = 0.0
             # CE with soft targets: -sum(target * log_softmax)
             log_probs = F.log_softmax(logits, dim=1)
