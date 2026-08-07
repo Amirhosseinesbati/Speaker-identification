@@ -424,7 +424,7 @@ def train(config_path: str = "configs/default_config.yaml"):
     # ── DataLoaders ──
     print("\n  [1/4] Preparing DataLoaders...")
     train_loader, val_loader, class_map = get_dataloaders(config)
-    num_known = len(class_map) - 1  # exclude unknown (class 0)
+    num_known = config.get("model", {}).get("competition_num_known", len(class_map) - 1)
 
     # ── Model ──
     print(f"\n  [2/4] Building model ({num_known} known speakers)...")

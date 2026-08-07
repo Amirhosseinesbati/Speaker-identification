@@ -42,7 +42,7 @@ SAMPLE_RATE = 16000
 DURATION_SECONDS = 8.0             # Must match training config
 TARGET_LENGTH = int(SAMPLE_RATE * DURATION_SECONDS)  # 128000
 NUM_CLASSES = 448                  # 0 (unknown) + 447 known (competition spec)
-MODEL_CLASSES = 447                # Actual model output (0 + 446 known in training data)
+MODEL_CLASSES = 448                # Competition: 0 (unknown) + 447 known
 
 
 # ─────────────────────────────────────────────────────────
@@ -251,12 +251,8 @@ def run_inference(
             probs = np.ones(NUM_CLASSES) / NUM_CLASSES
         else:
             probs = predict_probs(model, waveform, device)
-            # Pad: model outputs MODEL_CLASSES (447), competition needs NUM_CLASSES (448)
-            if len(probs) < NUM_CLASSES:
-                probs = np.pad(probs, (0, NUM_CLASSES - len(probs)), constant_values=0.0)
 
         row = {"id": audio_path.name}
-        # Ensure sum=1 after padding by renormalizing
         prob_sum = sum(probs)
         for i in range(NUM_CLASSES):
             row[str(i)] = float(probs[i] / prob_sum) if prob_sum > 0 else (1.0 / NUM_CLASSES)

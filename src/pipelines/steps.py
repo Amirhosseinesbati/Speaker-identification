@@ -290,7 +290,7 @@ def build_model(
     print("  [ZenML Step 2/4] Building Model")
     print("=" * 55)
 
-    num_known = len(class_map) - 1
+    num_known = config.get("model", {}).get("competition_num_known", len(class_map) - 1)
     from src.model_factory import create_model_from_config
     model = create_model_from_config(config, num_known_speakers=num_known)
 
@@ -441,7 +441,7 @@ def train_model(
     )
 
     # ── Load model ──
-    num_known = len(class_map) - 1
+    num_known = config.get("model", {}).get("competition_num_known", len(class_map) - 1)
     from src.model_factory import create_model_from_config
     model = create_model_from_config(config, num_known_speakers=num_known)
     checkpoint = torch.load(model_checkpoint_path, map_location="cpu", weights_only=False)
@@ -633,7 +633,7 @@ def evaluate_model(
     )
 
     # Load model
-    num_known = len(class_map) - 1
+    num_known = config.get("model", {}).get("competition_num_known", len(class_map) - 1)
     from src.model_factory import create_model_from_config
     model = create_model_from_config(config, num_known_speakers=num_known)
     checkpoint = torch.load(best_model_path, map_location="cpu", weights_only=False)

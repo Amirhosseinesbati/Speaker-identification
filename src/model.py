@@ -100,7 +100,7 @@ class TwoHeadedSpeakerModel(nn.Module):
 
     def predict_proba(self, waveforms: torch.Tensor) -> torch.Tensor:
         """
-        Get proper probability vector over all 447 classes (0..446).
+        Get proper probability vector over all classes (0..num_known).
 
         Formula:
             p[0] = sigmoid(ood_logit)
@@ -110,7 +110,7 @@ class TwoHeadedSpeakerModel(nn.Module):
             waveforms: (batch, 1, T)
 
         Returns:
-            probs: (batch, 447) — sum(dim=1) ≈ 1.0
+            probs: (batch, 1 + num_known) — sum(dim=1) ≈ 1.0
         """
         ood_logit, speaker_logits = self.forward(waveforms, labels=None)
 
@@ -148,7 +148,7 @@ class TwoHeadedSpeakerModel(nn.Module):
         print(f"     Total params: {total:,}")
         print(f"     Trainable:    {trainable:,}")
         print(f"     Frozen:       {frozen:,}")
-        print(f"     Output dim:   447 (0=unknown + {self.num_known_speakers} known)")
+        print(f"     Output dim:   {1 + self.num_known_speakers} (0=unknown + {self.num_known_speakers} known)")
 
 
 # ═══════════════════════════════════════════════════════════

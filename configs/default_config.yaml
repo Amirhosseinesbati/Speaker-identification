@@ -29,6 +29,8 @@ audio:
   hop_length: 160
 model:
   encoder_type: ecapa
+  competition_num_known: 447      # Competition spec: 447 known speakers → 448-class output
+                                  # Training data has 446 but model reserves slot 447 (untrained)
   encoder_config:
     wavlm:
       base_model: microsoft/wavlm-base-plus
