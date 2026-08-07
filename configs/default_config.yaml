@@ -50,16 +50,17 @@ model:
       base_model: facebook/hubert-large-ls960-ft
       freeze_feature_extractor: true
 
-  # Pooling method
-  pooling_type: attentive          # statistical | attentive | identity (for ECAPA)
+  # Pooling method (identity auto-set when encoder=ecapa)
+  pooling_type: attentive          # attentive | identity
 
-  # Speaker classification head
-  speaker_head_type: linear        # linear | arcface
+  # Speaker classification head (ArcFace — best for open-set)
+  speaker_head_type: arcface        # arcface (linear removed — inferior for OOD)
   speaker_head_config:
     arcface:
       embedding_dim: 192
       margin: 0.3
       scale: 15.0
+    # linear removed — always worse than ArcFace for open-set speaker ID
     linear:
       hidden_dims: []              # Empty = single Linear layer (current behavior)
 

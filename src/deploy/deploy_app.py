@@ -1,7 +1,7 @@
 """
-Streamlit UI — Speaker-ID MLOps Center (Full Control Panel).
+Streamlit UI — Speaker-ID MLOps Center.
 
-All configurable parameters exposed in the UI.
+All meaningful parameters exposed. No clutter.
 Usage: uv run streamlit run src/deploy/deploy_app.py
 """
 
@@ -18,172 +18,144 @@ DEPLOY_SCRIPT = PROJECT_ROOT / "src" / "deploy" / "deploy.py"
 PIPELINE_SCRIPT = PROJECT_ROOT / "src" / "pipelines" / "run_pipeline.py"
 
 
-# ── Load/Save Config ──
 @st.cache_resource
 def load_config():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-def save_config(config: dict):
+def save_config(cfg: dict):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        yaml.dump(cfg, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
     st.cache_resource.clear()
 
 
 config = load_config()
-mlops_cfg = config.get("mlops", {})
 
 # ── Helpers ──
-def resolve_encoder_config(cfg, key, default=None):
-    """Read encoder config with backward compat."""
-    mc = cfg.get("model", {})
+def _enc_val(key, default=None):
+    mc = config.get("model", {})
     enc = mc.get("encoder_type", "wavlm")
     if "encoder_config" in mc and enc in mc["encoder_config"]:
         return mc["encoder_config"][enc].get(key, default)
     return mc.get(key, default)
 
 
-# ═══════════════════════════════════════════════════════════
-#  Sidebar — Live Config View
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════
+#  Sidebar — Live Status
+# ═══════════════════════════════════════════
 with st.sidebar:
-    st.header("📋 Current Config")
+    st.header("📋 Active Config")
     mc = config.get("model", {})
     enc = mc.get("encoder_type", "?")
     pool = mc.get("pooling_type", "?")
-    head = mc.get("speaker_head_type", "?")
+    freeze = _enc_val("freeze_feature_extractor", _enc_val("freeze_encoder", True))
     dur = config["audio"]["duration_seconds"]
-    ep = config["training"]["epochs"]
-    lr = config["training"]["learning_rate"]
-    freeze = resolve_encoder_config(config, "freeze_feature_extractor",
-                                    resolve_encoder_config(config, "freeze_encoder", True))
+    arc = mc.get("speaker_head_config", {}).get("arcface", {})
 
     st.markdown(f"""
     | Param | Value |
     |-------|-------|
     | Encoder | `{enc}` |
     | Pooling | `{pool}` |
-    | Head | `{head}` |
+    | Head | ArcFace (m={arc.get('margin',0.3)}, s={arc.get('scale',15)}) |
     | Freeze | `{freeze}` |
     | Duration | `{dur}s` |
-    | Epochs | `{ep}` |
-    | LR | `{lr}` |
+    | Epochs | `{config['training']['epochs']}` |
+    | LR | `{config['training']['learning_rate']}` |
     """)
-
-    st.divider()
-    st.caption(f"Config: `{CONFIG_PATH.name}`")
     st.caption(f"Branch: `feature/advanced-speaker-id`")
 
 
-# ═══════════════════════════════════════════════════════════
-#  Main Panel — Tabs
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════
+#  Main — 3 Tabs
+# ═══════════════════════════════════════════
 st.title("🎤 Speaker-ID MLOps Center")
-st.markdown("Open-Set Speaker Identification — IAAA 2026")
 
 tab_cfg, tab_cloud, tab_local = st.tabs([
-    "⚙️ Configuration", "☁️ Cloud Deploy (Vast.ai)", "💻 Local Run"
+    "⚙️ Configuration", "☁️ Cloud (Vast.ai)", "💻 Local"
 ])
 
-# ═══════════════════════════════════════════════
-#  TAB 1: Configuration Editor
-# ═══════════════════════════════════════════════
+# ── TAB 1: Configuration ──
 with tab_cfg:
-    st.header("⚙️ Model & Training Configuration")
-    st.markdown("Change parameters and click **Save Config** to apply.")
+    st.header("⚙️ Model Setup")
+    st.caption("Only meaningful options. ArcFace + ASP = best for open-set.")
 
-    col1, col2, col3 = st.columns(3)
+    c1, c2 = st.columns(2)
 
-    # ── Column 1: Encoder ──
-    with col1:
+    with c1:
         st.subheader("🧠 Encoder")
         encoder_type = st.selectbox(
-            "Encoder Type",
-            options=["wavlm", "ecapa", "hubert"],
+            "Encoder",
+            ["wavlm", "ecapa", "hubert"],
             index=["wavlm", "ecapa", "hubert"].index(mc.get("encoder_type", "wavlm")),
-            help="WavLM (best overall) | ECAPA-TDNN (fast, 192d) | HuBERT (large, diverse)",
+            help="WavLM = best overall | ECAPA = fast, 192d | HuBERT = large, diverse",
         )
-        freeze_fe = st.checkbox(
-            "🔒 Freeze Feature Extractor",
-            value=resolve_encoder_config(config, "freeze_feature_extractor",
-                                          resolve_encoder_config(config, "freeze_encoder", True)),
-            help="Freeze CNN stem to save VRAM. Uncheck for full fine-tune.",
-        )
+        freeze = st.checkbox("🔒 Freeze encoder", value=_enc_val(
+            "freeze_feature_extractor", _enc_val("freeze_encoder", True)),
+            help="Freeze = less VRAM. Uncheck for full fine-tune (needs 24GB+)")
 
-    # ── Column 2: Pooling + Head ──
-    with col2:
-        st.subheader("📊 Pooling & Head")
-        pooling_type = st.selectbox(
-            "Pooling Type",
-            options=["attentive", "statistical", "identity"],
-            index=["attentive", "statistical", "identity"].index(mc.get("pooling_type", "attentive")),
-            help="Attentive (ASP) = best | Statistical = simple | Identity = for ECAPA",
-        )
-        head_type = st.selectbox(
-            "Speaker Head",
-            options=["arcface", "linear"],
-            index=["arcface", "linear"].index(mc.get("speaker_head_type", "linear")),
-            help="ArcFace = margin-based (better for OOD) | Linear = simple",
-        )
-        if head_type == "arcface":
-            arc_cfg = mc.get("speaker_head_config", {}).get("arcface", {})
-            arc_margin = st.slider("ArcFace margin", 0.1, 0.5, float(arc_cfg.get("margin", 0.3)), 0.05)
-            arc_scale = st.slider("ArcFace scale", 5.0, 64.0, float(arc_cfg.get("scale", 15.0)), 1.0)
-            arc_emb_dim = st.selectbox("Embedding dim", [128, 192, 256, 512],
-                                       index=[128,192,256,512].index(arc_cfg.get("embedding_dim", 192)))
+        # Pooling: attentive by default, identity for ECAPA
+        pool_opts = ["attentive", "identity"]
+        if encoder_type == "ecapa":
+            pool_idx = 1  # identity
+            st.info("💡 ECAPA has built-in ASP → pooling = identity")
+        else:
+            pool_idx = 0  # attentive
+        pooling_type = st.selectbox("Pooling", pool_opts, index=pool_idx,
+                                    help="Attentive = ASP (best). Identity = encoder has its own.")
 
-    # ── Column 3: Audio + Loss ──
-    with col3:
-        st.subheader("🎵 Audio & Loss")
-        audio_dur = st.slider("Audio duration (s)", 1.0, 10.0,
+        # Head: only ArcFace
+        st.subheader("🎯 Speaker Head — ArcFace")
+        arc_cfg = mc.get("speaker_head_config", {}).get("arcface", {})
+        arc_margin = st.slider("Margin", 0.1, 0.5, float(arc_cfg.get("margin", 0.3)), 0.05,
+                               help="Angular margin between speakers. 0.3 = standard.")
+        arc_scale = st.slider("Scale", 5.0, 64.0, float(arc_cfg.get("scale", 15.0)), 1.0,
+                              help="Feature scale. 15-30 typical.")
+        arc_emb = st.selectbox("Embedding dim", [128, 192, 256],
+                               index=[128, 192, 256].index(arc_cfg.get("embedding_dim", 192)),
+                               help="192 = standard, matches ECAPA/TitaNet.")
+
+    with c2:
+        st.subheader("🎵 Audio")
+        audio_dur = st.slider("Duration (s)", 2.0, 8.0,
                               float(config["audio"]["duration_seconds"]), 0.5,
-                              help="Longer = more speaker info, more VRAM")
-        min_dur = st.number_input("Min valid duration (s)", 0.0, 5.0,
+                              help="5s = sweet spot. Longer = more info but more VRAM.")
+        min_dur = st.number_input("Min valid (s)", 0.0, 5.0,
                                   float(config["audio"].get("min_valid_duration", 1.0)), 0.5,
-                                  help="Skip files shorter than this")
-        use_focal = st.checkbox("🎯 Use Focal Loss", value=True,
-                                help="Down-weight easy samples, focus on hard ones")
-        focal_gamma = st.slider("Focal gamma", 0.0, 5.0, 2.0, 0.5,
-                                help="0=CE, 2=standard focal")
-        ood_hidden = st.number_input("OOD head hidden dim", 0, 1024,
-                                     mc.get("ood_head_config", {}).get("hidden_dim", 256), 64)
+                                  help="Skip files shorter than this (corrupted detection).")
 
-    st.divider()
-
-    # ── Training Hyperparams ──
-    st.subheader("🏋️ Training Hyperparameters")
-    tc1, tc2, tc3, tc4 = st.columns(4)
-    with tc1:
+        st.subheader("🏋️ Training")
         epochs = st.number_input("Epochs", 1, 100, config["training"]["epochs"])
-    with tc2:
         lr_val = st.number_input("Learning Rate", 1e-6, 1e-2, config["training"]["learning_rate"],
                                  format="%.6f")
-    with tc3:
         wd = st.number_input("Weight Decay", 0.0, 1e-2, config["training"]["weight_decay"],
                              format="%.6f")
-    with tc4:
-        grad_norm = st.number_input("Max Grad Norm", 0.1, 50.0, config["training"]["max_grad_norm"])
+        grad_norm = st.number_input("Max Grad Norm", 0.1, 50.0,
+                                    config["training"]["max_grad_norm"])
 
-    # ── Save Button ──
+        st.subheader("🎯 Loss")
+        st.caption("Focal Loss always ON (γ=2) — best for imbalanced open-set.")
+        ood_hidden = st.number_input("OOD head hidden dim", 0, 1024,
+                                     mc.get("ood_head_config", {}).get("hidden_dim", 256), 64,
+                                     help="0 = single linear layer.")
+
     st.divider()
-    if st.button("💾 Save Config", type="primary", use_container_width=True):
-        # Update encoder config
+    if st.button("💾 Save Config & Apply", type="primary", use_container_width=True):
         if encoder_type == "wavlm":
-            enc_cfg = {"base_model": "microsoft/wavlm-base-plus", "freeze_feature_extractor": freeze_fe}
+            enc_cfg = {"base_model": "microsoft/wavlm-base-plus", "freeze_feature_extractor": freeze}
         elif encoder_type == "ecapa":
-            enc_cfg = {"source": "speechbrain/spkrec-ecapa-voxceleb", "freeze_encoder": freeze_fe}
+            enc_cfg = {"source": "speechbrain/spkrec-ecapa-voxceleb", "freeze_encoder": freeze}
         else:
-            enc_cfg = {"base_model": "facebook/hubert-large-ls960-ft", "freeze_feature_extractor": freeze_fe}
+            enc_cfg = {"base_model": "facebook/hubert-large-ls960-ft", "freeze_feature_extractor": freeze}
 
         config["model"]["encoder_type"] = encoder_type
         config["model"]["encoder_config"][encoder_type] = enc_cfg
         config["model"]["pooling_type"] = pooling_type
-        config["model"]["speaker_head_type"] = head_type
-        if head_type == "arcface":
-            config["model"]["speaker_head_config"]["arcface"] = {
-                "embedding_dim": arc_emb_dim, "margin": arc_margin, "scale": arc_scale,
-            }
+        config["model"]["speaker_head_type"] = "arcface"
+        config["model"]["speaker_head_config"]["arcface"] = {
+            "embedding_dim": arc_emb, "margin": arc_margin, "scale": arc_scale,
+        }
         config["model"]["ood_head_config"]["hidden_dim"] = ood_hidden
         config["audio"]["duration_seconds"] = audio_dur
         config["audio"]["min_valid_duration"] = min_dur
@@ -193,102 +165,75 @@ with tab_cfg:
         config["training"]["max_grad_norm"] = grad_norm
 
         save_config(config)
-        st.success("✅ Config saved! All changes applied.")
+        config = load_config()
+        st.success("✅ Saved! Refresh sidebar to see changes.")
         st.rerun()
 
 
-# ═══════════════════════════════════════════════
-#  TAB 2: Cloud Deploy (Vast.ai)
-# ═══════════════════════════════════════════════
+# ── TAB 2: Cloud ──
 with tab_cloud:
-    st.header("☁️ Cloud Training on Vast.ai")
-    st.markdown("Rent a GPU, run remotely, auto-destroy when done.")
-
+    st.header("☁️ Vast.ai Cloud Training")
     c1, c2 = st.columns(2)
     with c1:
-        gpu_choice = st.selectbox("🎮 GPU", ["RTX_3090", "RTX_3060"], key="cloud_gpu")
+        gpu = st.selectbox("GPU", ["RTX_3090", "RTX_3060"], key="cgpu")
     with c2:
-        pipeline_choice = st.selectbox("📋 Stage",
-                                       ["all", "data", "train", "eval"],
-                                       format_func=lambda x: {
-                                           "all": "🚀 Full Pipeline", "data": "📊 Data Only",
-                                           "train": "🏋️ Train Only", "eval": "📈 Eval Only",
-                                       }[x], key="cloud_stage")
+        stage = st.selectbox("Stage", ["all", "data", "train", "eval"],
+                             format_func=lambda x: {"all":"🚀 Full","data":"📊 Data","train":"🏋️ Train","eval":"📈 Eval"}[x],
+                             key="cstage")
 
-    st.caption(f"💰 ~${ {'RTX_3090':0.35,'RTX_3060':0.15}[gpu_choice] * {'all':6,'train':5,'data':0.5,'eval':0.5}[pipeline_choice]:.1f}h "
-               f"≈ ${ {'RTX_3090':0.35,'RTX_3060':0.15}[gpu_choice] * {'all':6,'train':5,'data':0.5,'eval':0.5}[pipeline_choice]:.2f}")
+    st.caption(f"💰 ~${{ {'RTX_3090':0.35,'RTX_3060':0.15}[gpu] * {'all':6,'train':5,'data':0.5,'eval':0.5}[stage]:.1f}h "
+               f"≈ ${{ {'RTX_3090':0.35,'RTX_3060':0.15}[gpu] * {'all':6,'train':5,'data':0.5,'eval':0.5}[stage]:.2f}")
 
-    env_path = PROJECT_ROOT / ".env"
-    if not env_path.exists():
-        st.warning("⚠️ `.env` file not found! Copy `.env.example` → `.env` and fill credentials.")
+    if not (PROJECT_ROOT / ".env").exists():
+        st.warning("⚠️ `.env` missing — copy from `.env.example`")
 
-    if st.button("🔥 Launch on Vast.ai", type="primary", use_container_width=True, key="launch"):
-        if not env_path.exists():
-            st.error("❌ `.env` missing!")
-            st.stop()
-
-        os.environ["GPU_TARGET"] = gpu_choice
-        os.environ["TARGET_PIPELINE"] = pipeline_choice
-        os.environ["FREEZE_FEATURE_EXTRACTOR"] = str(freeze_fe).lower()
-
+    if st.button("🔥 Launch", type="primary", use_container_width=True, key="launch"):
+        if not (PROJECT_ROOT / ".env").exists():
+            st.error("❌ .env missing!"); st.stop()
+        os.environ["GPU_TARGET"] = gpu
+        os.environ["TARGET_PIPELINE"] = stage
+        os.environ["FREEZE_FEATURE_EXTRACTOR"] = str(freeze).lower()
         with st.spinner("Renting GPU..."):
             try:
-                proc_env = os.environ.copy()
-                proc_env["PYTHONIOENCODING"] = "utf-8"
-                result = subprocess.run(
-                    [sys.executable, str(DEPLOY_SCRIPT)],
-                    capture_output=True, text=True, encoding="utf-8",
-                    env=proc_env, timeout=180, cwd=str(PROJECT_ROOT), check=True,
-                )
+                env = os.environ.copy(); env["PYTHONIOENCODING"] = "utf-8"
+                r = subprocess.run([sys.executable, str(DEPLOY_SCRIPT)], capture_output=True,
+                                   text=True, encoding="utf-8", env=env, timeout=180,
+                                   cwd=str(PROJECT_ROOT), check=True)
                 st.success("✅ Launched!")
-                with st.expander("📋 Log"):
-                    st.code(result.stdout)
-                st.info(f"📊 Monitor: [{mlops_cfg.get('tracking',{}).get('uri','#')}]({mlops_cfg.get('tracking',{}).get('uri','#')})")
+                with st.expander("Log"): st.code(r.stdout)
             except subprocess.CalledProcessError as e:
-                st.error("❌ Failed!")
-                st.code(e.stdout or "")
-                if e.stderr:
-                    st.code(e.stderr)
+                st.error("❌ Failed!"); st.code(e.stdout or "")
 
 
-# ═══════════════════════════════════════════════
-#  TAB 3: Local Run
-# ═══════════════════════════════════════════════
+# ── TAB 3: Local ──
 with tab_local:
-    st.header("💻 Local Training")
-    st.caption(f"Config: `{encoder_type}` + `{pooling_type}` + `{head_type}` | "
-               f"{audio_dur}s | {epochs} epochs | LR={lr_val}")
+    st.header("💻 Local Run")
+    st.caption(f"`{encoder_type}` + `{pooling_type}` + ArcFace | {audio_dur}s | {epochs}ep | LR={lr_val}")
 
     import torch
     if torch.cuda.is_available():
         st.success(f"✅ {torch.cuda.get_device_name(0)} ({torch.cuda.get_device_properties(0).total_mem/1e9:.1f} GB)")
     else:
-        st.warning("⚠️ No GPU — training will be slow on CPU.")
+        st.warning("⚠️ CPU only — will be slow.")
 
     lc1, lc2 = st.columns(2)
     with lc1:
-        local_stage = st.selectbox("Stage", ["all", "data", "train", "eval"],
-                                   format_func=lambda x: {"all":"🚀 Full","data":"📊 Data","train":"🏋️ Train","eval":"📈 Eval"}[x],
-                                   key="local_stage")
+        ls = st.selectbox("Stage", ["all", "data", "train", "eval"],
+                          format_func=lambda x: {"all":"🚀 Full","data":"📊 Data","train":"🏋️ Train","eval":"📈 Eval"}[x],
+                          key="lstage")
     with lc2:
-        with_mlflow = st.checkbox("📈 MLflow Tracking", value=True, key="local_mlflow")
+        mlflow_on = st.checkbox("📈 MLflow", value=True, key="lmlflow")
 
-    if st.button("▶️ Run Locally", type="primary", use_container_width=True, key="run_local"):
-        cmd = [sys.executable, str(PIPELINE_SCRIPT), "--run", local_stage, "--config", str(CONFIG_PATH)]
-        if not with_mlflow:
-            cmd.append("--no-mlflow")
-
-        with st.spinner(f"Running `{local_stage}` pipeline..."):
+    if st.button("▶️ Run", type="primary", use_container_width=True, key="lrun"):
+        cmd = [sys.executable, str(PIPELINE_SCRIPT), "--run", ls, "--config", str(CONFIG_PATH)]
+        if not mlflow_on: cmd.append("--no-mlflow")
+        with st.spinner(f"Running `{ls}`..."):
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200,
-                                        cwd=str(PROJECT_ROOT))
-                if result.returncode == 0:
-                    st.success("✅ Done!")
-                else:
-                    st.error("❌ Failed!")
-                with st.expander("📋 Log", expanded=True):
-                    st.code(result.stdout[-5000:] if len(result.stdout) > 5000 else result.stdout)
-                    if result.stderr:
-                        st.code(result.stderr[-2000:])
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=7200, cwd=str(PROJECT_ROOT))
+                if r.returncode == 0: st.success("✅ Done!")
+                else: st.error("❌ Failed!")
+                with st.expander("Log", expanded=True):
+                    st.code(r.stdout[-5000:] if len(r.stdout) > 5000 else r.stdout)
+                    if r.stderr: st.code(r.stderr[-2000:])
             except subprocess.TimeoutExpired:
                 st.error("⏰ Timeout (2h)")
