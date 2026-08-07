@@ -209,6 +209,7 @@ class SpeakerDataset(Dataset):
         duration_seconds: float = 5.0,
         augment: bool = False,
         min_valid_duration: float = 1.0,
+        mixup_alpha: float = 0.0,
     ):
         self.df = df.reset_index(drop=True)
         self.audio_dir = Path(audio_dir)
@@ -216,6 +217,7 @@ class SpeakerDataset(Dataset):
         self.target_length = int(sample_rate * duration_seconds)
         self.augment = augment
         self.min_valid_duration = min_valid_duration
+        self.mixup_alpha = mixup_alpha
 
         if self.augment:
             self.augmentor = AudioAugmentation(sample_rate)
@@ -234,6 +236,21 @@ class SpeakerDataset(Dataset):
         # Augmentation (train only)
         if self.augment:
             waveform = self.augmentor(waveform)
+
+            # MixUp: mix with another random sample (OOD regularization)
+            if self.mixup_alpha > 0 and torch.rand(1).item() < 0.5:
+                # Pick a random sample (possibly different class)
+                other_idx = torch.randint(0, len(self.df), (1,)).item()
+                other_row = self.df.iloc[other_idx]
+                other_path = self.audio_dir / other_row["audio_file"]
+                other_waveform = self._load_audio(other_path)
+                other_waveform = self.augmentor(other_waveform)
+                other_label = torch.tensor(other_row["label"], dtype=torch.long)
+
+                # Mix: λ ~ Beta(α, α)
+                lam = float(torch.distributions.Beta(self.mixup_alpha, self.mixup_alpha).sample())
+                waveform = lam * waveform + (1 - lam) * other_waveform
+                # Keep original label (acts as OOD regularization — mixed audio is ambiguous)
 
         return waveform, label
 

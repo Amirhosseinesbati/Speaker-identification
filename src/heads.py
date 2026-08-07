@@ -24,12 +24,12 @@ class OODHead(nn.Module):
     Binary classifier: detects whether a speaker is unknown (class 0).
 
     Architecture:
-        LayerNorm → Optional MLP → Linear(→1)
+        LayerNorm → Linear(hidden) → ReLU → Dropout → Linear(→1)
 
     Output: single logit — sigmoid(output) = P(unknown)
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int = 256):
+    def __init__(self, input_dim: int, hidden_dim: int = 256, dropout: float = 0.4):
         super().__init__()
         self.input_dim = input_dim
 
@@ -38,11 +38,13 @@ class OODHead(nn.Module):
                 nn.LayerNorm(input_dim),
                 nn.Linear(input_dim, hidden_dim),
                 nn.ReLU(),
+                nn.Dropout(dropout),
                 nn.Linear(hidden_dim, 1),
             )
         else:
             self.mlp = nn.Sequential(
                 nn.LayerNorm(input_dim),
+                nn.Dropout(dropout),
                 nn.Linear(input_dim, 1),
             )
 
@@ -146,6 +148,7 @@ class ArcFaceHead(nn.Module):
         self.embedding_proj = nn.Sequential(
             nn.LayerNorm(input_dim),
             nn.Linear(input_dim, embedding_dim),
+            nn.Dropout(0.2),
         )
 
         # Classification weight matrix (L2-normalized rows after each forward)

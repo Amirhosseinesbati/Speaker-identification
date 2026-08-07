@@ -455,10 +455,28 @@ def train_model(
         lr=train_cfg["learning_rate"],
         weight_decay=train_cfg["weight_decay"],
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=train_cfg["epochs"],
+    # Linear warmup (3 epochs) + CosineAnnealingWarmRestarts
+    warmup_epochs = 3
+    scheduler_warmup = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.1, total_iters=warmup_epochs,
     )
-    criterion = TwoPartLoss(ignore_index=-100)
+    scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=10, T_mult=1,
+    )
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[scheduler_warmup, scheduler_cosine],
+        milestones=[warmup_epochs],
+    )
+    criterion = TwoPartLoss(
+        ignore_index=-100,
+        use_focal=True,
+        focal_gamma=2.0,
+        ood_weight=train_cfg.get("ood_loss_weight", 1.0),
+        speaker_weight=train_cfg.get("speaker_loss_weight", 1.0),
+        pos_weight_ratio=train_cfg.get("bce_pos_weight", 1.0),
+        label_smoothing=train_cfg.get("label_smoothing", 0.0),
+    )
     scaler = torch.cuda.amp.GradScaler(enabled=hw_profile["mixed_precision"])
 
     # ── Training Loop with MLflow autologging ──
@@ -467,7 +485,10 @@ def train_model(
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     best_val_loss = float("inf")
+    best_val_ood_acc = 0.0
     best_epoch = -1
+    patience_counter = 0
+    early_stop_patience = train_cfg.get("early_stopping_patience", 5)
     history = []
 
     for epoch in range(1, train_cfg["epochs"] + 1):
@@ -475,6 +496,7 @@ def train_model(
         train_metrics = train_epoch(
             model, train_loader, optimizer, criterion,
             scaler, device, train_cfg["max_grad_norm"],
+            ood_grad_norm=train_cfg.get("ood_grad_norm", 1.0),
         )
         # Validate
         val_metrics = validate_epoch(model, val_loader, criterion, device)
@@ -498,7 +520,7 @@ def train_model(
               f"OOD: {train_metrics['ood_acc']:.3f} / {val_metrics['ood_acc']:.3f}  |  "
               f"Spk: {train_metrics['speaker_acc']:.3f} / {val_metrics['speaker_acc']:.3f}")
 
-        # Save best model
+        # Save best model (based on val loss)
         if val_metrics["loss"] < best_val_loss:
             best_val_loss = val_metrics["loss"]
             best_epoch = epoch
@@ -514,6 +536,17 @@ def train_model(
                 "val_ood_acc": val_metrics["ood_acc"],
                 "val_speaker_acc": val_metrics["speaker_acc"],
             }, best_path)
+
+        # Early stopping based on val OOD accuracy
+        if val_metrics["ood_acc"] > best_val_ood_acc:
+            best_val_ood_acc = val_metrics["ood_acc"]
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= early_stop_patience:
+                print(f"\n  ⏹ Early stopping at epoch {epoch} "
+                      f"(OOD acc not improved for {early_stop_patience} epochs)")
+                break
 
         # Save latest
         latest_path = checkpoint_dir / "latest_model.pt"
@@ -609,25 +642,55 @@ def evaluate_model(
     model = model.to(device)
     model.eval()
 
-    # Evaluate
+    # Evaluate with threshold tuning
     criterion = TwoPartLoss(ignore_index=-100)
     total_loss = 0.0
     total_ood_acc = 0.0
     total_speaker_acc = 0.0
     num_batches = len(val_loader)
 
+    all_ood_logits = []
+    all_labels = []
+
     with torch.no_grad():
         for waveforms, labels in val_loader:
             waveforms = waveforms.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
 
-            ood_logits, speaker_logits = model(waveforms)
+            ood_logits, speaker_logits = model(waveforms, labels=labels)
             loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
             total_loss += loss_dict["loss_total"]
             total_ood_acc += compute_ood_accuracy(ood_logits, labels)
             speaker_acc, _ = compute_speaker_accuracy(speaker_logits, labels)
             total_speaker_acc += speaker_acc
+
+            all_ood_logits.append(ood_logits.cpu())
+            all_labels.append(labels.cpu())
+
+    # ── Tune OOD threshold on validation ──
+    all_ood = torch.cat(all_ood_logits).squeeze(1)
+    all_lbl = torch.cat(all_labels)
+    ood_probs = torch.sigmoid(all_ood).numpy()
+    ood_targets = (all_lbl == 0).numpy().astype(int)
+
+    from sklearn.metrics import f1_score
+    best_threshold = 0.5
+    best_f1 = 0.0
+    for thr in np.arange(0.1, 0.9, 0.05):
+        preds = (ood_probs > thr).astype(int)
+        f1 = f1_score(ood_targets, preds, zero_division=0)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_threshold = thr
+
+    # Recompute OOD accuracy with tuned threshold
+    tuned_preds = (ood_probs > best_threshold).astype(int)
+    tuned_ood_acc = (tuned_preds == ood_targets).mean()
+
+    print(f"  🎯 OOD Threshold tuned: {best_threshold:.2f} (F1={best_f1:.4f})")
+    print(f"     Default (0.5): OOD Acc = {total_ood_acc/num_batches:.4f}")
+    print(f"     Tuned ({best_threshold:.2f}): OOD Acc = {tuned_ood_acc:.4f}")
 
     metrics = {
         "final_val_loss": round(total_loss / num_batches, 6),

@@ -79,11 +79,13 @@ class FocalLoss(nn.Module):
         gamma: float = 2.0,
         ignore_index: int = -100,
         reduction: str = "mean",
+        label_smoothing: float = 0.0,
     ):
         super().__init__()
         self.gamma = gamma
         self.ignore_index = ignore_index
         self.reduction = reduction
+        self.label_smoothing = label_smoothing
 
     def forward(
         self,
@@ -100,12 +102,26 @@ class FocalLoss(nn.Module):
         Returns:
             Scalar loss tensor
         """
-        # Standard cross-entropy with no reduction
-        ce_loss = F.cross_entropy(
-            logits, targets,
-            reduction="none",
-            ignore_index=self.ignore_index,
-        )
+        # Label smoothing: convert hard targets to soft targets
+        if self.label_smoothing > 0 and self.training:
+            num_classes = logits.size(-1)
+            with torch.no_grad():
+                smooth_targets = torch.full_like(logits, self.label_smoothing / (num_classes - 1))
+                smooth_targets.scatter_(1, targets.unsqueeze(1), 1.0 - self.label_smoothing)
+                # Mask ignored positions
+                if self.ignore_index is not None:
+                    ignore_mask = targets == self.ignore_index
+                    smooth_targets[ignore_mask] = 0.0
+            # CE with soft targets: -sum(target * log_softmax)
+            log_probs = F.log_softmax(logits, dim=1)
+            ce_loss = -(smooth_targets * log_probs).sum(dim=1)
+        else:
+            # Standard cross-entropy with no reduction
+            ce_loss = F.cross_entropy(
+                logits, targets,
+                reduction="none",
+                ignore_index=self.ignore_index,
+            )
 
         # p_t = exp(-CE_loss)
         pt = torch.exp(-ce_loss)
@@ -148,17 +164,37 @@ class TwoPartLoss(nn.Module):
         ignore_index: int = -100,
         use_focal: bool = True,
         focal_gamma: float = 2.0,
+        ood_weight: float = 1.0,
+        speaker_weight: float = 1.0,
+        pos_weight_ratio: float = 1.0,
+        label_smoothing: float = 0.0,
     ):
         super().__init__()
         self.ignore_index = ignore_index
-        self.bce_loss = nn.BCEWithLogitsLoss()
+        self.ood_weight = ood_weight
+        self.speaker_weight = speaker_weight
+
+        # BCE with pos_weight for known samples (label=0 is unknown, label!=0 is known)
+        if pos_weight_ratio != 1.0:
+            pos_weight = torch.tensor([pos_weight_ratio])
+            self.bce_loss = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+            print(f"  ⚖️  BCE pos_weight={pos_weight_ratio:.1f} (up-weight known samples)")
+        else:
+            self.bce_loss = nn.BCEWithLogitsLoss()
 
         if use_focal:
-            self.ce_loss = FocalLoss(gamma=focal_gamma, ignore_index=ignore_index)
-            print(f"  🎯 Speaker loss: FocalLoss (γ={focal_gamma})")
+            self.ce_loss = FocalLoss(
+                gamma=focal_gamma, ignore_index=ignore_index,
+                label_smoothing=label_smoothing,
+            )
+            print(f"  🎯 Speaker loss: FocalLoss (γ={focal_gamma}, smoothing={label_smoothing})")
         else:
-            self.ce_loss = nn.CrossEntropyLoss(ignore_index=ignore_index)
-            print(f"  📊 Speaker loss: CrossEntropyLoss")
+            self.ce_loss = nn.CrossEntropyLoss(
+                ignore_index=ignore_index, label_smoothing=label_smoothing,
+            )
+            print(f"  📊 Speaker loss: CrossEntropyLoss (smoothing={label_smoothing})")
+
+        print(f"  ⚖️  Loss weights: OOD={ood_weight}, Speaker={speaker_weight}")
 
     def forward(
         self,
@@ -191,8 +227,8 @@ class TwoPartLoss(nn.Module):
 
         loss_speaker = self.ce_loss(speaker_logits, speaker_labels_mapped)
 
-        # ── Total Loss ──
-        total_loss = loss_ood + loss_speaker
+        # ── Total Loss (weighted) ──
+        total_loss = self.ood_weight * loss_ood + self.speaker_weight * loss_speaker
 
         loss_dict = {
             "loss_ood": loss_ood.item(),
@@ -256,6 +292,8 @@ def train_epoch(
     scaler: GradScaler,
     device: torch.device,
     max_grad_norm: float = 5.0,
+    ood_grad_norm: float = 1.0,
+    ood_head_attr: str = "head_ood",
 ) -> Dict[str, float]:
     """
     Train for one epoch with AMP.
@@ -275,13 +313,27 @@ def train_epoch(
         optimizer.zero_grad()
 
         with autocast():
-            ood_logits, speaker_logits = model(waveforms)
+            ood_logits, speaker_logits = model(waveforms, labels=labels)
             loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
         # Backward pass with AMP
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+
+        # Separate gradient clipping: tighter for OOD head
+        ood_params = []
+        other_params = []
+        for name, param in model.named_parameters():
+            if ood_head_attr in name and param.requires_grad:
+                ood_params.append(param)
+            elif param.requires_grad:
+                other_params.append(param)
+
+        if ood_params and ood_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(ood_params, ood_grad_norm)
+        if other_params:
+            torch.nn.utils.clip_grad_norm_(other_params, max_grad_norm)
+
         scaler.step(optimizer)
         scaler.update()
 
@@ -328,7 +380,7 @@ def validate_epoch(
         waveforms = waveforms.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
-        ood_logits, speaker_logits = model(waveforms)
+        ood_logits, speaker_logits = model(waveforms, labels=labels)
         loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
         total_loss += loss_dict["loss_total"]
