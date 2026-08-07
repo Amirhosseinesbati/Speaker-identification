@@ -316,7 +316,7 @@ with tab_local:
     st.caption(f"`{encoder_type}` + `{pooling_type}` + ArcFace | {audio_dur}s | {epochs}ep | LR={lr_val}")
     import torch
     if torch.cuda.is_available():
-        st.success(f"✅ {torch.cuda.get_device_name(0)} ({torch.cuda.get_device_properties(0).total_mem/1e9:.1f} GB)")
+        st.success(f"✅ {torch.cuda.get_device_name(0)} ({torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB)")
     else:
         st.warning("⚠️ CPU only — slow.")
     lc1, lc2 = st.columns(2)
