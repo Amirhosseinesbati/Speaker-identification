@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 from typing import Dict, Tuple
 
-import mlflow
 import numpy as np
 import pandas as pd
 import torch
@@ -48,15 +47,29 @@ from src.train import (
 
 
 # ─────────────────────────────────────────────────────────
-#  Helper: MLflow active check
+#  MLflow Helper — standalone tracking (not dependent on ZenML)
 # ─────────────────────────────────────────────────────────
-# ZenML automatically activates an MLflow run before each step
-# when the stack has an MLflow experiment tracker configured.
-# We just need to check if it's active before logging.
+
+from src.mlflow_helper import get_tracker, MLflowTracker
 
 def _mlflow_active() -> bool:
-    """Check if MLflow has an active run (set up by ZenML pipeline)."""
-    return mlflow.active_run() is not None
+    """Check if MLflow has an active run."""
+    return get_tracker().is_active
+
+
+def _mlflow_log_params(params: dict):
+    if get_tracker().is_active:
+        get_tracker().log_params(params)
+
+
+def _mlflow_log_metrics(metrics: dict, step: int = None):
+    if get_tracker().is_active:
+        get_tracker().log_metrics(metrics, step=step)
+
+
+def _mlflow_log_artifact(path: str, artifact_path: str = None):
+    if get_tracker().is_active:
+        get_tracker().log_artifact(path, artifact_path)
 
 
 # ─────────────────────────────────────────────────────────
@@ -82,6 +95,7 @@ def convert_audio(
     """
     import subprocess
     from pathlib import Path
+    from datetime import datetime
     from concurrent.futures import ThreadPoolExecutor
 
     import librosa
@@ -175,6 +189,19 @@ def convert_audio(
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
     print(f"  Config updated: audio_dir → {wav_dir}")
 
+    # ── Start MLflow run ──
+    tracker = get_tracker(config)
+    encoder_type = config.get("model", {}).get("encoder_type", "unknown")
+    run_name = f"{encoder_type}-{datetime.now().strftime('%m%d-%H%M')}"
+    tracker.start_run(run_name=run_name)
+    tracker.log_params({
+        "encoder_type": encoder_type,
+        "pipeline_stage": "convert_audio",
+        "wav_files_converted": converted,
+    })
+    tracker.log_code_snapshot()
+    tracker.log_config_snapshot()
+
     return config
 
 
@@ -231,9 +258,8 @@ def prepare_data(
     print(f"  ✓ Train: {len(train_df)} samples | Val: {len(val_df)} samples")
     print(f"  ✓ Classes: {len(class_map)} (0=unknown, 1..{len(class_map)-1}=known)")
 
-    # Log data params to MLflow (ZenML auto-activates MLflow run)
-    if _mlflow_active():
-        mlflow.log_params({
+    # Log data params to MLflow
+    _mlflow_log_params({
             "num_classes": len(class_map),
             "num_known": len(class_map) - 1,
             "train_samples": len(train_df),
@@ -294,16 +320,15 @@ def build_model(
         base_model = model_cfg.get("base_model", "unknown")
         freeze_fe = model_cfg.get("freeze_feature_extractor", True)
 
-    if _mlflow_active():
-        mlflow.log_params({
-            "encoder_type": encoder_type,
-            "base_model": base_model,
-            "freeze_encoder": freeze_fe,
-            "pooling_type": model_cfg.get("pooling_type", "statistical"),
-            "speaker_head_type": model_cfg.get("speaker_head_type", "linear"),
-            "num_known_speakers": num_known,
-            "total_params": model.get_trainable_params(),
-        })
+    _mlflow_log_params({
+        "encoder_type": encoder_type,
+        "base_model": base_model,
+        "freeze_encoder": freeze_fe,
+        "pooling_type": model_cfg.get("pooling_type", "statistical"),
+        "speaker_head_type": model_cfg.get("speaker_head_type", "linear"),
+        "num_known_speakers": num_known,
+        "total_params": model.get_trainable_params(),
+    })
 
     return init_path
 
@@ -411,9 +436,6 @@ def train_model(
     best_epoch = -1
     history = []
 
-    # MLflow is auto-activated by ZenML — log directly
-    mlflow_on = _mlflow_active()
-
     for epoch in range(1, train_cfg["epochs"] + 1):
         # Train
         train_metrics = train_epoch(
@@ -425,17 +447,16 @@ def train_model(
         scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
 
-        # Log metrics per epoch (directly to the active MLflow run)
-        if mlflow_on:
-            mlflow.log_metrics({
-                "train_loss": train_metrics["loss"],
-                "train_ood_acc": train_metrics["ood_acc"],
-                "train_speaker_acc": train_metrics["speaker_acc"],
-                "val_loss": val_metrics["loss"],
-                "val_ood_acc": val_metrics["ood_acc"],
-                "val_speaker_acc": val_metrics["speaker_acc"],
-                "learning_rate": current_lr,
-            }, step=epoch)
+        # Log metrics per epoch
+        _mlflow_log_metrics({
+            "train_loss": train_metrics["loss"],
+            "train_ood_acc": train_metrics["ood_acc"],
+            "train_speaker_acc": train_metrics["speaker_acc"],
+            "val_loss": val_metrics["loss"],
+            "val_ood_acc": val_metrics["ood_acc"],
+            "val_speaker_acc": val_metrics["speaker_acc"],
+            "learning_rate": current_lr,
+        }, step=epoch)
 
         # Print progress
         print(f"\n  Epoch {epoch:2d}/{train_cfg['epochs']} — "
@@ -488,16 +509,14 @@ def train_model(
         "total_epochs": train_cfg["epochs"],
     }
 
-    if mlflow_on:
-        mlflow.log_params({
-            "epochs": train_cfg["epochs"],
-            "learning_rate": train_cfg["learning_rate"],
-            "weight_decay": train_cfg["weight_decay"],
-            "batch_size": hw_profile["batch_size"],
-        })
-        mlflow.log_metrics(summary)
-        # Log the best model artifact
-        mlflow.log_artifact(final_best_path, artifact_path="models")
+    _mlflow_log_params({
+        "epochs": train_cfg["epochs"],
+        "learning_rate": train_cfg["learning_rate"],
+        "weight_decay": train_cfg["weight_decay"],
+        "batch_size": hw_profile["batch_size"],
+    })
+    _mlflow_log_metrics(summary)
+    _mlflow_log_artifact(final_best_path, artifact_path="models")
 
     print(f"\n  ✓ Training complete! Best val loss: {best_val_loss:.4f} (epoch {best_epoch})")
     print(f"  ✓ Best model: {final_best_path}")
@@ -588,17 +607,23 @@ def evaluate_model(
     print(f"    OOD Acc:    {metrics['final_val_ood_acc']:.3f}")
     print(f"    Speaker Acc: {metrics['final_val_speaker_acc']:.3f}")
 
-    # Log to MLflow (directly to the active run)
-    if _mlflow_active():
-        mlflow.log_metrics(metrics)
-        # Register the model in MLflow model registry
+    # ── Final MLflow logging ──
+    tracker = get_tracker()
+    if tracker.is_active:
+        tracker.log_metrics(metrics)
+        tracker.log_best_checkpoint(best_model_path)
+        tracker.log_summary(
+            {"final_val_loss": metrics["final_val_loss"],
+             "final_ood_acc": metrics["final_val_ood_acc"],
+             "final_speaker_acc": metrics["final_val_speaker_acc"]},
+            metrics,
+        )
+        # Log model
         try:
-            mlflow.pytorch.log_model(
-                model,
-                artifact_path="model",
-                registered_model_name="speaker-identification",
-            )
+            tracker.log_model(model, artifact_path="model")
         except Exception as e:
-            print(f"  ⚠ Could not log model to MLflow registry: {e}")
+            print(f"  ⚠ Could not log model to MLflow: {e}")
+        tracker.end_run()
+        print(f"  ✅ MLflow run completed with all artifacts.")
 
     return metrics
