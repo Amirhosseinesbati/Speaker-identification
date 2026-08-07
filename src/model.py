@@ -81,11 +81,16 @@ class TwoHeadedSpeakerModel(nn.Module):
         # ── Speaker Head ──
         # ArcFace needs labels during training, Linear ignores them
         if labels is not None and hasattr(self.head_speaker, 'forward'):
-            # Check if head accepts labels (ArcFace does, Linear doesn't)
             import inspect
             sig = inspect.signature(self.head_speaker.forward)
             if 'labels' in sig.parameters:
-                speaker_logits = self.head_speaker(pooled, labels=labels)
+                # Remap: original labels 0..446 → ArcFace expects 0..445
+                # 0 (unknown) stays 0 (masked by loss ignore_index)
+                # 1..446 → 0..445
+                remapped = labels.clone()
+                mask_known = remapped != 0
+                remapped[mask_known] = remapped[mask_known] - 1
+                speaker_logits = self.head_speaker(pooled, labels=remapped)
             else:
                 speaker_logits = self.head_speaker(pooled)
         else:
