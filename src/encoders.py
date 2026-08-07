@@ -259,8 +259,13 @@ class ECAPAEncoder(BaseEncoder):
         # SpeechBrain expects (batch, T) — squeeze channel dim
         wav = waveforms.squeeze(1)  # (batch, T)
 
-        # encode_batch returns (batch, 192) utterance-level embeddings
-        embeddings = self.classifier.encode_batch(wav)  # (batch, 192)
+        # Disable AMP autocast for frozen ECAPA encoder.
+        # ECAPA-TDNN's pretrained weights are float32 and SpeechBrain's
+        # Conv1d layers are not autocast-compatible, causing:
+        #   "Input type (float) and bias type (c10::Half) should be the same"
+        with torch.cuda.amp.autocast(enabled=False):
+            # encode_batch returns (batch, 192) utterance-level embeddings
+            embeddings = self.classifier.encode_batch(wav)  # (batch, 192)
         # If output has extra dim, squeeze it
         if embeddings.ndim == 3:
             embeddings = embeddings.squeeze(1)  # (batch, 192)
