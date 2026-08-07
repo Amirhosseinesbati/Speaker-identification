@@ -350,19 +350,43 @@ def get_dataloaders(
         min_valid_duration=min_valid_duration,
     )
 
-    # WeightedRandomSampler: balance unknown (class 0) vs known (classes 1-446)
+    # ── Balanced Batch Sampler ──
+    # Enforces target OOD/known ratio in every batch.
+    # Default: 30% OOD (unknown) + 70% known speakers.
+    # This prevents bias toward the over-represented "unknown" class.
     train_labels = train_df["label"].values
-    class_counts = np.bincount(train_labels, minlength=len(class_map))
-
-    # Weight = 1.0 / count for each class
-    weights = 1.0 / (class_counts + 1e-8)
-    sample_weights = weights[train_labels]
-    sampler = WeightedRandomSampler(
-        weights=sample_weights,
-        num_samples=len(sample_weights),
-        replacement=True,
-    )
-
+    ood_indices = np.where(train_labels == 0)[0]
+    known_indices = np.where(train_labels != 0)[0]
+    
+    ood_ratio = audio_cfg.get("ood_batch_ratio", 0.30)
+    ood_per_batch = max(1, int(batch_size * ood_ratio))
+    known_per_batch = batch_size - ood_per_batch
+    
+    print(f"\n  ⚖️  Batch balance: {ood_per_batch} OOD + {known_per_batch} known "
+          f"({ood_ratio:.0%} / {1-ood_ratio:.0%})")
+    print(f"     OOD pool: {len(ood_indices):,} samples | "
+          f"Known pool: {len(known_indices):,} samples across {len(class_map)-1} speakers")
+    
+    # Generate balanced indices for each batch
+    rng = np.random.RandomState(42)
+    num_batches = len(train_df) // batch_size
+    balanced_indices = []
+    
+    for _ in range(num_batches):
+        # Sample OOD indices with replacement (if needed)
+        batch_ood = rng.choice(ood_indices, size=ood_per_batch, replace=True)
+        # Sample known indices — try without replacement, fall back with replacement
+        if len(known_indices) >= known_per_batch:
+            batch_known = rng.choice(known_indices, size=known_per_batch, replace=False)
+        else:
+            batch_known = rng.choice(known_indices, size=known_per_batch, replace=True)
+        batch_indices = np.concatenate([batch_ood, batch_known])
+        rng.shuffle(batch_indices)
+        balanced_indices.extend(batch_indices.tolist())
+    
+    balanced_indices = np.array(balanced_indices, dtype=np.int64)
+    sampler = torch.utils.data.SubsetRandomSampler(balanced_indices)
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,

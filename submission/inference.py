@@ -41,7 +41,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 SAMPLE_RATE = 16000
 DURATION_SECONDS = 3.0
 TARGET_LENGTH = int(SAMPLE_RATE * DURATION_SECONDS)  # 48000
-NUM_CLASSES = 447  # 0 (unknown) + 446 known speakers
+NUM_CLASSES = 448  # 0 (unknown) + 447 known speakers (competition spec)
 
 
 # ─────────────────────────────────────────────────────────

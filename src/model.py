@@ -162,7 +162,7 @@ class TwoHeadedWavLM(TwoHeadedSpeakerModel):
     def __init__(
         self,
         config: dict,
-        num_known_speakers: int = 446,
+        num_known_speakers: int = 447,
     ):
         from src.encoders import WavLMEncoder
         from src.pooling import create_pooling

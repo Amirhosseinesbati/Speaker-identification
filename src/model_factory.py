@@ -20,7 +20,7 @@ from src.model import TwoHeadedSpeakerModel
 
 def create_model_from_config(
     config: dict,
-    num_known_speakers: int = 446,
+    num_known_speakers: int = 447,
     encoder_override: Optional[BaseEncoder] = None,
 ) -> TwoHeadedSpeakerModel:
     """

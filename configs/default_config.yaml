@@ -23,6 +23,7 @@ audio:
   sample_rate: 16000
   duration_seconds: 8.0
   min_valid_duration: 1.0
+  ood_batch_ratio: 0.30            # Target OOD fraction per batch
   n_mels: 80
   n_fft: 400
   hop_length: 160
@@ -58,8 +59,8 @@ training:
   warmup_steps: 500
   max_grad_norm: 5.0
 data:
-  labels_path: data/raw/labels.csv
-  audio_dir: data/raw
+  labels_path: data/processed/audio_wav_labels.csv
+  audio_dir: data/processed/audio_wav
   processed_labels: data/processed/cleaned_labels.csv
 logging:
   log_dir: logs
