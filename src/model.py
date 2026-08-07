@@ -84,12 +84,19 @@ class TwoHeadedSpeakerModel(nn.Module):
             import inspect
             sig = inspect.signature(self.head_speaker.forward)
             if 'labels' in sig.parameters:
-                # Remap: original labels 0..446 → ArcFace expects 0..445
-                # 0 (unknown) stays 0 (masked by loss ignore_index)
-                # 1..446 → 0..445
+                # Remap: original labels [0, 1..446] → ArcFace [0, 0..445]
+                #   Known speakers 1..446 → ArcFace classes 0..445
+                #   Unknown (label 0)     → ArcFace class 0 (same as speaker #1).
+                #
+                # This collision is HARMLESS because:
+                # (a) TwoPartLoss ignores unknown samples (ignore_index=-100),
+                #     so gradient contribution from unknown is always 0.
+                # (b) ArcFace weight[0] is ONLY trained by speaker #1 samples.
+                # (c) The ArcFace margin on unknown's output[0] never backprops.
                 remapped = labels.clone()
                 mask_known = remapped != 0
-                remapped[mask_known] = remapped[mask_known] - 1
+                remapped[mask_known] = remapped[mask_known] - 1       # 1..446 → 0..445
+                # remapped[~mask_known] stays 0 (harmless collision)
                 speaker_logits = self.head_speaker(pooled, labels=remapped)
             else:
                 speaker_logits = self.head_speaker(pooled)
@@ -167,7 +174,7 @@ class TwoHeadedWavLM(TwoHeadedSpeakerModel):
     def __init__(
         self,
         config: dict,
-        num_known_speakers: int = 447,
+        num_known_speakers: int = 446,
     ):
         from src.encoders import WavLMEncoder
         from src.pooling import create_pooling

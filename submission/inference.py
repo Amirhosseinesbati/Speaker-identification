@@ -41,8 +41,8 @@ warnings.filterwarnings("ignore", category=UserWarning)
 SAMPLE_RATE = 16000
 DURATION_SECONDS = 8.0             # Must match training config
 TARGET_LENGTH = int(SAMPLE_RATE * DURATION_SECONDS)  # 128000
-NUM_CLASSES = 448                  # 0 (unknown) + 447 known (competition spec)
-MODEL_CLASSES = 448                # Competition: 0 (unknown) + 447 known
+NUM_CLASSES = 447                  # 0 (unknown) + 446 known (competition spec)
+MODEL_CLASSES = 447                # Competition: 0 (unknown) + 446 known
 
 
 # ─────────────────────────────────────────────────────────

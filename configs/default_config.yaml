@@ -29,8 +29,7 @@ audio:
   hop_length: 160
 model:
   encoder_type: ecapa
-  competition_num_known: 447      # Competition spec: 447 known speakers → 448-class output
-                                  # Training data has 446 but model reserves slot 447 (untrained)
+  competition_num_known: 446      # Competition spec: 446 known speakers → 447-class output
   encoder_config:
     wavlm:
       base_model: microsoft/wavlm-base-plus
@@ -63,7 +62,7 @@ training:
   ood_grad_norm: 1.0              # Tighter clip for OOD head (prevents overfitting)
   ood_loss_weight: 0.3            # Speaker loss 3× more important than OOD
   speaker_loss_weight: 0.7
-  early_stopping_patience: 5      # Stop if val_ood_acc doesn't improve for N epochs
+  early_stopping_patience: 10     # Stop if val_loss doesn't improve for N epochs
   label_smoothing: 0.1            # Label smoothing for speaker classification
 data:
   labels_path: data/processed/audio_wav_labels.csv

@@ -536,8 +536,9 @@ def train(config_path: str = "configs/default_config.yaml"):
     print(f"  {'='*50}")
     print(f"  Best epoch: {best_epoch}")
     print(f"  Best val loss: {best_val_loss:.4f}")
-    print(f"  Best val OOD acc: {history[best_epoch-1]['val_ood_acc']:.3f}")
-    print(f"  Best val Speaker acc: {history[best_epoch-1]['val_speaker_acc']:.3f}")
+    if best_epoch > 0 and len(history) >= best_epoch:
+        print(f"  Best val OOD acc: {history[best_epoch-1]['val_ood_acc']:.3f}")
+        print(f"  Best val Speaker acc: {history[best_epoch-1]['val_speaker_acc']:.3f}")
     print(f"  Checkpoint saved: {checkpoint_dir / 'best_model.pt'}")
     print()
 

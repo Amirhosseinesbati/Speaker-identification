@@ -484,10 +484,9 @@ def train_model(
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     best_val_loss = float("inf")
-    best_val_ood_acc = 0.0
     best_epoch = -1
     patience_counter = 0
-    early_stop_patience = train_cfg.get("early_stopping_patience", 5)
+    early_stop_patience = train_cfg.get("early_stopping_patience", 10)
     history = []
 
     for epoch in range(1, train_cfg["epochs"] + 1):
@@ -519,10 +518,11 @@ def train_model(
               f"OOD: {train_metrics['ood_acc']:.3f} / {val_metrics['ood_acc']:.3f}  |  "
               f"Spk: {train_metrics['speaker_acc']:.3f} / {val_metrics['speaker_acc']:.3f}")
 
-        # Save best model (based on val loss)
+        # Save best model (based on val loss) + Early stopping (also on val loss)
         if val_metrics["loss"] < best_val_loss:
             best_val_loss = val_metrics["loss"]
             best_epoch = epoch
+            patience_counter = 0
             best_path = checkpoint_dir / "best_model.pt"
             torch.save({
                 "epoch": epoch,
@@ -535,19 +535,18 @@ def train_model(
                 "val_ood_acc": val_metrics["ood_acc"],
                 "val_speaker_acc": val_metrics["speaker_acc"],
             }, best_path)
-
-        # Early stopping based on val OOD accuracy
-        if val_metrics["ood_acc"] > best_val_ood_acc:
-            best_val_ood_acc = val_metrics["ood_acc"]
-            patience_counter = 0
         else:
             patience_counter += 1
-            if patience_counter >= early_stop_patience:
-                print(f"\n  ⏹ Early stopping at epoch {epoch} "
-                      f"(OOD acc not improved for {early_stop_patience} epochs)")
-                break
 
-        # Save latest
+        # Record history (BEFORE early stopping check — prevents crash on break)
+        history.append({
+            "epoch": epoch,
+            **{f"train_{k}": v for k, v in train_metrics.items()},
+            **{f"val_{k}": v for k, v in val_metrics.items()},
+            "lr": current_lr,
+        })
+
+        # Save latest checkpoint (BEFORE early stopping check)
         latest_path = checkpoint_dir / "latest_model.pt"
         torch.save({
             "epoch": epoch,
@@ -557,22 +556,27 @@ def train_model(
             "class_map": class_map,
         }, latest_path)
 
-        # Record history
-        history.append({
-            "epoch": epoch,
-            **{f"train_{k}": v for k, v in train_metrics.items()},
-            **{f"val_{k}": v for k, v in val_metrics.items()},
-            "lr": current_lr,
-        })
+        # Early stopping based on val loss (no improvement for N epochs)
+        if patience_counter >= early_stop_patience:
+            print(f"\n  ⏹ Early stopping at epoch {epoch} "
+                  f"(val_loss not improved for {early_stop_patience} epochs)")
+            break
 
     # ── Final logging ──
     final_best_path = str(checkpoint_dir / "best_model.pt")
+
+    # Safety: if early stopping happened before any improvement, use last epoch
+    safe_idx = best_epoch - 1
+    if safe_idx < 0 or safe_idx >= len(history):
+        safe_idx = len(history) - 1  # fallback to last recorded epoch
+
     summary = {
-        "best_epoch": best_epoch,
+        "best_epoch": best_epoch if best_epoch > 0 else (safe_idx + 1),
         "best_val_loss": round(best_val_loss, 6),
-        "best_val_ood_acc": round(history[best_epoch - 1]["val_ood_acc"], 4),
-        "best_val_speaker_acc": round(history[best_epoch - 1]["val_speaker_acc"], 4),
-        "total_epochs": train_cfg["epochs"],
+        "best_val_ood_acc": round(history[safe_idx]["val_ood_acc"], 4),
+        "best_val_speaker_acc": round(history[safe_idx]["val_speaker_acc"], 4),
+        "total_epochs_run": len(history),
+        "total_epochs_configured": train_cfg["epochs"],
     }
 
     _mlflow_log_params({
