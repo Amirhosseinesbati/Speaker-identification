@@ -61,7 +61,6 @@ training:
   ood_grad_norm: 1.0              # Tighter clip for OOD head (prevents overfitting)
   ood_loss_weight: 0.3            # Speaker loss 3× more important than OOD
   speaker_loss_weight: 0.7
-  bce_pos_weight: 2.0             # Up-weight known samples in BCE (counters class imbalance)
   early_stopping_patience: 5      # Stop if val_ood_acc doesn't improve for N epochs
   label_smoothing: 0.1            # Label smoothing for speaker classification
 data:

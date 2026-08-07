@@ -166,7 +166,6 @@ class TwoPartLoss(nn.Module):
         focal_gamma: float = 2.0,
         ood_weight: float = 1.0,
         speaker_weight: float = 1.0,
-        pos_weight_ratio: float = 1.0,
         label_smoothing: float = 0.0,
     ):
         super().__init__()
@@ -174,13 +173,7 @@ class TwoPartLoss(nn.Module):
         self.ood_weight = ood_weight
         self.speaker_weight = speaker_weight
 
-        # BCE with pos_weight for known samples (label=0 is unknown, label!=0 is known)
-        if pos_weight_ratio != 1.0:
-            pos_weight = torch.tensor([pos_weight_ratio])
-            self.bce_loss = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-            print(f"  ⚖️  BCE pos_weight={pos_weight_ratio:.1f} (up-weight known samples)")
-        else:
-            self.bce_loss = nn.BCEWithLogitsLoss()
+        self.bce_loss = nn.BCEWithLogitsLoss()
 
         if use_focal:
             self.ce_loss = FocalLoss(

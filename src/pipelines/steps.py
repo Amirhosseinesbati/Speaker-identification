@@ -474,7 +474,6 @@ def train_model(
         focal_gamma=2.0,
         ood_weight=train_cfg.get("ood_loss_weight", 1.0),
         speaker_weight=train_cfg.get("speaker_loss_weight", 1.0),
-        pos_weight_ratio=train_cfg.get("bce_pos_weight", 1.0),
         label_smoothing=train_cfg.get("label_smoothing", 0.0),
     )
     scaler = torch.cuda.amp.GradScaler(enabled=hw_profile["mixed_precision"])
