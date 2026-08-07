@@ -263,7 +263,7 @@ class ECAPAEncoder(BaseEncoder):
         # ECAPA-TDNN's pretrained weights are float32 and SpeechBrain's
         # Conv1d layers are not autocast-compatible, causing:
         #   "Input type (float) and bias type (c10::Half) should be the same"
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast(device_type="cuda", enabled=False):
             # encode_batch returns (batch, 192) utterance-level embeddings
             embeddings = self.classifier.encode_batch(wav)  # (batch, 192)
         # If output has extra dim, squeeze it
