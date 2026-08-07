@@ -216,7 +216,6 @@ class ECAPAEncoder(BaseEncoder):
         self,
         source: str = "speechbrain/spkrec-ecapa-voxceleb",
         freeze_encoder: bool = True,
-        device: str = "cpu",
     ):
         super().__init__()
         self.source = source
@@ -229,11 +228,10 @@ class ECAPAEncoder(BaseEncoder):
         from speechbrain.inference.speaker import EncoderClassifier
 
         print(f"  Loading ECAPA-TDNN from {source}...")
-        # Do NOT pass savedir on Windows — it causes symlink permission errors.
-        # The model will be cached in HF Hub cache (~/.cache/huggingface).
+        # Load on CPU first — device will be synced via self.to()
         self.classifier = EncoderClassifier.from_hparams(
             source=source,
-            run_opts={"device": device},
+            run_opts={"device": "cpu"},
         )
 
         if freeze_encoder:
@@ -241,6 +239,20 @@ class ECAPAEncoder(BaseEncoder):
             print(f"  🔒 ECAPA-TDNN encoder: FROZEN")
         else:
             print(f"  🔓 ECAPA-TDNN encoder: UNFROZEN (full fine-tune)")
+
+    def to(self, *args, **kwargs):
+        """
+        Override nn.Module.to() to also move the SpeechBrain classifier.
+        
+        SpeechBrain's EncoderClassifier is NOT an nn.Module — it's a
+        Pretrainer wrapper that stores its own `device` attribute.
+        Without this override, model.to('cuda') leaves the internal
+        ECAPA-TDNN modules on CPU, causing device mismatch errors.
+        """
+        super().to(*args, **kwargs)
+        if hasattr(self, 'classifier'):
+            self.classifier.to(*args, **kwargs)
+        return self
 
     def forward(
         self,
@@ -251,21 +263,16 @@ class ECAPAEncoder(BaseEncoder):
             waveforms: (batch, 1, T)
 
         Returns:
-            hidden_states: (batch, 1, 192) — seq_len=1 because ECAPA has
-                           internal pooling that produces utterance-level embeddings.
-                           We add a dummy seq dim for compatibility.
+            hidden_states: (batch, 1, 192) — ECAPA internal pooling produces
+                           utterance-level embeddings. Dummy seq dim for compat.
             lengths: None
         """
         # SpeechBrain expects (batch, T) — squeeze channel dim
         wav = waveforms.squeeze(1)  # (batch, T)
 
-        # Disable AMP autocast for frozen ECAPA encoder.
-        # This is the standard PyTorch pattern for excluding sub-modules
-        # from mixed precision when they're not autocast-compatible.
-        # .float() ensures the input is float32 even if parent autocast
-        # already cast it to half.
-        with torch.cuda.amp.autocast(enabled=False):
-            embeddings = self.classifier.encode_batch(wav.float())  # (batch, 192)
+        # Encode. ECAPA-TDNN is frozen → no gradients needed.
+        # encode_batch returns (batch, 192) utterance-level embeddings
+        embeddings = self.classifier.encode_batch(wav)  # (batch, 192)
         # If output has extra dim, squeeze it
         if embeddings.ndim == 3:
             embeddings = embeddings.squeeze(1)  # (batch, 192)
