@@ -217,6 +217,9 @@ def main():
     print(f"   Image:      {image}")
     print(f"   Disk:       {disk_size}GB")
     print()
+
+    # Print instance ID as last line for caller parsing
+    print(f"INSTANCE_ID={new_instance_id}")
     print("📊 Monitor progress on DagsHub:")
     print(f"   {config['DAGSHUB_TRACKING_URI']}")
     print()
