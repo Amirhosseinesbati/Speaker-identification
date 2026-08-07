@@ -39,9 +39,10 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # ─────────────────────────────────────────────────────────
 
 SAMPLE_RATE = 16000
-DURATION_SECONDS = 3.0
-TARGET_LENGTH = int(SAMPLE_RATE * DURATION_SECONDS)  # 48000
-NUM_CLASSES = 448  # 0 (unknown) + 447 known speakers (competition spec)
+DURATION_SECONDS = 8.0             # Must match training config
+TARGET_LENGTH = int(SAMPLE_RATE * DURATION_SECONDS)  # 128000
+NUM_CLASSES = 448                  # 0 (unknown) + 447 known (competition spec)
+MODEL_CLASSES = 447                # Actual model output (0 + 446 known in training data)
 
 
 # ─────────────────────────────────────────────────────────
@@ -155,7 +156,7 @@ def load_model(
 
 @torch.no_grad()
 def predict_probs(
-    model: TwoHeadedWavLM,
+    model: TwoHeadedSpeakerModel,
     waveform: np.ndarray,
     device: torch.device,
 ) -> np.ndarray:
@@ -163,7 +164,7 @@ def predict_probs(
     Run inference with TTA and return averaged probability vector.
 
     Returns:
-        probs: (447,) numpy array with sum ≈ 1.0
+        probs: (MODEL_CLASSES,) numpy array with sum ≈ 1.0
     """
     chunks = process_audio_tta(waveform)
     chunk_probs = []
@@ -250,15 +251,16 @@ def run_inference(
             probs = np.ones(NUM_CLASSES) / NUM_CLASSES
         else:
             probs = predict_probs(model, waveform, device)
+            # Pad: model outputs MODEL_CLASSES (447), competition needs NUM_CLASSES (448)
+            if len(probs) < NUM_CLASSES:
+                probs = np.pad(probs, (0, NUM_CLASSES - len(probs)), constant_values=0.0)
 
         row = {"id": audio_path.name}
+        # Ensure sum=1 after padding by renormalizing
+        prob_sum = sum(probs)
         for i in range(NUM_CLASSES):
-            row[str(i)] = float(probs[i])
+            row[str(i)] = float(probs[i] / prob_sum) if prob_sum > 0 else (1.0 / NUM_CLASSES)
         results.append(row)
-
-        # Verify sum
-        assert abs(sum(row[str(i)] for i in range(NUM_CLASSES)) - 1.0) < 1e-5, \
-            f"Probabilities don't sum to 1.0 for {audio_path.name}"
 
     df = pd.DataFrame(results)
     columns = ["id"] + [str(i) for i in range(NUM_CLASSES)]
