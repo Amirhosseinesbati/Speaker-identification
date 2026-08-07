@@ -270,9 +270,12 @@ class ECAPAEncoder(BaseEncoder):
         # SpeechBrain expects (batch, T) — squeeze channel dim
         wav = waveforms.squeeze(1)  # (batch, T)
 
-        # Encode. ECAPA-TDNN is frozen → no gradients needed.
-        # encode_batch returns (batch, 192) utterance-level embeddings
-        embeddings = self.classifier.encode_batch(wav)  # (batch, 192)
+        # TWO fixes are needed for ECAPA-TDNN with AMP training:
+        # 1. self.to() override: keeps SpeechBrain modules on correct device
+        # 2. autocast(enabled=False): prevents float32→float16 conversion
+        #    in Conv1d layers that aren't autocast-compatible
+        with torch.cuda.amp.autocast(enabled=False):
+            embeddings = self.classifier.encode_batch(wav)  # (batch, 192)
         # If output has extra dim, squeeze it
         if embeddings.ndim == 3:
             embeddings = embeddings.squeeze(1)  # (batch, 192)
