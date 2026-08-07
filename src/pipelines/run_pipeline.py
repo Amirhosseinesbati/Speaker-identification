@@ -23,6 +23,13 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
+import mlflow
+try:
+    import dagshub
+    _HAS_DAGSHUB = True
+except ImportError:
+    _HAS_DAGSHUB = False
+
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -86,12 +93,14 @@ def ensure_mlflow_stack(config: dict) -> bool:
     if dagshub_user and dagshub_token:
         os.environ["MLFLOW_TRACKING_USERNAME"] = dagshub_user
         os.environ["MLFLOW_TRACKING_PASSWORD"] = dagshub_token
-        try:
-            import dagshub
-            dagshub.init(repo_owner=dagshub_user, repo_name=os.getenv("DAGSHUB_REPO_NAME", "Speaker-identification"), mlflow=True)
-            print(f"  ✓ DagsHub authenticated: {dagshub_user}")
-        except Exception as e:
-            print(f"  ⚠ DagsHub init error (non-fatal): {e}")
+        if _HAS_DAGSHUB:
+            try:
+                dagshub.init(repo_owner=dagshub_user, repo_name=os.getenv("DAGSHUB_REPO_NAME", "Speaker-identification"), mlflow=True)
+                print(f"  ✓ DagsHub authenticated: {dagshub_user}")
+            except Exception as e:
+                print(f"  ⚠ DagsHub init error (non-fatal): {e}")
+        else:
+            print("  ⚠ dagshub package not installed. MLflow auth via env vars only.")
 
     try:
         client = Client()
