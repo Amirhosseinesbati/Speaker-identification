@@ -60,6 +60,125 @@ def _mlflow_active() -> bool:
 
 
 # ─────────────────────────────────────────────────────────
+#  Step 0: Convert Audio (MP3 → WAV)
+# ─────────────────────────────────────────────────────────
+
+@step
+def convert_audio(
+    config_path: str = "configs/default_config.yaml",
+) -> Dict:
+    """
+    Convert raw MP3 files to WAV (mono 16kHz) for reliable dataloading.
+
+    This step:
+    1. Loads config from config_path
+    2. Checks if WAV files already exist (>4000 = skip)
+    3. Converts all MP3 → WAV using FFmpeg (fast) or librosa (fallback)
+    4. Generates updated labels CSV pointing to .wav files
+    5. Returns updated config dict with WAV paths
+
+    Returns:
+        Updated config dict with audio_dir and labels_path pointing to WAV
+    """
+    import subprocess
+    from pathlib import Path
+    from concurrent.futures import ThreadPoolExecutor
+
+    import librosa
+    import numpy as np
+    import pandas as pd
+    import soundfile as sf
+    import yaml
+    from tqdm import tqdm
+
+    print("=" * 55)
+    print("  [ZenML Step 0/5] Converting MP3 → WAV")
+    print("=" * 55)
+
+    # Load config
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+
+    raw_dir = Path("data/raw")
+    wav_dir = Path("data/processed/audio_wav")
+    wav_labels_path = Path("data/processed/audio_wav_labels.csv")
+
+    # ── Check if already converted ──
+    wav_dir.mkdir(parents=True, exist_ok=True)
+    existing_wavs = list(wav_dir.glob("*.wav"))
+    if len(existing_wavs) > 4000:
+        print(f"  ✅ {len(existing_wavs)} WAV files already exist. Skipping conversion.")
+        config["data"]["audio_dir"] = str(wav_dir)
+        config["data"]["labels_path"] = str(wav_labels_path)
+        return config
+
+    # ── Load raw labels ──
+    raw_labels = raw_dir / "labels.csv"
+    if not raw_labels.exists():
+        raise FileNotFoundError(f"Raw labels not found: {raw_labels}")
+
+    df = pd.read_csv(raw_labels)
+    df.columns = df.columns.str.strip()
+    print(f"  Raw labels: {len(df)} rows")
+
+    # ── Find MP3 files to convert ──
+    mp3_files = list(raw_dir.glob("*.mp3"))
+    print(f"  MP3 files found: {len(mp3_files)}")
+    print(f"  Converting to: {wav_dir}")
+
+    # ── Convert (parallel) ──
+    def _convert_one(mp3_path):
+        wav_path = wav_dir / (mp3_path.stem + ".wav")
+        if wav_path.exists():
+            return "skip"
+        try:
+            # Try FFmpeg first (fast)
+            result = subprocess.run(
+                ["ffmpeg", "-i", str(mp3_path), "-ac", "1", "-ar", "16000",
+                 "-sample_fmt", "s16", "-v", "error", "-y", str(wav_path)],
+                capture_output=True, timeout=30,
+            )
+            if result.returncode == 0 and wav_path.stat().st_size > 1000:
+                return "ok"
+            # FFmpeg failed — fallback to librosa
+            wav_path.unlink(missing_ok=True)
+            y, sr = librosa.load(str(mp3_path), sr=16000, mono=True)
+            sf.write(str(wav_path), y, 16000, subtype="PCM_16")
+            return "ok"
+        except Exception:
+            return "fail"
+
+    converted, skipped, failed = 0, 0, 0
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(tqdm(
+            pool.map(_convert_one, mp3_files),
+            total=len(mp3_files),
+            desc="  Converting",
+        ))
+    for r in results:
+        if r == "ok": converted += 1
+        elif r == "skip": skipped += 1
+        else: failed += 1
+
+    print(f"  ✅ Converted: {converted} | Skipped: {skipped} | Failed: {failed}")
+
+    # ── Build updated labels CSV ──
+    df["audio_file"] = df["audio_file"].apply(lambda x: Path(x).stem + ".wav")
+    df.to_csv(wav_labels_path, index=False)
+    print(f"  Labels saved: {wav_labels_path} ({len(df)} rows)")
+
+    # ── Update config and save to file ──
+    config["data"]["audio_dir"] = str(wav_dir)
+    config["data"]["labels_path"] = str(wav_labels_path)
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+    print(f"  Config updated: audio_dir → {wav_dir}")
+
+    return config
+
+
+# ─────────────────────────────────────────────────────────
 #  Step 1: Prepare Data
 # ─────────────────────────────────────────────────────────
 

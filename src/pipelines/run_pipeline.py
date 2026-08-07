@@ -39,7 +39,7 @@ from zenml import pipeline
 from zenml.client import Client
 from zenml.config import DockerSettings
 
-from src.pipelines.steps import prepare_data, build_model, train_model, evaluate_model
+from src.pipelines.steps import convert_audio, prepare_data, build_model, train_model, evaluate_model
 from src.data_pipeline import load_config
 
 
@@ -189,11 +189,14 @@ def speaker_id_pipeline(config_path: str = "configs/default_config.yaml"):
     Full training pipeline for open-set speaker identification.
 
     Steps:
-        1. prepare_data  → config, class_map, train_df, val_df
-        2. build_model   → model_checkpoint_path
-        3. train_model   → best_model_path, summary
-        4. evaluate_model → metrics
+        0. convert_audio  → config (with WAV paths)
+        1. prepare_data    → config, class_map, train_df, val_df
+        2. build_model     → model_checkpoint_path
+        3. train_model     → best_model_path, summary
+        4. evaluate_model  → metrics
     """
+    # Step 0: Convert MP3 → WAV (skips if already converted)
+    config = convert_audio(config_path=config_path)
     config, class_map, train_df, val_df = prepare_data(config_path=config_path)
     model_path = build_model(config=config, class_map=class_map)
     best_path, summary = train_model(
