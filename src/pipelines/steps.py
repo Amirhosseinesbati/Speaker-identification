@@ -36,7 +36,6 @@ from src.data_pipeline import (
     make_balanced_batch_sampler,
     SpeakerDataset,
 )
-from src.model import TwoHeadedWavLM
 from src.metrics import evaluate_macro_f1
 from src.train import (
     train_epoch,
