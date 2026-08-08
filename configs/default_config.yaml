@@ -39,7 +39,8 @@ model:
       freeze_feature_extractor: true
     ecapa:
       source: speechbrain/spkrec-ecapa-voxceleb
-      freeze_encoder: true
+      freeze_encoder: false        # fine-tune: unfreeze the last blocks only
+      unfreeze_last_n_blocks: 2    # last N SE-Res2Blocks trainable (rest frozen)
     hubert:
       base_model: facebook/hubert-large-ls960-ft
       freeze_feature_extractor: true
@@ -59,6 +60,7 @@ model:
 training:
   epochs: 50
   learning_rate: 0.0001
+  encoder_lr: 1.0e-05            # LR for unfrozen encoder blocks (param group)
   weight_decay: 1.0e-05
   warmup_steps: 500
   max_grad_norm: 5.0

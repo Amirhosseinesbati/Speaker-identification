@@ -505,9 +505,21 @@ def train(config_path: str = "configs/default_config.yaml"):
 
     # ── Optimizer, Loss, Scaler ──
     print(f"\n  [3/4] Setting up optimizer & loss...")
+    # Separate LR for unfrozen encoder blocks (fine-tuning) vs the heads
+    encoder_params = [p for n, p in model.named_parameters()
+                      if "encoder" in n and p.requires_grad]
+    head_params = [p for n, p in model.named_parameters()
+                   if "encoder" not in n and p.requires_grad]
+    param_groups = [{"params": head_params, "lr": train_cfg["learning_rate"]}]
+    if encoder_params:
+        encoder_lr = train_cfg.get("encoder_lr", 1e-5)
+        param_groups.insert(0, {"params": encoder_params, "lr": encoder_lr})
+        print(f"  🔓 Encoder LR: {encoder_lr:.2e} ({len(encoder_params):,} tensors) | "
+              f"Head LR: {train_cfg['learning_rate']:.2e}")
+    else:
+        print(f"  🔒 Encoder fully frozen — single LR {train_cfg['learning_rate']:.2e}")
     optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=train_cfg["learning_rate"],
+        param_groups,
         weight_decay=train_cfg["weight_decay"],
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(

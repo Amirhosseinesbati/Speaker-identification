@@ -191,6 +191,52 @@ class HuBERTEncoder(BaseEncoder):
 #  ECAPA-TDNN Encoder (SpeechBrain)
 # ═══════════════════════════════════════════════════════════
 
+def _patch_speechbrain_lazy_modules():
+    """
+    SpeechBrain (>=1.0) lazily exports optional-dependency modules
+    (e.g. ``speechbrain.integrations.k2_fsa`` → requires ``k2``, which is not
+    installed). Any attribute access on these LazyModules — including the
+    ``hasattr(module, '__file__')`` that ``inspect.getmodule``/``inspect.stack``
+    performs — triggers ``__getattr__`` → import of the missing dependency →
+    ``ImportError``.
+
+    This breaks unrelated libraries whose import machinery inspects the stack:
+    - ``lazy_loader`` (used by librosa 0.11) calls ``inspect.stack()`` while
+      importing ``librosa.core.audio`` and walks frames touching every module
+      in ``sys.modules``, including speechbrain's LazyModules.
+
+    We neutralise this by force-loading every speechbrain LazyModule and
+    replacing the ones that fail (missing optional deps) with plain module
+    stubs, so attribute access never raises. The stubbed targets are optional
+    integrations the project does not use.
+    """
+    import sys
+    import types
+
+    try:
+        from speechbrain.utils.importutils import LazyModule
+    except Exception:
+        return
+
+    for name, mod in list(sys.modules.items()):
+        if not isinstance(mod, LazyModule):
+            continue
+        try:
+            _ = mod.__file__  # force-load if possible
+        except Exception:
+            stub = types.ModuleType(name)
+            stub.__file__ = "<stub>"
+            sys.modules[name] = stub
+            # also patch the attribute on the parent package if present
+            if "." in name:
+                parent, attr = name.rsplit(".", 1)
+                if parent in sys.modules:
+                    try:
+                        setattr(sys.modules[parent], attr, stub)
+                    except Exception:
+                        pass
+
+
 class ECAPAEncoder(BaseEncoder):
     """
     ECAPA-TDNN encoder from SpeechBrain, pretrained on VoxCeleb.
@@ -216,14 +262,21 @@ class ECAPAEncoder(BaseEncoder):
         self,
         source: str = "speechbrain/spkrec-ecapa-voxceleb",
         freeze_encoder: bool = True,
+        unfreeze_last_n_blocks: int = 0,
     ):
         super().__init__()
         self.source = source
         self._output_dim = 192  # ECAPA-TDNN embedding dimension
         self._frozen = freeze_encoder
+        self._unfreeze_last_n_blocks = max(0, int(unfreeze_last_n_blocks))
 
         import os
         os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+        import speechbrain  # noqa: F401  (registers lazy modules)
+        # Neutralise speechbrain's broken lazy modules (k2_fsa etc.) before
+        # any further import/load — see _patch_speechbrain_lazy_modules docstring.
+        _patch_speechbrain_lazy_modules()
 
         from speechbrain.inference.speaker import EncoderClassifier
 
@@ -237,7 +290,10 @@ class ECAPAEncoder(BaseEncoder):
         if freeze_encoder:
             self.freeze()
             print(f"  🔒 ECAPA-TDNN encoder: FROZEN")
+        elif self._unfreeze_last_n_blocks > 0:
+            self.unfreeze_last_n_blocks(self._unfreeze_last_n_blocks)
         else:
+            self.unfreeze()
             print(f"  🔓 ECAPA-TDNN encoder: UNFROZEN (full fine-tune)")
 
         # Put SpeechBrain modules in eval mode. Even when the outer
@@ -291,7 +347,15 @@ class ECAPAEncoder(BaseEncoder):
         # Full-length assumption (no padding)
         wav_lens = torch.ones(wav.shape[0], device=dev)
 
-        with torch.no_grad():
+        if self._frozen:
+            # Fully frozen encoder → pure feature extraction, no graph kept.
+            with torch.no_grad():
+                feats = mods.compute_features(wav)
+                feats = mods.mean_var_norm(feats, wav_lens)
+                embeddings = mods.embedding_model(feats, wav_lens)  # (batch, 192)
+        else:
+            # Partially unfrozen (fine-tuning) → keep the graph so gradients
+            # flow back into the last blocks.
             feats = mods.compute_features(wav)
             feats = mods.mean_var_norm(feats, wav_lens)
             embeddings = mods.embedding_model(feats, wav_lens)  # (batch, 192)
@@ -314,12 +378,57 @@ class ECAPAEncoder(BaseEncoder):
         """Freeze all ECAPA-TDNN parameters."""
         for param in self.classifier.parameters():
             param.requires_grad = False
+        self._frozen = True
 
     def unfreeze(self) -> None:
-        """Unfreeze for fine-tuning."""
+        """Unfreeze all ECAPA-TDNN parameters (full fine-tune)."""
         for param in self.classifier.parameters():
             param.requires_grad = True
+        self._frozen = False
         print("  🔓 ECAPA-TDNN encoder UNFROZEN.")
+
+    def unfreeze_last_n_blocks(self, n: int = 2) -> None:
+        """
+        Unfreeze only the last `n` SE-Res2Blocks of the ECAPA-TDNN trunk.
+
+        Everything else (feature extractor, MFA, attentive pooling, final fc)
+        stays frozen, so the trainable parameter count (and VRAM) stays small
+        enough to fine-tune on a 6 GB GPU. BatchNorm layers are kept in eval
+        mode (see train() override) to avoid corrupting running statistics.
+
+        The SpeechBrain ECAPA trunk lives in
+        `self.classifier.mods.embedding_model.blocks` (ModuleList of
+        SE-Res2Blocks).
+        """
+        self.freeze()  # freeze everything first
+        embedding = self.classifier.mods.embedding_model
+        blocks = getattr(embedding, "blocks", None)
+
+        if blocks is not None and len(blocks) > 0:
+            n_blocks = len(blocks)
+            n = max(1, min(n, n_blocks))
+            for i in range(n_blocks - n, n_blocks):
+                for p in blocks[i].parameters():
+                    p.requires_grad = True
+            self._frozen = False
+            n_train = sum(p.numel() for p in self.classifier.parameters() if p.requires_grad)
+            print(f"  🔓 ECAPA-TDNN: unfroze last {n}/{n_blocks} block(s) — "
+                  f"{n_train:,} trainable encoder params")
+            return
+
+        # Fallback for unusual ECAPA variants: unfreeze the last n top-level
+        # trainable children of the embedding model.
+        children = [(nm, m) for nm, m in embedding.named_children()
+                    if sum(p.numel() for p in m.parameters()) > 0]
+        targets = set(nm for nm, _ in children[-n:])
+        for nm, m in children:
+            if nm in targets:
+                for p in m.parameters():
+                    p.requires_grad = True
+        self._frozen = False
+        n_train = sum(p.numel() for p in self.classifier.parameters() if p.requires_grad)
+        print(f"  🔓 ECAPA-TDNN: unfroze last {n} module(s) — "
+              f"{n_train:,} trainable encoder params")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -367,6 +476,7 @@ def create_encoder(config: dict) -> BaseEncoder:
         return ECAPAEncoder(
             source=enc_cfg.get("source", "speechbrain/spkrec-ecapa-voxceleb"),
             freeze_encoder=enc_cfg.get("freeze_encoder", True),
+            unfreeze_last_n_blocks=enc_cfg.get("unfreeze_last_n_blocks", 0),
         )
     elif encoder_type == "hubert":
         return HuBERTEncoder(
