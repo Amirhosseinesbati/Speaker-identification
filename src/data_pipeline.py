@@ -485,7 +485,15 @@ class AudioAugmentation:
 class SpeakerDataset(Dataset):
     """
     Dataset for Open-Set Speaker Identification.
-    Loads MP3/WAV, resamples to 16kHz, pads/truncates to fixed length.
+
+    Loads the FULL audio file (MP3/WAV → 16 kHz mono) and returns a stack of
+    fixed-length windows so the whole signal is usable:
+      - train: `num_train_windows` random crops (each augmented independently)
+      - eval/inference: sliding windows with `eval_hop_ratio` overlap over the
+        full file, capped at `max_eval_windows` (evenly spread), with the last
+        window repeated to a constant count so DataLoader batching stays simple.
+
+    `__getitem__` returns (windows, label) with windows shape (W, 1, T).
     """
 
     def __init__(
@@ -493,10 +501,13 @@ class SpeakerDataset(Dataset):
         df: pd.DataFrame,
         audio_dir: str,
         sample_rate: int = 16000,
-        duration_seconds: float = 5.0,
+        duration_seconds: float = 8.0,
         augment: bool = False,
         min_valid_duration: float = 1.0,
         mixup_alpha: float = 0.0,
+        num_train_windows: int = 1,
+        eval_hop_ratio: float = 0.5,
+        max_eval_windows: int = 8,
     ):
         self.df = df.reset_index(drop=True)
         self.audio_dir = Path(audio_dir)
@@ -505,6 +516,9 @@ class SpeakerDataset(Dataset):
         self.augment = augment
         self.min_valid_duration = min_valid_duration
         self.mixup_alpha = mixup_alpha
+        self.num_train_windows = max(1, num_train_windows)
+        self.eval_hop_ratio = eval_hop_ratio
+        self.max_eval_windows = max(1, max_eval_windows)
 
         if self.augment:
             self.augmentor = AudioAugmentation(sample_rate)
@@ -517,33 +531,80 @@ class SpeakerDataset(Dataset):
         audio_path = self.audio_dir / row["audio_file"]
         label = torch.tensor(row["label"], dtype=torch.long)
 
-        # Load audio
+        # Load FULL audio (no crop — windowing happens below)
         waveform = self._load_audio(audio_path)
 
-        # Augmentation (train only)
+        # MixUp: mix with another random sample (OOD regularization)
+        if self.mixup_alpha > 0 and self.augment and torch.rand(1).item() < 0.5:
+            other_idx = torch.randint(0, len(self.df), (1,)).item()
+            other_row = self.df.iloc[other_idx]
+            other_path = self.audio_dir / other_row["audio_file"]
+            other_waveform = self._load_audio(other_path)
+
+            n = max(waveform.size(-1), other_waveform.size(-1))
+            if waveform.size(-1) < n:
+                waveform = torch.nn.functional.pad(waveform, (0, n - waveform.size(-1)))
+            if other_waveform.size(-1) < n:
+                other_waveform = torch.nn.functional.pad(other_waveform, (0, n - other_waveform.size(-1)))
+
+            # Mix: λ ~ Beta(α, α); keep original label (ambiguous mixed audio)
+            lam = float(torch.distributions.Beta(self.mixup_alpha, self.mixup_alpha).sample())
+            waveform = lam * waveform + (1 - lam) * other_waveform
+
+        # Windowing: train → random crops; eval → sliding windows
         if self.augment:
-            waveform = self.augmentor(waveform)
+            windows = self._train_windows(waveform)
+        else:
+            windows = self._eval_windows(waveform)
 
-            # MixUp: mix with another random sample (OOD regularization)
-            if self.mixup_alpha > 0 and torch.rand(1).item() < 0.5:
-                # Pick a random sample (possibly different class)
-                other_idx = torch.randint(0, len(self.df), (1,)).item()
-                other_row = self.df.iloc[other_idx]
-                other_path = self.audio_dir / other_row["audio_file"]
-                other_waveform = self._load_audio(other_path)
-                other_waveform = self.augmentor(other_waveform)
-                other_label = torch.tensor(other_row["label"], dtype=torch.long)
+        return windows, label
 
-                # Mix: λ ~ Beta(α, α)
-                lam = float(torch.distributions.Beta(self.mixup_alpha, self.mixup_alpha).sample())
-                waveform = lam * waveform + (1 - lam) * other_waveform
-                # Keep original label (acts as OOD regularization — mixed audio is ambiguous)
+    def _train_windows(self, waveform: torch.Tensor) -> torch.Tensor:
+        """Return (num_train_windows, 1, T) — random crops, each augmented."""
+        T = self.target_length
+        windows = []
+        for _ in range(self.num_train_windows):
+            w = waveform
+            n = w.size(-1)
+            if n > T:
+                max_start = n - T
+                start = torch.randint(0, max_start + 1, (1,)).item()
+                w = w[..., start : start + T]
+            elif n < T:
+                w = torch.nn.functional.pad(w, (0, T - n))
+            if self.augment:
+                w = self.augmentor(w)
+            windows.append(w)
+        return torch.stack(windows)
 
-        return waveform, label
+    def _eval_windows(self, waveform: torch.Tensor) -> torch.Tensor:
+        """
+        Return (max_eval_windows, 1, T) sliding windows.
+
+        Windows start every `eval_hop_ratio * T` samples over the full file.
+        If there are more windows than `max_eval_windows`, they are evenly
+        spread across the file; if fewer, the last window is repeated to keep
+        a constant count (so DataLoader batching stays simple).
+        """
+        T = self.target_length
+        n = waveform.size(-1)
+        if n <= T:
+            w = torch.nn.functional.pad(waveform, (0, T - n))
+            return torch.stack([w] * self.max_eval_windows)
+
+        hop = max(1, int(T * self.eval_hop_ratio))
+        starts = list(range(0, n - T + 1, hop))
+        if len(starts) > self.max_eval_windows:
+            # Evenly spread across the whole file (use the full signal)
+            starts = np.unique(np.linspace(0, n - T, self.max_eval_windows).astype(int)).tolist()
+        windows = [waveform[..., s : s + T] for s in starts]
+        while len(windows) < self.max_eval_windows:
+            windows.append(windows[-1])  # repeat last window → constant count
+        return torch.stack(windows)
 
     def _load_audio(self, path: Path) -> torch.Tensor:
         """
-        Load and preprocess audio file.
+        Load and resample the FULL audio file (no crop).
 
         WAV files: uses soundfile backend (fast, no mpg123 dependency)
         Other formats: falls back to librosa
@@ -559,30 +620,15 @@ class SpeakerDataset(Dataset):
                 if sr != self.target_sr:
                     import librosa
                     waveform = librosa.resample(waveform, orig_sr=sr, target_sr=self.target_sr)
-                waveform = torch.from_numpy(waveform).unsqueeze(0).float()  # (1, T)
+                waveform = torch.from_numpy(waveform).unsqueeze(0).float()  # (1, N)
             else:
                 # librosa for MP3 and other formats
                 waveform, sr = librosa.load(str(path), sr=self.target_sr, mono=True)
-                waveform = torch.from_numpy(waveform).unsqueeze(0).float()  # (1, T)
+                waveform = torch.from_numpy(waveform).unsqueeze(0).float()  # (1, N)
         except Exception as e:
             # Return silence for corrupted files
             print(f"  ⚠ Warning: Could not load {path.name}: {e}")
             return torch.zeros(1, self.target_length)
-
-        # Pad or truncate to target length
-        if waveform.size(-1) < self.target_length:
-            # Pad with zeros at the end
-            pad_size = self.target_length - waveform.size(-1)
-            waveform = torch.nn.functional.pad(waveform, (0, pad_size))
-        elif waveform.size(-1) > self.target_length:
-            # Random crop for training (every epoch sees different windows)
-            # Center crop for validation (deterministic)
-            if self.augment:
-                max_start = waveform.size(-1) - self.target_length
-                start = torch.randint(0, max_start + 1, (1,)).item()
-            else:
-                start = (waveform.size(-1) - self.target_length) // 2
-            waveform = waveform[..., start : start + self.target_length]
 
         return waveform
 
@@ -658,6 +704,9 @@ def get_dataloaders(
         duration_seconds=audio_cfg["duration_seconds"],
         augment=True,
         min_valid_duration=min_valid_duration,
+        num_train_windows=audio_cfg.get("num_train_windows", 1),
+        eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
+        max_eval_windows=audio_cfg.get("max_eval_windows", 8),
     )
 
     val_dataset = SpeakerDataset(
@@ -667,6 +716,9 @@ def get_dataloaders(
         duration_seconds=audio_cfg["duration_seconds"],
         augment=False,
         min_valid_duration=min_valid_duration,
+        num_train_windows=audio_cfg.get("num_train_windows", 1),
+        eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
+        max_eval_windows=audio_cfg.get("max_eval_windows", 8),
     )
 
     # ── Balanced Batch Sampler ──

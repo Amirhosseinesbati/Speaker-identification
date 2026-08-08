@@ -282,6 +282,46 @@ def compute_speaker_accuracy(
 
 
 # ─────────────────────────────────────────────────────────
+#  Multi-Window Forward Helper (TTA)
+# ─────────────────────────────────────────────────────────
+
+def forward_multi_window(
+    model: nn.Module,
+    waveforms: torch.Tensor,
+    labels: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Forward pass with multi-window TTA.
+
+    Accepts either:
+      - (B, 1, T)   → plain single-window forward
+      - (B, W, 1, T) → runs the model on every window and averages the
+                       resulting logits over W (window-level TTA, so the
+                       full file length is used).
+
+    Args:
+        model:      TwoHeadedSpeakerModel (or anything with forward(w, labels)).
+        waveforms:  (B, 1, T) or (B, W, 1, T) raw audio, 16 kHz.
+        labels:     Optional (B,) speaker labels (expanded per window for
+                    ArcFace margin when given).
+
+    Returns:
+        ood_logits:     (B, 1)
+        speaker_logits: (B, N)
+    """
+    if waveforms.dim() == 3:
+        return model(waveforms, labels=labels)
+
+    B, W = waveforms.shape[0], waveforms.shape[1]
+    wf = waveforms.reshape(B * W, 1, -1)
+    lab = labels.repeat_interleave(W) if labels is not None else None
+    ood, spk = model(wf, labels=lab)
+    ood = ood.view(B, W, -1).mean(dim=1)
+    spk = spk.view(B, W, -1).mean(dim=1)
+    return ood, spk
+
+
+# ─────────────────────────────────────────────────────────
 #  Training Epoch
 # ─────────────────────────────────────────────────────────
 
@@ -314,7 +354,7 @@ def train_epoch(
         optimizer.zero_grad()
 
         with autocast():
-            ood_logits, speaker_logits = model(waveforms, labels=labels)
+            ood_logits, speaker_logits = forward_multi_window(model, waveforms, labels=labels)
             loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
         # Backward pass with AMP
@@ -381,7 +421,7 @@ def validate_epoch(
         waveforms = waveforms.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
-        ood_logits, speaker_logits = model(waveforms, labels=labels)
+        ood_logits, speaker_logits = forward_multi_window(model, waveforms, labels=labels)
         loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
         total_loss += loss_dict["loss_total"]
@@ -585,7 +625,7 @@ def main():
 
     optimizer.zero_grad()
     with autocast():
-        ood_logits, speaker_logits = model(waveforms)
+        ood_logits, speaker_logits = forward_multi_window(model, waveforms, labels=labels)
         loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
     scaler.scale(loss).backward()

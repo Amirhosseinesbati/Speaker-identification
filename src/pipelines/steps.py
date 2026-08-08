@@ -40,6 +40,7 @@ from src.train import (
     train_epoch,
     validate_epoch,
     TwoPartLoss,
+    forward_multi_window,
     compute_ood_accuracy,
     compute_speaker_accuracy,
     setup_device,
@@ -404,6 +405,9 @@ def train_model(
         sample_rate=audio_cfg["sample_rate"],
         duration_seconds=audio_cfg["duration_seconds"],
         augment=True,
+        num_train_windows=audio_cfg.get("num_train_windows", 1),
+        eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
+        max_eval_windows=audio_cfg.get("max_eval_windows", 8),
     )
     val_dataset = SpeakerDataset(
         df=val_df,
@@ -411,6 +415,9 @@ def train_model(
         sample_rate=audio_cfg["sample_rate"],
         duration_seconds=audio_cfg["duration_seconds"],
         augment=False,
+        num_train_windows=audio_cfg.get("num_train_windows", 1),
+        eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
+        max_eval_windows=audio_cfg.get("max_eval_windows", 8),
     )
 
     train_labels = train_df["label"].values
@@ -626,6 +633,9 @@ def evaluate_model(
         sample_rate=audio_cfg["sample_rate"],
         duration_seconds=audio_cfg["duration_seconds"],
         augment=False,
+        num_train_windows=audio_cfg.get("num_train_windows", 1),
+        eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
+        max_eval_windows=audio_cfg.get("max_eval_windows", 8),
     )
     hw_profile = get_active_profile(config)
     val_loader = torch.utils.data.DataLoader(
@@ -660,7 +670,7 @@ def evaluate_model(
             waveforms = waveforms.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
 
-            ood_logits, speaker_logits = model(waveforms, labels=labels)
+            ood_logits, speaker_logits = forward_multi_window(model, waveforms, labels=labels)
             loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
             total_loss += loss_dict["loss_total"]

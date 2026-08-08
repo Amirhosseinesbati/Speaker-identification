@@ -5,7 +5,7 @@ hardware:
       description: GTX 1660 Ti (6GB VRAM)
       device: cuda
       batch_size: 8
-      num_workers: 2
+      num_workers: 0
       mixed_precision: true
     vastai:
       description: RTX 3090 / 4090 / A5000 (24GB+ VRAM)
@@ -24,6 +24,9 @@ audio:
   duration_seconds: 8.0
   min_valid_duration: 1.0
   ood_batch_ratio: 0.30            # Target OOD fraction per batch
+  num_train_windows: 3             # Random crops per file in train (multi-window TTA)
+  eval_hop_ratio: 0.5              # Sliding-window overlap for eval/inference
+  max_eval_windows: 8              # Cap on eval windows per file
   n_mels: 80
   n_fft: 400
   hop_length: 160
@@ -54,7 +57,7 @@ model:
   fusion:
     ensemble_method: none
 training:
-  epochs: 20
+  epochs: 50
   learning_rate: 0.0001
   weight_decay: 1.0e-05
   warmup_steps: 500

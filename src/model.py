@@ -114,12 +114,20 @@ class TwoHeadedSpeakerModel(nn.Module):
             p[i] = (1 - p[0]) * softmax(speaker_logits)[i]
 
         Args:
-            waveforms: (batch, 1, T)
+            waveforms: (batch, 1, T) or (batch, W, 1, T) — multi-window inputs
+                       are run window-by-window and the logits averaged.
 
         Returns:
             probs: (batch, 1 + num_known) — sum(dim=1) ≈ 1.0
         """
-        ood_logit, speaker_logits = self.forward(waveforms, labels=None)
+        if waveforms.dim() == 4:
+            B, W = waveforms.shape[0], waveforms.shape[1]
+            wf = waveforms.reshape(B * W, 1, -1)
+            ood_logit, speaker_logits = self.forward(wf, labels=None)
+            ood_logit = ood_logit.view(B, W, 1).mean(dim=1)
+            speaker_logits = speaker_logits.view(B, W, -1).mean(dim=1)
+        else:
+            ood_logit, speaker_logits = self.forward(waveforms, labels=None)
 
         # P(unknown) = sigmoid(ood_logit)
         p_unknown = torch.sigmoid(ood_logit)  # (batch, 1)
