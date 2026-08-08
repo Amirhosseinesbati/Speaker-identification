@@ -32,7 +32,7 @@ from src.data_pipeline import (
     load_config,
     get_active_profile,
     create_class_mapping,
-    stratified_split,
+    prepare_clean_split,
     SpeakerDataset,
 )
 from src.model import TwoHeadedWavLM
@@ -214,7 +214,8 @@ def prepare_data(
     config_path: str = "configs/default_config.yaml",
 ) -> Tuple[Dict, Dict, pd.DataFrame, pd.DataFrame]:
     """
-    Load config, prepare labels, and perform stratified split.
+    Load config, prepare labels, and perform leak-free stratified split
+    (corrupted / MD5-duplicate files filtered; split_report.json written).
 
     Returns:
         config, class_map, train_df, val_df
@@ -225,6 +226,7 @@ def prepare_data(
 
     config = load_config(config_path)
     data_cfg = config["data"]
+    audio_cfg = config["audio"]
 
     # ── Verify audio paths exist ──
     labels_path = data_cfg["labels_path"]
@@ -238,22 +240,15 @@ def prepare_data(
     if not os.path.exists(labels_path):
         raise FileNotFoundError(f"Labels not found: {labels_path}")
 
-    # Load raw labels
-    df = pd.read_csv(labels_path)
-    df.columns = df.columns.str.strip()
-    df = df.drop_duplicates().reset_index(drop=True)
-    df = df.dropna(subset=["speaker_id", "audio_file"]).reset_index(drop=True)
-
-    # Create class mapping
-    class_map = create_class_mapping(df)
-    df["label"] = df["speaker_id"].map(class_map)
-
-    # Save cleaned labels
-    os.makedirs(os.path.dirname(data_cfg["processed_labels"]), exist_ok=True)
-    df.to_csv(data_cfg["processed_labels"], index=False)
-
-    # Stratified split
-    train_df, val_df = stratified_split(df, val_per_known=1, unknown_val_ratio=0.2)
+    # Leak-free split with corrupted/duplicate filtering + split_report.json
+    train_df, val_df, class_map = prepare_clean_split(
+        labels_path=labels_path,
+        audio_dir=audio_dir,
+        processed_labels=data_cfg["processed_labels"],
+        val_per_known=1,
+        unknown_val_ratio=0.2,
+        min_valid_duration=audio_cfg.get("min_valid_duration", 1.0),
+    )
 
     print(f"  ✓ Train: {len(train_df)} samples | Val: {len(val_df)} samples")
     print(f"  ✓ Classes: {len(class_map)} (0=unknown, 1..{len(class_map)-1}=known)")
@@ -367,7 +362,12 @@ def train_model(
     # ── Filter short/corrupted files (min_valid_duration) ──
     min_valid_duration = audio_cfg.get("min_valid_duration", 0.0)
     if min_valid_duration > 0:
-        import librosa
+        # NOTE: use soundfile.info (header-only, C-extension) instead of
+        # librosa.get_duration. librosa's lazy submodule loader calls
+        # inspect.stack() which trips over speechbrain's LazyModule
+        # (`speechbrain.integrations.k2_fsa` → missing `k2` package) and
+        # raises an ImportError. soundfile has no such interaction.
+        import soundfile as sf
         all_files = set(train_df["audio_file"].unique()) | set(val_df["audio_file"].unique())
         short_files = set()
         audio_dir_path = Path(data_cfg["audio_dir"])
@@ -376,7 +376,7 @@ def train_model(
             fpath = audio_dir_path / fname
             if fpath.exists():
                 try:
-                    dur = librosa.get_duration(path=str(fpath))
+                    dur = sf.info(str(fpath)).duration
                     if dur < min_valid_duration:
                         short_files.add(fname)
                         corrupted_log.append({"file": fname, "duration": round(dur, 4), "reason": "too_short"})

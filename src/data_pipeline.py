@@ -6,7 +6,7 @@ Handles stratified 5-shot split, augmentation, and weighted sampling.
 import os
 import warnings
 from pathlib import Path
-from typing import Optional, Tuple, Dict
+from typing import Dict, List, Optional, Set, Tuple
 
 import librosa
 import numpy as np
@@ -55,38 +55,151 @@ def create_class_mapping(labels_df: pd.DataFrame) -> Dict[str, int]:
     return mapping
 
 
+def find_duplicate_groups(
+    labels_df: pd.DataFrame,
+    audio_dir: str,
+) -> Dict[str, List[str]]:
+    """
+    Group audio files with identical byte content (streaming MD5, 1 MB chunks).
+
+    Only MD5 digests shared by more than one file are returned — these are the
+    near-certain duplicate recordings that can leak across a random split.
+
+    Args:
+        labels_df: DataFrame with an `audio_file` column.
+        audio_dir: Directory containing the (converted) audio files.
+
+    Returns:
+        dict: md5 hex digest -> sorted list of audio_file names sharing it.
+    """
+    import hashlib
+
+    audio_dir = Path(audio_dir)
+    md5_to_files: Dict[str, List[str]] = {}
+
+    for fname in sorted(labels_df["audio_file"].unique()):
+        fpath = audio_dir / fname
+        hasher = hashlib.md5()
+        try:
+            with open(fpath, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    hasher.update(chunk)
+        except OSError:
+            continue  # missing/unreadable — handled by find_corrupted_files
+        md5_to_files.setdefault(hasher.hexdigest(), []).append(fname)
+
+    return {md5: fnames for md5, fnames in md5_to_files.items() if len(fnames) > 1}
+
+
+def scan_durations(labels_df: pd.DataFrame, audio_dir: str) -> Dict[str, float]:
+    """
+    Header-only duration scan (soundfile.info) for every labelled file.
+
+    Returns {audio_file: duration_seconds}; unreadable/missing files get 0.0
+    (they are reported as corrupted by find_corrupted_files).
+    """
+    import soundfile as sf
+
+    audio_dir = Path(audio_dir)
+    durations: Dict[str, float] = {}
+    for fname in labels_df["audio_file"].unique():
+        fpath = audio_dir / fname
+        try:
+            durations[fname] = sf.info(str(fpath)).duration
+        except Exception:
+            durations[fname] = 0.0
+    return durations
+
+
+def find_corrupted_files(
+    labels_df: pd.DataFrame,
+    audio_dir: str,
+    min_valid_duration: float = 1.0,
+) -> List[str]:
+    """
+    Return the list of audio_files that are missing, unreadable, or shorter
+    than `min_valid_duration` seconds (header-only soundfile.info check).
+    """
+    import soundfile as sf
+
+    audio_dir = Path(audio_dir)
+    corrupted: List[str] = []
+    for fname in labels_df["audio_file"].unique():
+        fpath = audio_dir / fname
+        if not fpath.exists():
+            corrupted.append(fname)
+            continue
+        try:
+            if sf.info(str(fpath)).duration < min_valid_duration:
+                corrupted.append(fname)
+        except Exception:
+            corrupted.append(fname)
+    return corrupted
+
+
 def stratified_split(
     labels_df: pd.DataFrame,
     val_per_known: int = 1,
     unknown_val_ratio: float = 0.2,
     random_seed: int = 42,
+    duplicate_groups: Optional[Dict[str, List[str]]] = None,
+    corrupted_files: Optional[Set[str]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Strict stratified split:
-    - For known speakers: assign exactly `val_per_known` samples to val, rest to train.
-    - For 'unknown' class: split by `unknown_val_ratio`.
+    Leakage-aware stratified split.
+
+    - Corrupted files (via `corrupted_files`) are dropped entirely.
+    - Files that belong to an MD5-duplicate group are **never** put in val, so
+      byte-identical recordings cannot straddle the train/val boundary.
+      A known speaker whose files are all duplicated is excluded from val
+      (with a warning) to keep val strictly duplicate-free.
+    - Known speakers: exactly `val_per_known` non-duplicate files → val, rest → train.
+    - 'unknown' class: `unknown_val_ratio` (of non-duplicate files) → val.
     """
     rng = np.random.default_rng(random_seed)
+    df = labels_df.copy()
+    if corrupted_files:
+        df = df[~df["audio_file"].isin(corrupted_files)].reset_index(drop=True)
+
+    # Files that are byte-identical duplicates must never appear in val
+    dup_files: Set[str] = set()
+    if duplicate_groups:
+        for fnames in duplicate_groups.values():
+            dup_files.update(fnames)
+
     train_rows, val_rows = [], []
 
-    df_known = labels_df[labels_df["speaker_id"] != "unknown"]
-    df_unknown = labels_df[labels_df["speaker_id"] == "unknown"]
+    df_known = df[df["speaker_id"] != "unknown"]
+    df_unknown = df[df["speaker_id"] == "unknown"]
 
-    # Known speakers: 1 val, rest train
+    # Known speakers: val from NON-duplicate files only
     for speaker_id, group in df_known.groupby("speaker_id"):
         group = group.reset_index(drop=True)
         n = len(group)
+        dup_mask = group["audio_file"].isin(dup_files).values
+        non_dup_idx = np.where(~dup_mask)[0]
         n_val = min(val_per_known, n - 1)  # ensure at least 1 train
-        val_indices = rng.choice(n, size=n_val, replace=False)
-        val_mask = np.zeros(n, dtype=bool)
-        val_mask[val_indices] = True
+
+        if len(non_dup_idx) >= n_val:
+            chosen = rng.choice(non_dup_idx, size=n_val, replace=False)
+            val_mask = np.zeros(n, dtype=bool)
+            val_mask[chosen] = True
+        else:
+            # Speaker's files are (mostly) duplicated → keep val duplicate-free:
+            # the whole speaker goes to train.
+            print(f"  ⚠ Speaker {speaker_id[:8]}… has {int(dup_mask.sum())}/{n} "
+                  f"duplicated files — excluded from val (val kept duplicate-free)")
+            val_mask = np.zeros(n, dtype=bool)
+
         val_rows.append(group[val_mask])
         train_rows.append(group[~val_mask])
 
-    # Unknown class: 80/20 split
+    # Unknown class: ratio split, but duplicate files stay in train
     n_unknown = len(df_unknown)
-    n_val_unknown = int(n_unknown * unknown_val_ratio)
-    val_idx = rng.choice(n_unknown, size=n_val_unknown, replace=False)
+    cand_idx = np.where(~df_unknown["audio_file"].isin(dup_files).values)[0]
+    n_val_unknown = min(int(n_unknown * unknown_val_ratio), len(cand_idx))
+    val_idx = (rng.choice(cand_idx, size=n_val_unknown, replace=False)
+               if n_val_unknown > 0 else np.array([], dtype=int))
     val_mask = np.zeros(n_unknown, dtype=bool)
     val_mask[val_idx] = True
     val_rows.append(df_unknown[val_mask])
@@ -102,16 +215,190 @@ def stratified_split(
     return train_df, val_df
 
 
+def _write_split_report(
+    labels_df: pd.DataFrame,
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    duplicate_groups: Dict[str, List[str]],
+    corrupted: List[str],
+    durations: Dict[str, float],
+    output_path: str,
+) -> None:
+    """
+    Write data/processed/split_report.json: corrupted files (known/unknown),
+    MD5-duplicate groups (incl. conflicting-label groups), and per-known-speaker
+    train/val counts + usable seconds.
+    """
+    import json
+
+    corrupted_known = int(labels_df[
+        labels_df["audio_file"].isin(corrupted) & (labels_df["speaker_id"] != "unknown")
+    ].shape[0])
+    corrupted_unknown = int(labels_df[
+        labels_df["audio_file"].isin(corrupted) & (labels_df["speaker_id"] == "unknown")
+    ].shape[0])
+
+    groups_info = []
+    n_conflicting = 0
+    for md5, fnames in duplicate_groups.items():
+        lbls = sorted(set(labels_df.loc[labels_df["audio_file"].isin(fnames), "speaker_id"]))
+        conflicting = len(lbls) > 1
+        if conflicting:
+            n_conflicting += 1
+        groups_info.append({
+            "md5": md5,
+            "n_files": len(fnames),
+            "files": fnames,
+            "labels": lbls,
+            "conflicting_labels": conflicting,
+        })
+
+    train_files = set(train_df["audio_file"])
+    per_speaker = {}
+    for sid, group in labels_df[labels_df["speaker_id"] != "unknown"].groupby("speaker_id"):
+        good = group[~group["audio_file"].isin(corrupted)]
+        per_speaker[sid] = {
+            "train_files": int(group[group["audio_file"].isin(train_files)].shape[0]),
+            "val_files": int(group[~group["audio_file"].isin(train_files)].shape[0]),
+            "usable_seconds": round(float(sum(durations.get(f, 0.0) for f in good["audio_file"])), 2),
+        }
+
+    report = {
+        "corrupted_files": {
+            "total": len(corrupted),
+            "known": corrupted_known,
+            "unknown": corrupted_unknown,
+            "files": corrupted,
+        },
+        "duplicate_groups": {
+            "total_groups": len(duplicate_groups),
+            "total_files": sum(len(v) for v in duplicate_groups.values()),
+            "conflicting_label_groups": n_conflicting,
+            "groups": groups_info,
+        },
+        "per_known_speaker": per_speaker,
+        "split_summary": {
+            "train_samples": int(len(train_df)),
+            "val_samples": int(len(val_df)),
+            "train_known": int((train_df["label"] != 0).sum()),
+            "val_known": int((val_df["label"] != 0).sum()),
+            "train_unknown": int((train_df["label"] == 0).sum()),
+            "val_unknown": int((val_df["label"] == 0).sum()),
+        },
+    }
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+    print(f"  ✓ Split report saved to {output_path}")
+
+
+def prepare_clean_split(
+    labels_path: str,
+    audio_dir: str,
+    processed_labels: str,
+    val_per_known: int = 1,
+    unknown_val_ratio: float = 0.2,
+    min_valid_duration: float = 1.0,
+    random_seed: int = 42,
+    split_report_path: str = "data/processed/split_report.json",
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
+    """
+    Load, clean and leak-free split labels; write data/processed/split_report.json.
+
+    Pipeline:
+      1. Load & clean labels (drops exact CSV duplicate rows / NaN).
+      2. Scan durations (header-only) for every labelled file.
+      3. Detect corrupted (< min_valid_duration) / missing files.
+      4. Detect MD5-duplicate groups (incl. conflicting-label groups).
+      5. Leak-free stratified_split (duplicates/corrupted never in val).
+      6. Save cleaned labels and split_report.json.
+
+    Returns:
+        train_df, val_df, class_map
+    """
+    df = pd.read_csv(labels_path)
+    df.columns = df.columns.str.strip()
+
+    # Basic cleaning
+    df = df.drop_duplicates().reset_index(drop=True)
+    df = df.dropna(subset=["speaker_id", "audio_file"]).reset_index(drop=True)
+
+    # Create class mapping
+    class_map = create_class_mapping(df)
+    df["label"] = df["speaker_id"].map(class_map)
+
+    # ── Leak-aware scans ──
+    print(f"  Scanning durations ({len(df):,} files)...")
+    durations = scan_durations(df, audio_dir)
+    print("  Detecting corrupted files...")
+    corrupted = find_corrupted_files(df, audio_dir, min_valid_duration)
+    if corrupted:
+        print(f"  ⚠ {len(corrupted)} corrupted/short files (< {min_valid_duration}s)")
+    print("  Detecting MD5-duplicate groups...")
+    dup_groups = find_duplicate_groups(df, audio_dir)
+    if dup_groups:
+        print(f"  ⚠ {len(dup_groups)} duplicate groups "
+              f"({sum(len(v) for v in dup_groups.values())} files)")
+
+    # ── Leak-free split ──
+    train_df, val_df = stratified_split(
+        df,
+        val_per_known=val_per_known,
+        unknown_val_ratio=unknown_val_ratio,
+        random_seed=random_seed,
+        duplicate_groups=dup_groups,
+        corrupted_files=set(corrupted),
+    )
+
+    # ── Save cleaned labels ──
+    os.makedirs(os.path.dirname(processed_labels), exist_ok=True)
+    df.to_csv(processed_labels, index=False)
+    print(f"  ✓ Saved cleaned labels ({len(df)} rows) to {processed_labels}")
+
+    # ── Split report ──
+    _write_split_report(
+        df, train_df, val_df, dup_groups, corrupted, durations, split_report_path,
+    )
+
+    print(f"  ✓ Train samples: {len(train_df)} | Val samples: {len(val_df)}")
+    print(
+        f"    Train known: {(train_df['label'] != 0).sum()} | "
+        f"Train unknown: {(train_df['label'] == 0).sum()}"
+    )
+    print(
+        f"    Val known: {(val_df['label'] != 0).sum()} | "
+        f"Val unknown: {(val_df['label'] == 0).sum()}"
+    )
+
+    return train_df, val_df, class_map
+
+
 def prepare_labels(
     labels_path: str,
     output_path: str,
     val_per_known: int = 1,
     unknown_val_ratio: float = 0.2,
+    audio_dir: Optional[str] = None,
+    min_valid_duration: float = 1.0,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
     """
     Load, clean, split labels and create class mapping.
     Saves cleaned labels to output_path.
+
+    If `audio_dir` is given, the leak-free pipeline (corrupted/duplicate
+    detection + split_report.json) is used; otherwise a plain stratified split.
     """
+    if audio_dir is not None:
+        return prepare_clean_split(
+            labels_path=labels_path,
+            audio_dir=audio_dir,
+            processed_labels=output_path,
+            val_per_known=val_per_known,
+            unknown_val_ratio=unknown_val_ratio,
+            min_valid_duration=min_valid_duration,
+        )
+
     df = pd.read_csv(labels_path)
     df.columns = df.columns.str.strip()
 
@@ -353,37 +640,15 @@ def get_dataloaders(
     print(f"  Audio dir: {audio_dir}")
     print(f"  Files: {wav_count} WAV + {mp3_count} MP3")
 
-    # Prepare labels and split
+    # Prepare labels + leak-free split (corrupted/duplicate filtering inside)
     train_df, val_df, class_map = prepare_labels(
         labels_path=labels_path,
         output_path=data_cfg["processed_labels"],
         val_per_known=1,
         unknown_val_ratio=0.2,
+        audio_dir=audio_dir,
+        min_valid_duration=min_valid_duration,
     )
-
-    # ── Filter short/corrupted files ──
-    if min_valid_duration > 0:
-        # Scan audio durations (quick librosa check) to filter short files
-        audio_files = set(train_df["audio_file"].unique()) | set(val_df["audio_file"].unique())
-        short_files = set()
-        print(f"  Scanning {len(audio_files)} unique files for short/corrupted audio...")
-        import librosa
-        for fname in audio_files:
-            fpath = Path(audio_dir) / fname  # ← resolved path
-            if fpath.exists():
-                try:
-                    dur = librosa.get_duration(path=str(fpath))
-                    if dur < min_valid_duration:
-                        short_files.add(fname)
-                except Exception:
-                    short_files.add(fname)
-            else:
-                short_files.add(fname)
-        if short_files:
-            print(f"  ⚠ Filtering out {len(short_files)} short/corrupted files (< {min_valid_duration}s)")
-            train_df = train_df[~train_df["audio_file"].isin(short_files)].reset_index(drop=True)
-            val_df = val_df[~val_df["audio_file"].isin(short_files)].reset_index(drop=True)
-            print(f"    Train: {len(train_df)} rows | Val: {len(val_df)} rows")
 
     # Create datasets
     train_dataset = SpeakerDataset(
