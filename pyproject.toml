@@ -16,6 +16,9 @@ dependencies = [
     "torchcodec",
     "tqdm",
     "transformers>=4.45,<4.47",
+    # transformers 4.46.x hard-imports `get_full_repo_name` from huggingface_hub,
+    # which was removed in huggingface_hub>=0.27. Pin to keep them compatible.
+    "huggingface-hub>=0.26,<0.27",
     # MLOps & Deployment
     "zenml",
     "mlflow",
