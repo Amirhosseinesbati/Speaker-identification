@@ -126,7 +126,12 @@ def clean_labels(df: pd.DataFrame, wav_dir: Path) -> tuple:
 
 @torch.no_grad()
 def extract_embeddings(df: pd.DataFrame, wav_dir: Path, device: torch.device) -> np.ndarray:
-    """Extract one 192-d ECAPA embedding per file (multi-window TTA)."""
+    """Extract one 192-d ECAPA embedding per file (multi-window TTA).
+
+    Windows of a batch are forwarded **one window index at a time** so peak
+    VRAM stays at (batch_size, 1, T) instead of (batch_size * W, 1, T) — the
+    GTX 1660 Ti (6 GB) OOMs on the full reshape for large W.
+    """
     from torch.utils.data import DataLoader
     from src.encoders import ECAPAEncoder
     from src.data_pipeline import SpeakerDataset, create_class_mapping
@@ -147,15 +152,17 @@ def extract_embeddings(df: pd.DataFrame, wav_dir: Path, device: torch.device) ->
     )
     dl = DataLoader(ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-    embs = np.zeros((len(ds), encoder.output_dim), dtype=np.float32)
+    out_dim = encoder.output_dim
+    embs = np.zeros((len(ds), out_dim), dtype=np.float32)
     start = 0
     for windows, _labels in tqdm(dl, desc="  Embedding extraction"):
         B = windows.shape[0]
         W = windows.shape[1]
-        wf = windows.reshape(B * W, 1, -1).to(device)
-        hidden, _ = encoder(wf)                       # (B*W, 1, 192)
-        emb = hidden.squeeze(1).view(B, W, -1).mean(dim=1)  # (B, 192)
-        embs[start:start + B] = emb.cpu().numpy()
+        w_sum = torch.zeros(B, out_dim, device=device)
+        for w_i in range(W):
+            hidden, _ = encoder(windows[:, w_i].to(device))  # (B, 1, 192)
+            w_sum += hidden.squeeze(1)
+        embs[start:start + B] = (w_sum / W).cpu().numpy()
         start += B
     return embs
 
