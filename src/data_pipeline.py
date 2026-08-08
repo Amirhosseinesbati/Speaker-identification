@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import torch
 import yaml
-from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
+from torch.utils.data import Dataset, DataLoader
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -440,7 +440,7 @@ class AudioAugmentation:
 
     Applies a diverse set of waveform-level augmentations:
     - Gaussian noise injection
-    - Pitch shifting (±4 semitones)
+    - Pitch shifting (±1 semitone — gentle, frozen encoders can't adapt to more)
     - Time stretching (0.8× – 1.25×)
     - Gain variation (±6 dB)
     - Polarity inversion
@@ -454,8 +454,10 @@ class AudioAugmentation:
         self.sample_rate = sample_rate
         self.pipeline = AA.Compose([
             AA.AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.5),
-            AA.PitchShift(min_semitones=-4, max_semitones=4, p=0.5),
-            AA.TimeStretch(min_rate=0.8, max_rate=1.25, p=0.3),
+            # Gentle pitch shift only — a frozen encoder can't adapt to ±4
+            # semitones (it caused the inverted train/val gap in the last run).
+            AA.PitchShift(min_semitones=-1, max_semitones=1, p=0.3),
+            AA.TimeStretch(min_rate=0.8, max_rate=1.25, p=0.2),
             AA.Gain(min_gain_db=-6, max_gain_db=6, p=0.3),
             AA.PolarityInversion(p=0.5),
             AA.Shift(min_shift=-0.1, max_shift=0.1, shift_unit="fraction",
@@ -637,12 +639,63 @@ class SpeakerDataset(Dataset):
 #  DataLoader Factory
 # ─────────────────────────────────────────────────────────
 
+def make_balanced_batch_sampler(
+    train_labels: np.ndarray,
+    batch_size: int,
+    ood_ratio: float = 0.5,
+    seed: int = 42,
+) -> List[int]:
+    """
+    Build a flat index list so that every batch contains ~`ood_ratio` samples
+    from the unknown class (label == 0) and the rest from known speakers.
+
+    Without this, a per-class WeightedRandomSampler gives the unknown class
+    (a single 2275-sample super-class) a total probability mass of ~1/447,
+    i.e. ~0.2% of every batch — which starves the OOD head and makes it
+    collapse to "always known" (the failure from the last run).
+
+    Args:
+        train_labels: (N,) global class ids (0 = unknown, 1..446 = known).
+        batch_size:   desired batch size (the last partial batch is dropped).
+        ood_ratio:    target fraction of unknown samples per batch (0.5 matches
+                      the ~50/50 eval mix).
+        seed:         RNG seed for reproducibility.
+
+    Returns:
+        List of sample indices (length ≈ num_batches * batch_size) to be used
+        with torch.utils.data.SubsetRandomSampler.
+    """
+    rng = np.random.RandomState(seed)
+    ood_indices = np.where(train_labels == 0)[0]
+    known_indices = np.where(train_labels != 0)[0]
+
+    n_ood = max(1, int(round(batch_size * ood_ratio)))
+    n_known = batch_size - n_ood
+    if n_known <= 0:  # guard: ood_ratio too high
+        n_known = max(1, batch_size // 2)
+        n_ood = batch_size - n_known
+
+    num_batches = max(1, len(train_labels) // batch_size)
+    indices = []
+    for _ in range(num_batches):
+        batch_ood = rng.choice(ood_indices, size=n_ood, replace=True)
+        if len(known_indices) >= n_known:
+            batch_known = rng.choice(known_indices, size=n_known, replace=False)
+        else:
+            batch_known = rng.choice(known_indices, size=n_known, replace=True)
+        batch = np.concatenate([batch_ood, batch_known])
+        rng.shuffle(batch)
+        indices.extend(batch.tolist())
+    return indices
+
+
 def get_dataloaders(
     config: Optional[dict] = None,
     config_path: str = "configs/default_config.yaml",
 ) -> Tuple[DataLoader, DataLoader, Dict[str, int]]:
     """
-    Create train and validation DataLoaders with WeightedRandomSampler.
+    Create train and validation DataLoaders with a balanced OOD/known batch
+    sampler.
 
     Returns:
         train_loader, val_loader, class_map
@@ -722,41 +775,24 @@ def get_dataloaders(
     )
 
     # ── Balanced Batch Sampler ──
-    # Enforces target OOD/known ratio in every batch.
-    # Default: 30% OOD (unknown) + 70% known speakers.
-    # This prevents bias toward the over-represented "unknown" class.
+    # Enforces a target OOD/known ratio in every batch so the OOD head always
+    # sees enough positive (unknown) samples (a per-class WeightedRandomSampler
+    # would give the unknown super-class ~1/447 of every batch → OOD collapse).
     train_labels = train_df["label"].values
-    ood_indices = np.where(train_labels == 0)[0]
-    known_indices = np.where(train_labels != 0)[0]
-    
-    ood_ratio = audio_cfg.get("ood_batch_ratio", 0.30)
-    ood_per_batch = max(1, int(batch_size * ood_ratio))
-    known_per_batch = batch_size - ood_per_batch
-    
-    print(f"\n  ⚖️  Batch balance: {ood_per_batch} OOD + {known_per_batch} known "
-          f"({ood_ratio:.0%} / {1-ood_ratio:.0%})")
-    print(f"     OOD pool: {len(ood_indices):,} samples | "
-          f"Known pool: {len(known_indices):,} samples across {len(class_map)-1} speakers")
-    
-    # Generate balanced indices for each batch
-    rng = np.random.RandomState(42)
-    num_batches = len(train_df) // batch_size
-    balanced_indices = []
-    
-    for _ in range(num_batches):
-        # Sample OOD indices with replacement (if needed)
-        batch_ood = rng.choice(ood_indices, size=ood_per_batch, replace=True)
-        # Sample known indices — try without replacement, fall back with replacement
-        if len(known_indices) >= known_per_batch:
-            batch_known = rng.choice(known_indices, size=known_per_batch, replace=False)
-        else:
-            batch_known = rng.choice(known_indices, size=known_per_batch, replace=True)
-        batch_indices = np.concatenate([batch_ood, batch_known])
-        rng.shuffle(batch_indices)
-        balanced_indices.extend(batch_indices.tolist())
-    
-    balanced_indices = np.array(balanced_indices, dtype=np.int64)
-    sampler = torch.utils.data.SubsetRandomSampler(balanced_indices)
+    ood_ratio = audio_cfg.get("ood_batch_ratio", 0.50)
+    balanced_indices = make_balanced_batch_sampler(
+        train_labels, batch_size, ood_ratio=ood_ratio, seed=42,
+    )
+    n_ood = max(1, int(round(batch_size * ood_ratio)))
+    print(f"\n  ⚖️  Batch balance: {n_ood} OOD + {batch_size - n_ood} known "
+          f"({ood_ratio:.0%} / {1 - ood_ratio:.0%})")
+    print(f"     OOD pool: {(train_labels == 0).sum():,} samples | "
+          f"Known pool: {(train_labels != 0).sum():,} samples "
+          f"across {len(class_map) - 1} speakers")
+
+    sampler = torch.utils.data.SubsetRandomSampler(
+        np.asarray(balanced_indices, dtype=np.int64)
+    )
     
     train_loader = DataLoader(
         train_dataset,
@@ -783,7 +819,7 @@ def get_dataloaders(
     print(f"     Known classes: {len(class_map) - 1}")
     print(f"     Known samples: {known_train}")
     print(f"     Unknown samples: {unknown_train}")
-    print(f"     Sampler: WeightedRandomSampler (balanced per-class)")
+    print(f"     Sampler: balanced batch sampler (OOD/known ratio per batch)")
 
     return train_loader, val_loader, class_map
 

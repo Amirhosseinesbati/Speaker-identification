@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import torch
 from zenml import step
-from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data import DataLoader
 
 # Ensure project root is on sys.path for local imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -33,9 +33,11 @@ from src.data_pipeline import (
     get_active_profile,
     create_class_mapping,
     prepare_clean_split,
+    make_balanced_batch_sampler,
     SpeakerDataset,
 )
 from src.model import TwoHeadedWavLM
+from src.metrics import evaluate_macro_f1
 from src.train import (
     train_epoch,
     validate_epoch,
@@ -421,14 +423,11 @@ def train_model(
     )
 
     train_labels = train_df["label"].values
-    class_counts = np.bincount(train_labels, minlength=len(class_map))
-    weights = 1.0 / (class_counts + 1e-8)
-    sample_weights = weights[train_labels]
-    sampler = WeightedRandomSampler(
-        weights=sample_weights,
-        num_samples=len(sample_weights),
-        replacement=True,
+    ood_ratio = audio_cfg.get("ood_batch_ratio", 0.5)
+    balanced_indices = make_balanced_batch_sampler(
+        train_labels, hw_profile["batch_size"], ood_ratio=ood_ratio,
     )
+    sampler = torch.utils.data.SubsetRandomSampler(balanced_indices)
 
     train_loader = DataLoader(
         train_dataset,
@@ -482,6 +481,7 @@ def train_model(
         ood_weight=train_cfg.get("ood_loss_weight", 1.0),
         speaker_weight=train_cfg.get("speaker_loss_weight", 1.0),
         label_smoothing=train_cfg.get("label_smoothing", 0.0),
+        ood_pos_weight=train_cfg.get("ood_pos_weight", 1.0),
     )
     scaler = torch.cuda.amp.GradScaler(enabled=hw_profile["mixed_precision"])
 
@@ -490,7 +490,7 @@ def train_model(
     checkpoint_dir = Path(log_cfg.get("checkpoint_dir", "checkpoints"))
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    best_val_loss = float("inf")
+    best_val_f1 = -float("inf")
     best_epoch = -1
     patience_counter = 0
     early_stop_patience = train_cfg.get("early_stopping_patience", 10)
@@ -503,8 +503,16 @@ def train_model(
             scaler, device, train_cfg["max_grad_norm"],
             ood_grad_norm=train_cfg.get("ood_grad_norm", 1.0),
         )
-        # Validate
+        # Validate + competition metric (Macro-F1 over all 447 classes)
         val_metrics = validate_epoch(model, val_loader, criterion, device)
+        val_m = evaluate_macro_f1(
+            val_metrics["ood_logits"], val_metrics["speaker_logits"],
+            val_metrics["labels"], num_classes=len(class_map),
+        )
+        val_metrics["macro_f1"] = val_m["macro_f1"]
+        val_metrics["ood_f1"] = val_m["ood_f1"]
+        val_metrics["known_acc"] = val_m["known_acc"]
+        val_metrics["overall_acc"] = val_m["overall_acc"]
         scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
 
@@ -516,6 +524,7 @@ def train_model(
             "val_loss": val_metrics["loss"],
             "val_ood_acc": val_metrics["ood_acc"],
             "val_speaker_acc": val_metrics["speaker_acc"],
+            "val_macro_f1": val_metrics["macro_f1"],
             "learning_rate": current_lr,
         }, step=epoch)
 
@@ -523,11 +532,12 @@ def train_model(
         print(f"\n  Epoch {epoch:2d}/{train_cfg['epochs']} — "
               f"Loss: {train_metrics['loss']:.4f} / {val_metrics['loss']:.4f}  |  "
               f"OOD: {train_metrics['ood_acc']:.3f} / {val_metrics['ood_acc']:.3f}  |  "
-              f"Spk: {train_metrics['speaker_acc']:.3f} / {val_metrics['speaker_acc']:.3f}")
+              f"Spk: {train_metrics['speaker_acc']:.3f} / {val_metrics['speaker_acc']:.3f}  |  "
+              f"MacroF1: {val_metrics['macro_f1']:.4f}")
 
-        # Save best model (based on val loss) + Early stopping (also on val loss)
-        if val_metrics["loss"] < best_val_loss:
-            best_val_loss = val_metrics["loss"]
+        # Save best model (based on val Macro-F1) + Early stopping (also Macro-F1)
+        if val_metrics["macro_f1"] > best_val_f1:
+            best_val_f1 = val_metrics["macro_f1"]
             best_epoch = epoch
             patience_counter = 0
             best_path = checkpoint_dir / "best_model.pt"
@@ -541,15 +551,19 @@ def train_model(
                 "val_loss": val_metrics["loss"],
                 "val_ood_acc": val_metrics["ood_acc"],
                 "val_speaker_acc": val_metrics["speaker_acc"],
+                "val_macro_f1": val_metrics["macro_f1"],
             }, best_path)
         else:
             patience_counter += 1
 
         # Record history (BEFORE early stopping check — prevents crash on break)
+        # NOTE: exclude tensors (collect for Macro-F1) from the history dict
+        val_history = {k: v for k, v in val_metrics.items()
+                       if not isinstance(v, torch.Tensor)}
         history.append({
             "epoch": epoch,
             **{f"train_{k}": v for k, v in train_metrics.items()},
-            **{f"val_{k}": v for k, v in val_metrics.items()},
+            **{f"val_{k}": v for k, v in val_history.items()},
             "lr": current_lr,
         })
 
@@ -563,10 +577,10 @@ def train_model(
             "class_map": class_map,
         }, latest_path)
 
-        # Early stopping based on val loss (no improvement for N epochs)
+        # Early stopping based on val Macro-F1 (no improvement for N epochs)
         if patience_counter >= early_stop_patience:
             print(f"\n  ⏹ Early stopping at epoch {epoch} "
-                  f"(val_loss not improved for {early_stop_patience} epochs)")
+                  f"(val_macro_f1 not improved for {early_stop_patience} epochs)")
             break
 
     # ── Final logging ──
@@ -579,7 +593,7 @@ def train_model(
 
     summary = {
         "best_epoch": best_epoch if best_epoch > 0 else (safe_idx + 1),
-        "best_val_loss": round(best_val_loss, 6),
+        "best_val_macro_f1": round(best_val_f1, 6),
         "best_val_ood_acc": round(history[safe_idx]["val_ood_acc"], 4),
         "best_val_speaker_acc": round(history[safe_idx]["val_speaker_acc"], 4),
         "total_epochs_run": len(history),
@@ -595,7 +609,7 @@ def train_model(
     _mlflow_log_metrics(summary)
     _mlflow_log_artifact(final_best_path, artifact_path="models")
 
-    print(f"\n  ✓ Training complete! Best val loss: {best_val_loss:.4f} (epoch {best_epoch})")
+    print(f"\n  ✓ Training complete! Best val Macro-F1: {best_val_f1:.4f} (epoch {best_epoch})")
     print(f"  ✓ Best model: {final_best_path}")
 
     return final_best_path, summary
@@ -655,14 +669,24 @@ def evaluate_model(
     model = model.to(device)
     model.eval()
 
-    # Evaluate with threshold tuning
-    criterion = TwoPartLoss(ignore_index=-100)
+    # Evaluate with threshold tuning (criterion mirrors training weights)
+    train_cfg = config["training"]
+    criterion = TwoPartLoss(
+        ignore_index=-100,
+        use_focal=True,
+        focal_gamma=2.0,
+        ood_weight=train_cfg.get("ood_loss_weight", 1.0),
+        speaker_weight=train_cfg.get("speaker_loss_weight", 1.0),
+        label_smoothing=0.0,  # eval: no label smoothing (standard)
+        ood_pos_weight=train_cfg.get("ood_pos_weight", 1.0),
+    )
     total_loss = 0.0
     total_ood_acc = 0.0
     total_speaker_acc = 0.0
     num_batches = len(val_loader)
 
     all_ood_logits = []
+    all_speaker_logits = []
     all_labels = []
 
     with torch.no_grad():
@@ -670,7 +694,8 @@ def evaluate_model(
             waveforms = waveforms.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
 
-            ood_logits, speaker_logits = forward_multi_window(model, waveforms, labels=labels)
+            # No labels → no ArcFace margin → honest eval logits
+            ood_logits, speaker_logits = forward_multi_window(model, waveforms, labels=None)
             loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
             total_loss += loss_dict["loss_total"]
@@ -679,12 +704,20 @@ def evaluate_model(
             total_speaker_acc += speaker_acc
 
             all_ood_logits.append(ood_logits.cpu())
+            all_speaker_logits.append(speaker_logits.cpu())
             all_labels.append(labels.cpu())
 
-    # ── Tune OOD threshold on validation ──
-    all_ood = torch.cat(all_ood_logits).squeeze(1)
+    all_ood = torch.cat(all_ood_logits)
+    all_spk = torch.cat(all_speaker_logits)
     all_lbl = torch.cat(all_labels)
-    ood_probs = torch.sigmoid(all_ood).numpy()
+
+    # ── Competition metric (plain argmax — exactly what the organizers score) ──
+    argmax_metrics = evaluate_macro_f1(
+        all_ood, all_spk, all_lbl, num_classes=len(class_map),
+    )
+
+    # ── Tune OOD threshold on validation (binary unknown-class F1) ──
+    ood_probs = torch.sigmoid(all_ood.squeeze(1)).numpy()
     ood_targets = (all_lbl == 0).numpy().astype(int)
 
     from sklearn.metrics import f1_score
@@ -697,25 +730,55 @@ def evaluate_model(
             best_f1 = f1
             best_threshold = thr
 
-    # Recompute OOD accuracy with tuned threshold
-    tuned_preds = (ood_probs > best_threshold).astype(int)
-    tuned_ood_acc = (tuned_preds == ood_targets).mean()
+    # Fallback: if the OOD head collapsed (all F1 == 0), use the median positive
+    # rate of the val set so a sane threshold is always persisted.
+    if best_f1 == 0.0:
+        best_threshold = float(np.median(ood_probs))
+        print(f"  ⚠ OOD head collapsed (F1=0) — falling back to median "
+              f"P(unknown)={best_threshold:.3f}")
 
-    print(f"  🎯 OOD Threshold tuned: {best_threshold:.2f} (F1={best_f1:.4f})")
+    # Macro-F1 at the tuned threshold (local OOD operating-point analysis)
+    thr_metrics = evaluate_macro_f1(
+        all_ood, all_spk, all_lbl, num_classes=len(class_map),
+        ood_threshold=best_threshold,
+    )
+
+    tuned_ood_acc = ((ood_probs > best_threshold).astype(int) == ood_targets).mean()
+
+    print(f"  🎯 OOD Threshold tuned: {best_threshold:.2f} (binary F1={best_f1:.4f})")
     print(f"     Default (0.5): OOD Acc = {total_ood_acc/num_batches:.4f}")
     print(f"     Tuned ({best_threshold:.2f}): OOD Acc = {tuned_ood_acc:.4f}")
+    print(f"     Macro-F1 (argmax):   {argmax_metrics['macro_f1']:.4f}")
+    print(f"     Macro-F1 (thr={best_threshold:.2f}): {thr_metrics['macro_f1']:.4f}")
 
     metrics = {
         "final_val_loss": round(total_loss / num_batches, 6),
         "final_val_ood_acc": round(total_ood_acc / num_batches, 4),
         "final_val_speaker_acc": round(total_speaker_acc / num_batches, 4),
+        "macro_f1": round(argmax_metrics["macro_f1"], 6),
+        "ood_f1": round(argmax_metrics["ood_f1"], 6),
+        "known_acc": round(argmax_metrics["known_acc"], 6),
+        "overall_acc": round(argmax_metrics["overall_acc"], 6),
+        "macro_f1_at_ood_threshold": round(thr_metrics["macro_f1"], 6),
+        "ood_threshold": float(best_threshold),
+        "ood_threshold_f1": float(best_f1),
         "num_val_batches": num_batches,
     }
 
     print(f"  ✓ Final Validation Results:")
-    print(f"    Loss:       {metrics['final_val_loss']:.4f}")
-    print(f"    OOD Acc:    {metrics['final_val_ood_acc']:.3f}")
+    print(f"    Loss:        {metrics['final_val_loss']:.4f}")
+    print(f"    OOD Acc:     {metrics['final_val_ood_acc']:.3f}")
     print(f"    Speaker Acc: {metrics['final_val_speaker_acc']:.3f}")
+    print(f"    Macro-F1:    {metrics['macro_f1']:.4f}")
+
+    # ── Persist the tuned OOD threshold into the checkpoint ──
+    try:
+        checkpoint["ood_threshold"] = float(best_threshold)
+        checkpoint["macro_f1"] = argmax_metrics["macro_f1"]
+        torch.save(checkpoint, best_model_path)
+        print(f"  ✓ OOD threshold persisted to {best_model_path}")
+    except Exception as e:
+        print(f"  ⚠ Could not persist OOD threshold: {e}")
 
     # ── Final MLflow logging ──
     tracker = get_tracker()

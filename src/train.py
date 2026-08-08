@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data_pipeline import load_config, get_active_profile, get_dataloaders
 from src.model import TwoHeadedWavLM
+from src.metrics import evaluate_macro_f1
 
 warnings.filterwarnings("ignore")
 
@@ -175,13 +176,16 @@ class TwoPartLoss(nn.Module):
         ood_weight: float = 1.0,
         speaker_weight: float = 1.0,
         label_smoothing: float = 0.0,
+        ood_pos_weight: float = 1.0,
     ):
         super().__init__()
         self.ignore_index = ignore_index
         self.ood_weight = ood_weight
         self.speaker_weight = speaker_weight
 
-        self.bce_loss = nn.BCEWithLogitsLoss()
+        self.bce_loss = nn.BCEWithLogitsLoss(
+            pos_weight=torch.tensor(ood_pos_weight, dtype=torch.float32)
+        )
 
         if use_focal:
             self.ce_loss = FocalLoss(
@@ -195,7 +199,8 @@ class TwoPartLoss(nn.Module):
             )
             print(f"  📊 Speaker loss: CrossEntropyLoss (smoothing={label_smoothing})")
 
-        print(f"  ⚖️  Loss weights: OOD={ood_weight}, Speaker={speaker_weight}")
+        print(f"  ⚖️  Loss weights: OOD={ood_weight}, Speaker={speaker_weight} "
+              f"(OOD BCE pos_weight={ood_pos_weight})")
 
     def forward(
         self,
@@ -409,25 +414,40 @@ def validate_epoch(
     criterion: TwoPartLoss,
     device: torch.device,
 ) -> Dict[str, float]:
-    """Validate for one epoch. No AMP needed for eval."""
+    """
+    Validate for one epoch. No AMP needed for eval.
+
+    Forward is called WITHOUT labels so the ArcFace margin is never applied at
+    eval time (margin would otherwise under-report the honest accuracy).
+
+    Also collects and returns the concatenated logits + labels so callers can
+    compute the competition metric (Macro-F1) via src.metrics.evaluate_macro_f1.
+    """
     model.eval()
     total_loss = 0.0
     total_ood_acc = 0.0
     total_speaker_acc = 0.0
     num_batches = len(dataloader)
 
+    all_ood_logits, all_speaker_logits, all_labels = [], [], []
+
     progress_bar = tqdm(dataloader, desc="  Val", leave=False)
     for waveforms, labels in progress_bar:
         waveforms = waveforms.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
-        ood_logits, speaker_logits = forward_multi_window(model, waveforms, labels=labels)
+        # No labels → no ArcFace margin → honest eval logits
+        ood_logits, speaker_logits = forward_multi_window(model, waveforms, labels=None)
         loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
         total_loss += loss_dict["loss_total"]
         total_ood_acc += compute_ood_accuracy(ood_logits, labels)
         speaker_acc, _ = compute_speaker_accuracy(speaker_logits, labels)
         total_speaker_acc += speaker_acc
+
+        all_ood_logits.append(ood_logits.cpu())
+        all_speaker_logits.append(speaker_logits.cpu())
+        all_labels.append(labels.cpu())
 
         progress_bar.set_postfix({
             "loss": f"{loss_dict['loss_total']:.4f}",
@@ -439,6 +459,9 @@ def validate_epoch(
         "loss": total_loss / num_batches,
         "ood_acc": total_ood_acc / num_batches,
         "speaker_acc": total_speaker_acc / num_batches,
+        "ood_logits": torch.cat(all_ood_logits),
+        "speaker_logits": torch.cat(all_speaker_logits),
+        "labels": torch.cat(all_labels),
     }
 
 
@@ -490,7 +513,15 @@ def train(config_path: str = "configs/default_config.yaml"):
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=train_cfg["epochs"]
     )
-    criterion = TwoPartLoss(ignore_index=-100)
+    criterion = TwoPartLoss(
+        ignore_index=-100,
+        use_focal=True,
+        focal_gamma=2.0,
+        ood_weight=train_cfg.get("ood_loss_weight", 1.0),
+        speaker_weight=train_cfg.get("speaker_loss_weight", 1.0),
+        label_smoothing=train_cfg.get("label_smoothing", 0.0),
+        ood_pos_weight=train_cfg.get("ood_pos_weight", 1.0),
+    )
     scaler = GradScaler(enabled=hw_profile["mixed_precision"])
 
     # ── Training Loop ──
@@ -500,7 +531,7 @@ def train(config_path: str = "configs/default_config.yaml"):
     checkpoint_dir = Path(log_cfg["checkpoint_dir"])
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    best_val_loss = float("inf")
+    best_val_f1 = -float("inf")
     best_epoch = -1
     history = []
 
@@ -517,6 +548,11 @@ def train(config_path: str = "configs/default_config.yaml"):
 
         # Validate
         val_metrics = validate_epoch(model, val_loader, criterion, device)
+        val_m = evaluate_macro_f1(
+            val_metrics["ood_logits"], val_metrics["speaker_logits"],
+            val_metrics["labels"], num_classes=len(class_map),
+        )
+        val_metrics["macro_f1"] = val_m["macro_f1"]
 
         # LR scheduling
         scheduler.step()
@@ -531,11 +567,12 @@ def train(config_path: str = "configs/default_config.yaml"):
               f"{val_metrics['ood_acc']:.3f} (val)")
         print(f"     Spk Acc:  {train_metrics['speaker_acc']:.3f} (train) / "
               f"{val_metrics['speaker_acc']:.3f} (val)")
-        print(f"     LR: {current_lr:.2e} | Time: {epoch_time:.1f}s")
+        print(f"     Macro-F1: {val_metrics['macro_f1']:.4f} (val)  |  "
+              f"LR: {current_lr:.2e} | Time: {epoch_time:.1f}s")
 
-        # Save best checkpoint
-        if val_metrics["loss"] < best_val_loss:
-            best_val_loss = val_metrics["loss"]
+        # Save best checkpoint (based on competition Macro-F1)
+        if val_metrics["macro_f1"] > best_val_f1:
+            best_val_f1 = val_metrics["macro_f1"]
             best_epoch = epoch
             checkpoint_path = checkpoint_dir / "best_model.pt"
             torch.save({
@@ -548,8 +585,9 @@ def train(config_path: str = "configs/default_config.yaml"):
                 "val_loss": val_metrics["loss"],
                 "val_ood_acc": val_metrics["ood_acc"],
                 "val_speaker_acc": val_metrics["speaker_acc"],
+                "val_macro_f1": val_metrics["macro_f1"],
             }, checkpoint_path)
-            print(f"     💾 Saved new best model (val_loss={best_val_loss:.4f})")
+            print(f"     💾 Saved new best model (val_macro_f1={best_val_f1:.4f})")
 
         # Save latest checkpoint
         latest_path = checkpoint_dir / "latest_model.pt"
@@ -561,11 +599,13 @@ def train(config_path: str = "configs/default_config.yaml"):
             "class_map": class_map,
         }, latest_path)
 
-        # Record history
+        # Record history (exclude tensors collected for Macro-F1)
+        val_history = {k: v for k, v in val_metrics.items()
+                       if not isinstance(v, torch.Tensor)}
         history.append({
             "epoch": epoch,
             **{f"train_{k}": v for k, v in train_metrics.items()},
-            **{f"val_{k}": v for k, v in val_metrics.items()},
+            **{f"val_{k}": v for k, v in val_history.items()},
             "lr": current_lr,
             "time": epoch_time,
         })
@@ -575,7 +615,7 @@ def train(config_path: str = "configs/default_config.yaml"):
     print(f"  🏁 Training Complete!")
     print(f"  {'='*50}")
     print(f"  Best epoch: {best_epoch}")
-    print(f"  Best val loss: {best_val_loss:.4f}")
+    print(f"  Best val Macro-F1: {best_val_f1:.4f}")
     if best_epoch > 0 and len(history) >= best_epoch:
         print(f"  Best val OOD acc: {history[best_epoch-1]['val_ood_acc']:.3f}")
         print(f"  Best val Speaker acc: {history[best_epoch-1]['val_speaker_acc']:.3f}")
