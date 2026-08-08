@@ -160,6 +160,52 @@ def predict_global_classes(
     return preds
 
 
+@torch.no_grad()
+def calibrate_temperature(
+    all_ood_logits: torch.Tensor,
+    all_speaker_logits: torch.Tensor,
+    all_labels: torch.Tensor,
+    num_classes: int = 447,
+    temps: Optional[Sequence[float]] = None,
+) -> Dict[str, float]:
+    """Grid-search the speaker-softmax temperature that maximises Macro-F1.
+
+    `fused_probs_from_logits` already supports a temperature for the speaker
+    head; this finds the T that maximises the competition metric (Macro-F1)
+    on a validation set, and reports the Macro-F1 at T=1.0 vs best T.
+
+    Args:
+        all_ood_logits:     (N, 1)
+        all_speaker_logits: (N, 446) — no margin
+        all_labels:         (N,) global ids (0 = unknown)
+        num_classes:        447
+        temps:              temperature grid (default 0.5..2.0 step 0.1)
+
+    Returns:
+        {"best_temperature", "macro_f1_at_best_t", "macro_f1_at_t1"}
+    """
+    if temps is None:
+        temps = np.arange(0.5, 2.01, 0.1)
+
+    base = evaluate_macro_f1(
+        all_ood_logits, all_speaker_logits, all_labels, num_classes=num_classes,
+    )
+    best = {"temperature": 1.0, "macro_f1": base["macro_f1"]}
+    for t in temps:
+        m = evaluate_macro_f1(
+            all_ood_logits, all_speaker_logits, all_labels,
+            num_classes=num_classes, temperature=float(t),
+        )
+        if m["macro_f1"] > best["macro_f1"]:
+            best = {"temperature": float(t), "macro_f1": m["macro_f1"]}
+
+    return {
+        "best_temperature": best["temperature"],
+        "macro_f1_at_best_t": best["macro_f1"],
+        "macro_f1_at_t1": base["macro_f1"],
+    }
+
+
 # ─────────────────────────────────────────────────────────
 #  One-call evaluation helper
 # ─────────────────────────────────────────────────────────

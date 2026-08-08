@@ -273,8 +273,11 @@ def write_predictions_csv(
               help="Output CSV path (id,0..446).")
 @click.option("--config-path", default="configs/default_config.yaml", show_default=True,
               type=click.Path(exists=True))
-@click.option("--checkpoint-path", default="checkpoints/best_model.pt", show_default=True,
-              type=click.Path(exists=True))
+@click.option("--checkpoint-path", multiple=True,
+              default=("checkpoints/best_model.pt",), show_default=True,
+              type=click.Path(exists=True),
+              help="Checkpoint(s) to load. Pass several for an ensemble "
+                   "(per-window probabilities are averaged across models).")
 @click.option("--id-style", type=click.Choice(["stem", "filename"]), default="stem",
               show_default=True, help="'stem' = file name without extension (default).")
 @click.option("--apply-ood-threshold", is_flag=True, default=False,
@@ -291,7 +294,7 @@ def main(
     data_dir: str,
     predictions_file_path: str,
     config_path: str,
-    checkpoint_path: str,
+    checkpoint_path: Tuple[str, ...],
     id_style: str,
     apply_ood_threshold: bool,
     fuse_centroid: bool,
@@ -306,8 +309,15 @@ def main(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"  Device: {device}")
 
-    model, config, class_map, ood_threshold = load_model(config_path, checkpoint_path, device)
+    # Load one or more checkpoints (ensemble = average per-window probs)
+    models = []
+    for ckpt in checkpoint_path:
+        m, config, class_map, ood_threshold = load_model(config_path, ckpt, device)
+        models.append(m)
+        print(f"  ✓ Loaded {ckpt}")
+    model = models[0]
     num_classes = len(class_map)
+
     audio_cfg = config["audio"]
     sample_rate = audio_cfg["sample_rate"]
     duration_seconds = audio_cfg["duration_seconds"]
@@ -331,17 +341,28 @@ def main(
                    if p.suffix.lower() in {".wav", ".mp3", ".flac", ".ogg", ".m4a"})
     if not files:
         raise click.ClickException(f"No audio files found in {data_dir}")
-    print(f"  Files to score: {len(files):,}")
+    print(f"  Files to score: {len(files):,} | Ensemble size: {len(models)}")
 
     uniform = np.full(num_classes, 1.0 / num_classes)
     rows: List[Tuple[str, np.ndarray]] = []
 
+    def _score(f: Path) -> Optional[np.ndarray]:
+        """Multi-window TTA probs averaged over the ensemble (or None)."""
+        probs_list = []
+        for m in models:
+            p = predict_file_probs(
+                m, f, device, sample_rate=sample_rate,
+                duration_seconds=duration_seconds, eval_hop_ratio=eval_hop_ratio,
+                max_eval_windows=max_windows,
+            )
+            if p is None:
+                return None
+            probs_list.append(p)
+        avg = np.mean(probs_list, axis=0)
+        return avg / avg.sum()
+
     for f in tqdm(files, desc="  Inference"):
-        probs = predict_file_probs(
-            model, f, device, sample_rate=sample_rate,
-            duration_seconds=duration_seconds, eval_hop_ratio=eval_hop_ratio,
-            max_eval_windows=max_windows,
-        )
+        probs = _score(f)
         if probs is None:
             print(f"  ⚠ Fallback (uniform 1/{num_classes}) for {f.name} — decode error")
             probs = uniform.copy()
