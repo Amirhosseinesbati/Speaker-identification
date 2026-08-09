@@ -29,6 +29,10 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Windows cp1252 fix: force UTF-8 stdio so emoji output never crashes.
+from src.cli_utils import setup_utf8_stdio
+setup_utf8_stdio()
+
 
 # ────────────────────────────────────────────────────────────────
 #  Val split + logit collection

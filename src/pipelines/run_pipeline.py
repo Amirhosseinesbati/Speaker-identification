@@ -42,6 +42,11 @@ from zenml.config import DockerSettings
 from src.pipelines.steps import convert_audio, prepare_data, build_model, train_model, evaluate_model
 from src.data_pipeline import load_config
 
+# Windows cp1252 fix: force UTF-8 stdio BEFORE anything prints, otherwise
+# ZenML's logger re-emitting stdout writes crashes on emoji (⚠, ✅, …).
+from src.cli_utils import setup_utf8_stdio
+setup_utf8_stdio()
+
 
 # ─────────────────────────────────────────────────────────
 #  ZenML Stack Initialization

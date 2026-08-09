@@ -74,6 +74,10 @@ RANDOM_SEED = 42
 
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Windows cp1252 fix: force UTF-8 stdio so emoji output never crashes.
+from src.cli_utils import setup_utf8_stdio
+setup_utf8_stdio()
+
 
 # ────────────────────────────────────────────────────────────────
 #  1. Load labels & drop corrupted / duplicate files

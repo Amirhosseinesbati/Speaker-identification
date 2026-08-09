@@ -36,8 +36,9 @@ def save_config(cfg: dict):
 
 def _run_local(cmd: list, timeout: int = 7200) -> str:
     """Run a local subprocess and return the (truncated) combined output."""
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                       cwd=str(PROJECT_ROOT))
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=timeout, cwd=str(PROJECT_ROOT), env=env)
     out = r.stdout or ""
     if r.returncode != 0:
         out += "\n[STDERR]\n" + (r.stderr or "")
@@ -434,7 +435,10 @@ with tab_local:
         if not mlflow_on: cmd.append("--no-mlflow")
         with st.spinner(f"Running `{ls}`..."):
             try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=7200, cwd=str(PROJECT_ROOT))
+                env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+                r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace", timeout=7200, cwd=str(PROJECT_ROOT),
+                                   env=env)
                 if r.returncode == 0: st.success("✅ Done!")
                 else: st.error("❌ Failed!")
                 with st.expander("Log", expanded=True):

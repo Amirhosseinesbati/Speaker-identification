@@ -27,6 +27,10 @@ from tqdm import tqdm
 # Add parent to path for direct execution
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Windows cp1252 fix: force UTF-8 stdio so emoji output never crashes.
+from src.cli_utils import setup_utf8_stdio
+setup_utf8_stdio()
+
 from src.data_pipeline import load_config, get_active_profile, get_dataloaders
 from src.model_factory import create_model_from_config
 from src.metrics import evaluate_macro_f1
