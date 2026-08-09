@@ -19,28 +19,34 @@ hardware:
       batch_size: 16
       num_workers: 4
       mixed_precision: true
+    vastai_a4000:
+      description: RTX A4000 (16GB VRAM)
+      device: cuda
+      batch_size: 24
+      num_workers: 4
+      mixed_precision: true
 audio:
   sample_rate: 16000
   duration_seconds: 8.0
   min_valid_duration: 1.0
-  ood_batch_ratio: 0.50            # Target OOD fraction per batch (matches ~50/50 eval mix)
-  num_train_windows: 3             # Random crops per file in train (multi-window TTA)
-  eval_hop_ratio: 0.5              # Sliding-window overlap for eval/inference
-  max_eval_windows: 8              # Cap on eval windows per file
+  ood_batch_ratio: 0.5
+  num_train_windows: 3
+  eval_hop_ratio: 0.5
+  max_eval_windows: 8
   n_mels: 80
   n_fft: 400
   hop_length: 160
 model:
   encoder_type: ecapa
-  competition_num_known: 446      # Competition spec: 446 known speakers → 447-class output
+  competition_num_known: 446
   encoder_config:
     wavlm:
       base_model: microsoft/wavlm-base-plus
       freeze_feature_extractor: true
     ecapa:
       source: speechbrain/spkrec-ecapa-voxceleb
-      freeze_encoder: false        # fine-tune: unfreeze the last blocks only
-      unfreeze_last_n_blocks: 2    # last N SE-Res2Blocks trainable (rest frozen)
+      freeze_encoder: false
+      unfreeze_last_n_blocks: 2
     hubert:
       base_model: facebook/hubert-large-ls960-ft
       freeze_feature_extractor: true
@@ -49,8 +55,8 @@ model:
   speaker_head_config:
     arcface:
       embedding_dim: 192
-      margin: 0.4                 # 0.3→0.4 — stronger angular separation
-      scale: 30.0                 # 15→30 — standard for speaker recognition
+      margin: 0.4
+      scale: 30.0
     linear:
       hidden_dims: []
   ood_head_config:
@@ -58,18 +64,18 @@ model:
   fusion:
     ensemble_method: none
 training:
-  epochs: 50
+  epochs: 100
   learning_rate: 0.0001
-  encoder_lr: 1.0e-05            # LR for unfrozen encoder blocks (param group)
+  encoder_lr: 1.0e-05
   weight_decay: 1.0e-05
   warmup_steps: 500
   max_grad_norm: 5.0
-  ood_grad_norm: 1.0              # Tighter clip for OOD head (prevents overfitting)
-  ood_pos_weight: 1.0             # BCE pos_weight for the OOD head (balanced sampler usually makes 1.0 enough)
-  ood_loss_weight: 0.3            # Speaker loss 3× more important than OOD
+  ood_grad_norm: 1.0
+  ood_pos_weight: 1.0
+  ood_loss_weight: 0.3
   speaker_loss_weight: 0.7
-  early_stopping_patience: 10     # Stop if val_loss doesn't improve for N epochs
-  label_smoothing: 0.1            # Label smoothing for speaker classification
+  early_stopping_patience: 15
+  label_smoothing: 0.1
 data:
   labels_path: data/processed/audio_wav_labels.csv
   audio_dir: data/processed/audio_wav
@@ -94,5 +100,12 @@ mlops:
   vast:
     default_gpu: RTX_3090
     alternative_gpu: RTX_3060
+    # All GPU targets supported by the Vast.ai deploy path (deploy_app dropdown
+    # must stay in sync): 3090 → vastai (batch 32), 3060 → vastai_3060 (16),
+    # A4000 (16GB) → vastai_a4000 (batch 24).
+    gpu_options:
+      - RTX_3090
+      - RTX_3060
+      - RTX_A4000
     disk_size: 60
     image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel

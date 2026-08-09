@@ -203,13 +203,18 @@ export AWS_DEFAULT_REGION="us-east-1"
 export MLFLOW_S3_ENDPOINT_URL="https://dagshub.com/${DAGSHUB_USERNAME}/${DAGSHUB_REPO_NAME}.s3"
 
 # ── Select hardware profile based on GPU target ──
-# RTX 3090/4090/A5000 → vastai (batch_size=32)
-# RTX 3060           → vastai_3060 (batch_size=16)
+# RTX 3090/4090/A5000 → vastai      (batch_size=32)
+# RTX 3060           → vastai_3060  (batch_size=16)
+# RTX A4000 (16GB)   → vastai_a4000 (batch_size=24)
 GPU_TARGET="${GPU_TARGET:-RTX_3090}"
 case "$GPU_TARGET" in
     RTX_3060)
         echo "   Switching config to 'vastai_3060' profile (batch_size=16)..."
         sed -i 's/mode: local/mode: vastai_3060/' configs/default_config.yaml
+        ;;
+    RTX_A4000)
+        echo "   Switching config to 'vastai_a4000' profile (batch_size=24)..."
+        sed -i 's/mode: local/mode: vastai_a4000/' configs/default_config.yaml
         ;;
     *)
         echo "   Switching config to 'vastai' profile (batch_size=32)..."

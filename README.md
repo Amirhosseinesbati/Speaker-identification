@@ -476,7 +476,7 @@ L = w_ood · BCEWithLogits(σ(ood_logit), y_ood)   +   w_spk · CE_focal(spk_log
 | Checkpoint selection | **best by val Macro-F1** (was: val loss) → `best_model.pt` + `latest_model.pt` every epoch; full state (model, optimizer, scheduler, config, class_map) + `val_macro_f1` |
 | Eval forward | **without labels** → no ArcFace margin at eval time (honest metrics) |
 | Fine-tuning | `model.encoder_config.ecapa.unfreeze_last_n_blocks: 2` — only the last 2 SE-Res2Blocks trainable (5.4 M encoder params) with `encoder_lr`; `forward()` keeps the graph only when partially unfrozen |
-| Hardware profiles | `local` (GTX 1660 Ti 6 GB, batch 8, workers 0) / `vastai` (3090/4090, batch 32) / `vastai_3060` (batch 16) — **batch size is per-profile, everything else is shared** |
+| Hardware profiles | `local` (GTX 1660 Ti 6 GB, batch 8, workers 0) / `vastai` (3090/4090, batch 32) / `vastai_3060` (batch 16) / `vastai_a4000` (RTX A4000 16 GB, batch 24) — **batch size is per-profile, everything else is shared** |
 | Epochs | 50 (config default) |
 
 Metrics logged per epoch: train/val **loss**, **OOD accuracy**, **known-speaker accuracy**,
@@ -592,11 +592,12 @@ Full file: [`configs/default_config.yaml`](configs/default_config.yaml)
 
 ```yaml
 hardware:
-  mode: local                     # local | vastai | vastai_3060
+  mode: local                     # local | vastai | vastai_3060 | vastai_a4000
   profiles:                       # batch_size is per-GPU; everything else shared
     local:   {device: cuda, batch_size: 8,  num_workers: 0, mixed_precision: true}   # GTX 1660 Ti 6 GB
     vastai:  {device: cuda, batch_size: 32, num_workers: 4, mixed_precision: true}   # RTX 3090/4090
     vastai_3060: {device: cuda, batch_size: 16, num_workers: 4, mixed_precision: true}
+    vastai_a4000: {device: cuda, batch_size: 24, num_workers: 4, mixed_precision: true}  # RTX A4000 16 GB
 
 audio:
   sample_rate: 16000
@@ -792,9 +793,11 @@ uv run --no-sync python -m src.ensemble_calibrate \
 
 Environment: copy `.env.example` → `.env` and fill DagsHub/Vast credentials.
 
-**Hardware note (MLOps):** `batch_size` is per-GPU in `hardware.profiles` (8 / 16 / 32 for
-the 1660 Ti / 3060 / 3090). The window parameters, sampler ratio, and loss weights are
-shared — only the profile `mode` needs to change between GPUs.
+**Hardware note (MLOps):** `batch_size` is per-GPU in `hardware.profiles` (8 / 16 / 24 / 32
+for the 1660 Ti / 3060 / A4000 / 3090). The window parameters, sampler ratio, and loss
+weights are shared — only the profile `mode` needs to change between GPUs. The Vast.ai
+dropdown (`RTX_3090` / `RTX_3060` / `RTX_A4000`) selects the matching profile
+(`vastai` / `vastai_3060` / `vastai_a4000`).
 
 ---
 

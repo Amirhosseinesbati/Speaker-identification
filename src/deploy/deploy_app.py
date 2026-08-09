@@ -17,6 +17,10 @@ CONFIG_PATH = PROJECT_ROOT / "configs" / "default_config.yaml"
 DEPLOY_SCRIPT = PROJECT_ROOT / "src" / "deploy" / "deploy.py"
 PIPELINE_SCRIPT = PROJECT_ROOT / "src" / "pipelines" / "run_pipeline.py"
 
+# Vast.ai GPU targets offered in the Cloud tab. Keep in sync with
+# configs/default_config.yaml → mlops.vast.gpu_options and setup_vast.sh.
+GPU_OPTIONS = ["RTX_3090", "RTX_3060", "RTX_A4000"]
+
 
 @st.cache_resource
 def load_config():
@@ -291,7 +295,7 @@ with tab_cloud:
     st.header("☁️ Vast.ai — Live Logs")
     c1, c2, c3 = st.columns(3)
     with c1:
-        gpu = st.selectbox("GPU", ["RTX_3090", "RTX_3060"], key="cgpu")
+        gpu = st.selectbox("GPU", GPU_OPTIONS, key="cgpu")
     with c2:
         stage = st.selectbox("Stage", ["all","data","train","eval"],
                              format_func=lambda x: {"all":"🚀 Full","data":"📊 Data","train":"🏋️ Train","eval":"📈 Eval"}[x],

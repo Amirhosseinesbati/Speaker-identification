@@ -10,6 +10,10 @@ Usage:
 
     # With overrides (useful when called from deploy_app.py):
     GPU_TARGET=RTX_3090 TARGET_PIPELINE=all python -m src.deploy.deploy
+    # Supported GPU_TARGET values (see configs/default_config.yaml mlops.vast.gpu_options):
+    #   RTX_3090  → vastai      profile (batch 32)
+    #   RTX_3060  → vastai_3060 profile (batch 16)
+    #   RTX_A4000 → vastai_a4000 profile (batch 24)
 """
 
 import json
