@@ -700,11 +700,13 @@ python -m src.pipelines.run_pipeline --run train --no-mlflow   # partial, no tra
     `centroid_baseline`, `ensemble_calibrate`, and `submission.inference`.
 
 > **Troubleshooting — training falls back to CPU on Vast.ai:** `uv.lock` pins
-> `torch 2.13.0+cu126` (CUDA 12.6 → host driver ≥ 560), but the `pytorch/pytorch:2.2.0-cuda12.1`
-> image only guarantees driver ≥ 530. If the host driver is too old, `torch.cuda.is_available()`
-> returns False and training silently runs on CPU. `setup_vast.sh` now verifies CUDA after
-> `uv sync` and automatically reinstalls the CUDA 12.1 wheels (`torch==2.2.0+cu121`) that
-> match the image; `setup_device()` also prints an actionable message when it falls back to CPU.
+> `torch 2.13.0+cu126` (CUDA 12.6 → host driver ≥ 560), but rented instances have
+> different driver versions. If the lock torch cannot initialise CUDA,
+> `setup_vast.sh` now **detects the host driver** (via `nvidia-smi`) and installs the
+> best compatible wheel automatically: cu124 (driver ≥ 550) → cu121 (≥ 530) →
+> cu118 (≥ 515). You can force a specific level with `TORCH_CUDA_LEVEL=cu118` (or
+> `cu124:2.6.0`). `setup_device()` also prints an actionable message when it falls
+> back to CPU.
 
 ### 12.4 Data versioning (DVC)
 
