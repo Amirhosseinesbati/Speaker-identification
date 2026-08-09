@@ -6,6 +6,7 @@ Usage: uv run streamlit run src/deploy/deploy_app.py
 import os, re, subprocess, sys, threading, time
 from pathlib import Path
 from queue import Queue
+from typing import Optional
 
 import streamlit as st
 import yaml
@@ -34,15 +35,100 @@ def save_config(cfg: dict):
     st.cache_resource.clear()
 
 
-def _run_local(cmd: list, timeout: int = 7200) -> str:
-    """Run a local subprocess and return the (truncated) combined output."""
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=timeout, cwd=str(PROJECT_ROOT), env=env)
-    out = r.stdout or ""
-    if r.returncode != 0:
-        out += "\n[STDERR]\n" + (r.stderr or "")
-    return (f"[exit={r.returncode}]\n" + out)[-8000:]
+class LocalRunner:
+    """
+    Long-running local subprocess with live log streaming + stop support.
+
+    The Popen handle lives in st.session_state (via the runner object) so it
+    survives Streamlit reruns. A daemon thread drains stdout into `lines`; the
+    UI renders them on every rerun and a 🛑 Stop button calls stop().
+    """
+
+    def __init__(self, cmd: list, cwd: str):
+        self.cmd = cmd
+        self.cwd = cwd
+        self.lines: list = []
+        self.finished = False
+        self.returncode: Optional[int] = None
+        self._stop = threading.Event()
+        self.proc: Optional[subprocess.Popen] = None
+
+    def start(self):
+        # PYTHONUNBUFFERED=1 + our entry points' setup_utf8_stdio(line_buffering)
+        # → every print() line is flushed to the pipe immediately (live logs).
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
+               "PYTHONUNBUFFERED": "1"}
+        self.proc = subprocess.Popen(
+            self.cmd,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+            cwd=self.cwd, env=env,
+        )
+        threading.Thread(target=self._reader, daemon=True).start()
+
+    def _reader(self):
+        try:
+            for line in iter(self.proc.stdout.readline, ""):
+                if self._stop.is_set():
+                    break
+                self.lines.append(line.rstrip())
+        except Exception:
+            pass
+        finally:
+            try:
+                self.proc.stdout.close()
+            except Exception:
+                pass
+            try:
+                self.proc.wait()
+            except Exception:
+                pass
+            self.returncode = self.proc.returncode
+            self.finished = True
+
+    def stop(self):
+        """Graceful terminate, then force-kill after a short grace period."""
+        self._stop.set()
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                self.proc.terminate()
+                self.proc.wait(timeout=10)
+            except Exception:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+
+    @property
+    def running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+
+def _render_local_runner(key: str, title: str) -> None:
+    """Live-log + stop panel for a running/finished LocalRunner in session_state."""
+    runner = st.session_state.get(key)
+    if runner is None:
+        return
+
+    if runner.running and not runner.finished:
+        st.warning(f"⏳ `{title}` در حال اجراست — لاگ‌ها به‌صورت زنده به‌روز می‌شوند. "
+                   f"برای توقف دکمه‌ی 🛑 را بزنید.")
+        st.code("\n".join(runner.lines[-500:]), language=None)
+        if st.button("🛑 Stop", key=f"stop_{key}", type="secondary"):
+            runner.stop()
+            st.rerun()
+        time.sleep(0.7)
+        st.rerun()
+    elif runner.finished:
+        if runner.returncode == 0:
+            st.success(f"✅ `{title}` با موفقیت تمام شد (exit=0).")
+        else:
+            st.error(f"❌ `{title}` ناموفق بود (exit={runner.returncode}).")
+        with st.expander("📜 Full log", expanded=True):
+            st.code("\n".join(runner.lines[-800:]), language=None)
+        if st.button("🗑 Clear", key=f"clear_{key}"):
+            st.session_state[key] = None
+            st.rerun()
 
 
 config = load_config()
@@ -423,6 +509,12 @@ with tab_local:
         st.success(f"✅ {torch.cuda.get_device_name(0)} ({torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB)")
     else:
         st.warning("⚠️ CPU only — slow.")
+
+    if "local_runner" not in st.session_state:
+        st.session_state.local_runner = None
+    runner = st.session_state.local_runner
+    is_running = runner is not None and runner.running and not runner.finished
+
     lc1, lc2 = st.columns(2)
     with lc1:
         ls = st.selectbox("Stage", ["all","data","train","eval"],
@@ -430,22 +522,17 @@ with tab_local:
                           key="lstage")
     with lc2:
         mlflow_on = st.checkbox("📈 MLflow", value=True, key="lmlflow")
-    if st.button("▶️ Run", type="primary", use_container_width=True, key="lrun"):
+
+    if st.button("▶️ Run", type="primary", use_container_width=True, key="lrun",
+                 disabled=is_running):
         cmd = [sys.executable, str(PIPELINE_SCRIPT), "--run", ls, "--config", str(CONFIG_PATH)]
         if not mlflow_on: cmd.append("--no-mlflow")
-        with st.spinner(f"Running `{ls}`..."):
-            try:
-                env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
-                r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                                   errors="replace", timeout=7200, cwd=str(PROJECT_ROOT),
-                                   env=env)
-                if r.returncode == 0: st.success("✅ Done!")
-                else: st.error("❌ Failed!")
-                with st.expander("Log", expanded=True):
-                    st.code(r.stdout[-5000:] if len(r.stdout) > 5000 else r.stdout)
-                    if r.stderr: st.code(r.stderr[-2000:])
-            except subprocess.TimeoutExpired:
-                st.error("⏰ Timeout (2h)")
+        runner = LocalRunner(cmd, str(PROJECT_ROOT))
+        runner.start()
+        st.session_state.local_runner = runner
+        st.rerun()
+
+    _render_local_runner("local_runner", "Local pipeline")
 
 
 # ── TAB: Analysis ──
@@ -454,40 +541,35 @@ with tab_analysis:
     st.caption("Run the new pipeline modules locally: unbiased EDA, centroid baseline, "
                "ensemble calibration, and submission inference.")
 
+    if "analysis_runner" not in st.session_state:
+        st.session_state.analysis_runner = None
+    ar = st.session_state.analysis_runner
+    a_running = ar is not None and ar.running and not ar.finished
+
     ac1, ac2 = st.columns(2)
     with ac1:
         st.subheader("📊 Unbiased EDA")
         st.caption("Multi-window ECAPA embeddings + LOO centroid + Macro-F1 simulation "
                    "(GPU, several minutes).")
-        if st.button("▶️ eda_embeddings", key="a_eda", use_container_width=True):
-            with st.spinner("Running eda_embeddings..."):
-                try:
-                    out = _run_local([sys.executable, "-m", "src.eda_embeddings"], timeout=3600)
-                    st.code(out)
-                    if out.startswith("[exit=0]"):
-                        st.success("Done!")
-                    else:
-                        st.error("Failed (see log).")
-                except subprocess.TimeoutExpired:
-                    st.error("⏰ Timeout (1h)")
+        if st.button("▶️ eda_embeddings", key="a_eda", use_container_width=True,
+                     disabled=a_running):
+            r = LocalRunner([sys.executable, "-m", "src.eda_embeddings"], str(PROJECT_ROOT))
+            r.start()
+            st.session_state.analysis_runner = r
+            st.rerun()
 
         st.subheader("🎯 Centroid baseline")
         st.caption("Embedding cache (idempotent) + centroid classifier + fusion report.")
         force_cache = st.checkbox("Rebuild embedding cache", key="a_force")
-        if st.button("▶️ centroid_baseline", key="a_centroid", use_container_width=True):
+        if st.button("▶️ centroid_baseline", key="a_centroid", use_container_width=True,
+                     disabled=a_running):
             cmd = [sys.executable, "-m", "src.centroid_baseline"]
             if force_cache:
                 cmd.append("--force-cache")
-            with st.spinner("Running centroid_baseline..."):
-                try:
-                    out = _run_local(cmd, timeout=7200)
-                    st.code(out)
-                    if out.startswith("[exit=0]"):
-                        st.success("Done!")
-                    else:
-                        st.error("Failed (see log).")
-                except subprocess.TimeoutExpired:
-                    st.error("⏰ Timeout (2h)")
+            r = LocalRunner(cmd, str(PROJECT_ROOT))
+            r.start()
+            st.session_state.analysis_runner = r
+            st.rerun()
 
     with ac2:
         st.subheader("🧩 Ensemble + temperature")
@@ -496,38 +578,30 @@ with tab_analysis:
         ckpts = st.text_input("Checkpoint paths (space-separated)",
                               value="checkpoints/best_seed1.pt checkpoints/best_seed2.pt",
                               key="a_ckpts")
-        if st.button("▶️ ensemble_calibrate", key="a_ens", use_container_width=True):
+        if st.button("▶️ ensemble_calibrate", key="a_ens", use_container_width=True,
+                     disabled=a_running):
             ckpt_list = [c for c in ckpts.split() if c]
             if len(ckpt_list) < 2:
                 st.warning("⚠️ Provide at least 2 checkpoint paths.")
             else:
                 cmd = [sys.executable, "-m", "src.ensemble_calibrate",
                        "--checkpoints"] + ckpt_list
-                with st.spinner("Running ensemble_calibrate..."):
-                    try:
-                        out = _run_local(cmd, timeout=7200)
-                        st.code(out)
-                        if out.startswith("[exit=0]"):
-                            st.success("Done!")
-                        else:
-                            st.error("Failed (see log).")
-                    except subprocess.TimeoutExpired:
-                        st.error("⏰ Timeout (2h)")
+                r = LocalRunner(cmd, str(PROJECT_ROOT))
+                r.start()
+                st.session_state.analysis_runner = r
+                st.rerun()
 
         st.subheader("📤 Submission CSV")
         st.caption("Run submission.inference on a test folder → 447-column CSV.")
         s_dir = st.text_input("Test data dir", value="data/processed/audio_wav", key="a_dir")
         s_out = st.text_input("Output CSV", value="predictions.csv", key="a_out")
-        if st.button("▶️ inference → CSV", key="a_inf", use_container_width=True):
+        if st.button("▶️ inference → CSV", key="a_inf", use_container_width=True,
+                     disabled=a_running):
             cmd = [sys.executable, "-m", "submission.inference",
                    "--data-dir", s_dir, "--predictions-file-path", s_out]
-            with st.spinner("Running inference..."):
-                try:
-                    out = _run_local(cmd, timeout=7200)
-                    st.code(out)
-                    if out.startswith("[exit=0]"):
-                        st.success("Done!")
-                    else:
-                        st.error("Failed (see log).")
-                except subprocess.TimeoutExpired:
-                    st.error("⏰ Timeout (2h)")
+            r = LocalRunner(cmd, str(PROJECT_ROOT))
+            r.start()
+            st.session_state.analysis_runner = r
+            st.rerun()
+
+    _render_local_runner("analysis_runner", "Analysis tool")

@@ -17,11 +17,17 @@ import sys
 
 
 def setup_utf8_stdio() -> None:
-    """Reconfigure stdout/stderr to UTF-8 with replace-on-error (no crashes)."""
+    """Reconfigure stdout/stderr to UTF-8 with replace-on-error (no crashes).
+
+    `line_buffering=True` also flushes every line immediately when stdout is a
+    pipe, so Streamlit's LocalRunner can stream logs live (Python block-buffers
+    piped output by default, which would hide all progress until the end).
+    """
     for stream in (sys.stdout, sys.stderr):
         if stream is None:
             continue
         try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace",
+                               line_buffering=True)
         except Exception:
             pass
