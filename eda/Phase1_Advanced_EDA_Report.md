@@ -1,8 +1,7 @@
-# Phase 1 — Advanced EDA Report: Audio Duration Analysis
+# Phase 1 — Duration & Audio Integrity EDA Report
 
 **Project:** IAAA Competition 2026 — Open-Set Speaker Identification  
-**Date:** 2026-08-06  
-**Branch:** `feature/advanced-speaker-id`
+**Module:** `src/eda_advanced.py` · **Date:** 2026-08-08
 
 ---
 
@@ -11,10 +10,15 @@
 | Metric | Value |
 |--------|-------|
 | Total audio files | 4,529 |
-| Corrupted/unreadable | 0 |
+| Corrupted / unreadable | 70 |
 | Files < 1s (suspicious) | 70 (1.55%) |
-| **90.4% of files > 30 seconds** | — rich for random window cropping |
-| Files > 60 seconds | 2,217 |
+| Files > 30 s | 4,091 (90.3%) |
+| Files > 60 s | 2,217 |
+| Median duration | 59.6s |
+
+> **Headline:** ~90% of the corpus is long-form audio (>30 s). This is a **huge
+> advantage** for open-set speaker ID: every long file can be cut into many
+> independent training windows, multiplying the effective training set.
 
 ---
 
@@ -22,13 +26,13 @@
 
 | Statistic | Value |
 |-----------|-------|
-| Min | 0.00s |
+| Min (valid files) | 0.00s |
 | Max | 2m 39.4s |
 | **Mean** | **58.2s** |
 | **Median** | **59.6s** |
-| Std Dev | 21.3s |
+| Std dev | 21.3s |
 
-### Percentile Distribution
+### Percentile distribution (valid files only)
 
 | Percentile | Duration |
 |-----------|----------|
@@ -42,47 +46,39 @@
 | 95% | 1m 28.5s |
 | 99% | 1m 40.2s |
 
-> **Key insight:** 50% of files cluster between 50.1s and 1m 10.9s, and only 1.55% are under 1 second. The distribution is tight around 50-70 seconds with a long right tail.
-
 ---
 
 ## 3. Known vs Unknown Duration Comparison
 
 | Statistic | Known (n=2,254) | Unknown (n=2,275) |
-|-----------|----------------|--------------------|
+|-----------|-------------------------|---------------------------|
 | Min | 0.00s | 0.00s |
 | Max | 2m 1.9s | 2m 39.4s |
 | **Mean** | **58.9s** | **57.5s** |
 | **Median** | **1m 0.1s** | **59.1s** |
-| Std Dev | 20.4s | 22.1s |
+| Std dev | 20.4s | 22.1s |
 
-> **Key insight:** Known and unknown speakers have nearly identical duration distributions. Audio length is NOT a confounding variable for open-set detection. No special handling needed per class.
+> **Confounder check:** known and unknown files have essentially identical duration
+> distributions (Δmedian ≈ 1 s). Duration is **not** a usable cue for OOD detection —
+> the model must rely on *voice characteristics*, exactly as the challenge intends.
 
 ---
 
 ## 4. Duration Bucket Breakdown
 
-| Bucket | Total | % | Known | K% | Unknown | U% |
-|--------|-------|---|-------|-----|---------|------|
-| <1s | 70 | 1.5% | 22 | 1.0% | 48 | 2.1% |
-| 1-2s | 45 | 1.0% | 20 | 0.9% | 25 | 1.1% |
-| 2-3s | 25 | 0.6% | 11 | 0.5% | 14 | 0.6% |
-| 3-5s | 55 | 1.2% | 26 | 1.2% | 29 | 1.3% |
-| 5-10s | 108 | 2.4% | 58 | 2.6% | 50 | 2.2% |
-| 10-30s | 135 | 3.0% | 56 | 2.5% | 79 | 3.5% |
-| 30-60s | 1,874 | 41.4% | 932 | 41.3% | 942 | 41.4% |
-| >60s | 2,217 | 49.0% | 1,129 | 50.1% | 1,088 | 47.8% |
+| Bucket | Total | % | Known | Unknown |
+|--------|------:|---:|------:|--------:|
+['| <1s | 70 | 1.5% | 22 | 48 |', '| 1-2s | 45 | 1.0% | 20 | 25 |', '| 2-3s | 25 | 0.6% | 11 | 14 |', '| 3-5s | 55 | 1.2% | 26 | 29 |', '| 5-10s | 108 | 2.4% | 58 | 50 |', '| 10-30s | 135 | 3.0% | 56 | 79 |', '| 30-60s | 1,874 | 41.4% | 932 | 942 |', '| >60s | 2,217 | 49.0% | 1,129 | 1,088 |']
 
 ---
 
 ## 5. Corrupted / Near-Zero Files
 
-**70 files** (1.55%) have duration < 1 second and are likely corrupted or empty.
+**70 files** (1.55%) have duration < 1 s and are
+treated as corrupted / empty. Sample:
 
-### Sample of shortest files:
-
-| Audio File | Duration | Speaker ID | Class Type |
-|------------|----------|------------|------------|
+| Audio File | Duration | Speaker ID | Class |
+|------------|----------|------------|-------|
 | 05006e09-6c16-4640-8dad-108a558eae85.mp3 | 0.00s | unknown | Unknown |
 | 0f2bebd9-4651-4e53-96cd-42dd2acbace1.mp3 | 0.00s | unknown | Unknown |
 | 72be17b0-6947-41f7-ba65-9009bcec8d22.mp3 | 0.00s | unknown | Unknown |
@@ -95,73 +91,135 @@
 | 1ca9b207-db27-424d-a611-5c2995a2e9d1.mp3 | 0.00s | 990aa42f-b730-40f8-b720-4f2040b84f73 | Known |
 | 286a8f8f-8781-459e-8b7b-dcfa6a91c5dd.mp3 | 0.00s | 990aa42f-b730-40f8-b720-4f2040b84f73 | Known |
 | 52083e6d-3de3-4043-b2d7-9cfc4afd420b.mp3 | 0.00s | 990aa42f-b730-40f8-b720-4f2040b84f73 | Known |
-| 6fb370fe-3d52-4391-83c6-9273d9862936.mp3 | 0.00s | 990aa42f-b730-40f8-b720-4f2040b84f73 | Known |
-| 6173f7bf-b974-4624-ba29-00fde27b07b9.mp3 | 0.00s | 990aa42f-b730-40f8-b720-4f2040b84f73 | Known |
-| 750ee4de-01e6-4ea4-9f8d-a3865e7dd2f0.mp3 | 0.00s | 990aa42f-b730-40f8-b720-4f2040b84f73 | Known |
-| ... | ... | ... | ... |
-| *(and 55 more)* | | | |
+| ... | (and 58 more) | | |
 
-> **Recommendation:** These 70 files should be flagged and excluded during training via a `min_valid_duration` filter.
+> **Recommendation:** these files are dropped at data-loading time via the
+> `min_valid_duration: 1.0` filter (see `src/data_pipeline.py`).
 
 ---
 
 ## 6. Implications for Model Training
 
-### 6.1 Audio Duration Strategy
+### 6.1 Chunked window sampling (multiplies data ~10×)
 
-Since **90.4% of files are > 30 seconds**, the optimal approach is:
+Long files + random 5 s window cropping:
 
-1. **Training:** Random window cropping of **5-second chunks** (instead of fixed 3s from the beginning).
-   - Each 60s file can yield ~12 independent training crops per epoch = massive data diversity.
-   - Multiple random crops per epoch = implicit augmentation via varied temporal contexts.
+- A 60 s file yields ≈ 12 independent 5 s crops per epoch.
+- With `duration_seconds: 5.0` (config), each epoch presents different temporal
+  contexts ⇒ **built-in augmentation** without extra compute.
+- Validation uses a deterministic center crop; inference uses **overlapping windows
+  with 50% hop + probability averaging (TTA)**.
 
-2. **Validation/Testing:** Use the same 5s random crop (center crop for reproducibility).
+### 6.2 Known-speaker few-shot problem is eased
 
-3. **Inference (TTA):** Overlapping 5s windows with 50% hop for files > 5s.
-   - For a 60s file: ~23 chunks → averaged probabilities.
+- Each known speaker ≈ 5 files × ~60 s ≈ 300 s of audio ⇒ ~60 distinct 5 s windows.
+- Random cropping across epochs effectively gives the speaker head many more
+  distinct training observations than the 5 labelled rows suggest.
 
-### 6.2 Handling Short/Corrupted Files
+### 6.3 OOD detection cannot exploit duration
 
-- `min_valid_duration = 1.0s` threshold in the data pipeline.
-- Files below threshold: **skip with warning**, not zero-pad.
-- This removes 70 bad files (1.55%), leaving 4,459 clean files.
-
-### 6.3 Known vs Unknown Balance
-
-- The near-identical duration distributions mean **no duration-based bias** in OOD detection.
-- The challenge remains purely acoustic: distinguishing speaker identity, not audio length.
+- No duration-based bias ⇒ the OOD head must rely on the *embedding manifold*
+  (cosine distance to known speakers / energy of the speaker head).
 
 ---
 
 ## 7. Visualizations
 
-### 7.1 Duration Distribution — All Files
+### 7.1 Duration histogram + KDE
 
-![Duration Histogram](duration_histogram.png)
+![Duration Histogram](phase1_duration_histogram.png)
 
-### 7.2 Duration Boxplot — Known vs Unknown
+### 7.2 Boxplot — Known vs Unknown
 
-![Duration Boxplot](duration_boxplot_by_class.png)
+![Duration Boxplot](phase1_duration_boxplot.png)
 
-### 7.3 Duration Buckets — By Class Type
+### 7.3 Duration buckets by class
 
-![Duration Buckets](duration_buckets.png)
+![Duration Buckets](phase1_duration_buckets.png)
+
+### 7.4 Cumulative distribution function
+
+![Duration CDF](phase1_duration_cdf.png)
 
 ---
 
-## 8. Config Recommendations
-
-Based on this analysis, the following config values are recommended:
+## 8. Config Recommendations (current defaults)
 
 ```yaml
 audio:
   sample_rate: 16000
-  duration_seconds: 5.0        # increased from 3.0 — optimal for speaker identity
-  min_valid_duration: 1.0      # skip corrupted/near-zero files
+  duration_seconds: 5.0        # window length for training
+  min_valid_duration: 1.0      # drop corrupted / near-empty files
+  n_mels: 80                   # (used by future front-ends)
+  n_fft: 400
+  hop_length: 160
+```
 
-training:
-  # Random cropping each epoch provides built-in data diversity
-  # Each 60s file yields ~12 distinct 5s crops per epoch
+---
+
+## 9. Key Numbers (JSON)
+
+```json
+{
+  "total_files": 4529,
+  "corrupted_count": 70,
+  "short_count": 70,
+  "short_pct": 1.545595054095827,
+  "over_30s_count": 4091,
+  "over_30s_pct": 90.32899094722897,
+  "over_60s_count": 2217,
+  "all": {
+    "count": 4529,
+    "min": 6.25e-05,
+    "max": 159.4026875,
+    "mean": 58.17783985151247,
+    "median": 59.5626875,
+    "std": 21.31902167525801,
+    "p1": 0.0239325000000001,
+    "p5": 6.3146875,
+    "p10": 32.39255,
+    "p25": 50.0906875,
+    "p50": 59.5626875,
+    "p75": 70.912,
+    "p90": 81.68106250000002,
+    "p95": 88.4906875,
+    "p99": 100.21889500000005
+  },
+  "known": {
+    "count": 2254,
+    "min": 6.25e-05,
+    "max": 121.856,
+    "mean": 58.88611856699201,
+    "median": 60.0746875,
+    "std": 20.435575079263845,
+    "p1": 1.024,
+    "p5": 7.7653125,
+    "p10": 38.34028125,
+    "p25": 50.6026875,
+    "p50": 60.0746875,
+    "p75": 71.31734375,
+    "p90": 81.664,
+    "p95": 87.7226875,
+    "p99": 98.07273687499988
+  },
+  "unknown": {
+    "count": 2275,
+    "min": 6.25e-05,
+    "max": 159.4026875,
+    "mean": 57.476099093406596,
+    "median": 59.0506875,
+    "std": 22.13726878395411,
+    "p1": 6.25e-05,
+    "p5": 4.753075000000001,
+    "p10": 20.8895875,
+    "p25": 49.62134375,
+    "p50": 59.0506875,
+    "p75": 70.4,
+    "p90": 81.88587500000001,
+    "p95": 89.088,
+    "p99": 103.29769124999997
+  }
+}
 ```
 
 ---

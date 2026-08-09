@@ -1,57 +1,90 @@
+audio:
+  duration_seconds: 8.0
+  eval_hop_ratio: 0.5
+  hop_length: 160
+  max_eval_windows: 8
+  min_valid_duration: 1.0
+  n_fft: 400
+  n_mels: 80
+  num_train_windows: 3
+  ood_batch_ratio: 0.5
+  sample_rate: 16000
+data:
+  audio_dir: data\processed\audio_wav
+  labels_path: data\processed\audio_wav_labels.csv
+  processed_labels: data/processed/cleaned_labels.csv
 hardware:
   mode: local
   profiles:
     local:
+      batch_size: 8
       description: GTX 1660 Ti (6GB VRAM)
       device: cuda
-      batch_size: 8
-      num_workers: 0
       mixed_precision: true
+      num_workers: 0
     vastai:
+      batch_size: 32
       description: RTX 3090 / 4090 / A5000 (24GB+ VRAM)
       device: cuda
-      batch_size: 32
-      num_workers: 4
       mixed_precision: true
+      num_workers: 4
     vastai_3060:
+      batch_size: 16
       description: RTX 3060 (12GB VRAM)
       device: cuda
-      batch_size: 16
-      num_workers: 4
       mixed_precision: true
+      num_workers: 4
     vastai_a4000:
+      batch_size: 24
       description: RTX A4000 (16GB VRAM)
       device: cuda
-      batch_size: 24
-      num_workers: 4
       mixed_precision: true
-audio:
-  sample_rate: 16000
-  duration_seconds: 8.0
-  min_valid_duration: 1.0
-  ood_batch_ratio: 0.5
-  num_train_windows: 3
-  eval_hop_ratio: 0.5
-  max_eval_windows: 8
-  n_mels: 80
-  n_fft: 400
-  hop_length: 160
+      num_workers: 4
+logging:
+  checkpoint_dir: checkpoints
+  log_dir: logs
+mlops:
+  artifact_store:
+    path: data/artifacts
+    type: local
+  enabled: true
+  experiment_name: speaker-identification
+  model_registry:
+    name: speaker-identification
+    type: mlflow
+  pipeline_name: speaker_id_pipeline
+  tracking:
+    password: ${DAGSHUB_USER_TOKEN}
+    uri: https://dagshub.com/amiresbati52/Speaker-identification.mlflow
+    username: ${DAGSHUB_REPO_OWNER}
+  vast:
+    alternative_gpu: RTX_3060
+    default_gpu: RTX_3090
+    disk_size: 60
+    gpu_options:
+    - RTX_3090
+    - RTX_3060
+    - RTX_A4000
+    image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel
 model:
-  encoder_type: ecapa
   competition_num_known: 446
   encoder_config:
-    wavlm:
-      base_model: microsoft/wavlm-base-plus
-      freeze_feature_extractor: true
     ecapa:
-      source: speechbrain/spkrec-ecapa-voxceleb
       freeze_encoder: false
+      source: speechbrain/spkrec-ecapa-voxceleb
       unfreeze_last_n_blocks: 2
     hubert:
       base_model: facebook/hubert-large-ls960-ft
       freeze_feature_extractor: true
+    wavlm:
+      base_model: microsoft/wavlm-base-plus
+      freeze_feature_extractor: true
+  encoder_type: ecapa
+  fusion:
+    ensemble_method: none
+  ood_head_config:
+    hidden_dim: 256
   pooling_type: identity
-  speaker_head_type: arcface
   speaker_head_config:
     arcface:
       embedding_dim: 192
@@ -59,53 +92,17 @@ model:
       scale: 30.0
     linear:
       hidden_dims: []
-  ood_head_config:
-    hidden_dim: 256
-  fusion:
-    ensemble_method: none
+  speaker_head_type: arcface
 training:
-  epochs: 100
-  learning_rate: 0.0001
+  early_stopping_patience: 15
   encoder_lr: 1.0e-05
-  weight_decay: 1.0e-05
-  warmup_steps: 500
+  epochs: 100
+  label_smoothing: 0.1
+  learning_rate: 0.0001
   max_grad_norm: 5.0
   ood_grad_norm: 1.0
-  ood_pos_weight: 1.0
   ood_loss_weight: 0.3
+  ood_pos_weight: 1.0
   speaker_loss_weight: 0.7
-  early_stopping_patience: 15
-  label_smoothing: 0.1
-data:
-  labels_path: data/processed/audio_wav_labels.csv
-  audio_dir: data/processed/audio_wav
-  processed_labels: data/processed/cleaned_labels.csv
-logging:
-  log_dir: logs
-  checkpoint_dir: checkpoints
-mlops:
-  enabled: true
-  experiment_name: speaker-identification
-  pipeline_name: speaker_id_pipeline
-  tracking:
-    uri: https://dagshub.com/amiresbati52/Speaker-identification.mlflow
-    username: ${DAGSHUB_REPO_OWNER}
-    password: ${DAGSHUB_USER_TOKEN}
-  model_registry:
-    type: mlflow
-    name: speaker-identification
-  artifact_store:
-    type: local
-    path: data/artifacts
-  vast:
-    default_gpu: RTX_3090
-    alternative_gpu: RTX_3060
-    # All GPU targets supported by the Vast.ai deploy path (deploy_app dropdown
-    # must stay in sync): 3090 → vastai (batch 32), 3060 → vastai_3060 (16),
-    # A4000 (16GB) → vastai_a4000 (batch 24).
-    gpu_options:
-      - RTX_3090
-      - RTX_3060
-      - RTX_A4000
-    disk_size: 60
-    image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel
+  warmup_steps: 500
+  weight_decay: 1.0e-05
