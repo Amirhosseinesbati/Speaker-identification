@@ -294,6 +294,7 @@ def forward_multi_window(
     model: nn.Module,
     waveforms: torch.Tensor,
     labels: Optional[torch.Tensor] = None,
+    max_windows_per_forward: int = 16,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Forward pass with multi-window TTA.
@@ -304,11 +305,17 @@ def forward_multi_window(
                        resulting logits over W (window-level TTA, so the
                        full file length is used).
 
+    Windows are processed in chunks of `max_windows_per_forward` so peak VRAM
+    stays bounded regardless of `batch_size × W` — critical on the 6 GB local
+    GPU (a single batched forward over all windows OOM'd during embedding
+    extraction) and harmless on larger GPUs.
+
     Args:
         model:      TwoHeadedSpeakerModel (or anything with forward(w, labels)).
         waveforms:  (B, 1, T) or (B, W, 1, T) raw audio, 16 kHz.
         labels:     Optional (B,) speaker labels (expanded per window for
                     ArcFace margin when given).
+        max_windows_per_forward: window-chunk size for the flattened forward.
 
     Returns:
         ood_logits:     (B, 1)
@@ -318,12 +325,19 @@ def forward_multi_window(
         return model(waveforms, labels=labels)
 
     B, W = waveforms.shape[0], waveforms.shape[1]
-    wf = waveforms.reshape(B * W, 1, -1)
-    lab = labels.repeat_interleave(W) if labels is not None else None
-    ood, spk = model(wf, labels=lab)
-    ood = ood.view(B, W, -1).mean(dim=1)
-    spk = spk.view(B, W, -1).mean(dim=1)
-    return ood, spk
+    chunk = max(1, max_windows_per_forward)
+    ood_sum = None
+    spk_sum = None
+    for s in range(0, W, chunk):
+        c = min(chunk, W - s)
+        wf = waveforms[:, s : s + c].reshape(B * c, 1, -1)
+        lab = labels.repeat_interleave(c) if labels is not None else None
+        ood, spk = model(wf, labels=lab)
+        ood = ood.view(B, c, -1).sum(dim=1)
+        spk = spk.view(B, c, -1).sum(dim=1)
+        ood_sum = ood if ood_sum is None else ood_sum + ood
+        spk_sum = spk if spk_sum is None else spk_sum + spk
+    return ood_sum / W, spk_sum / W
 
 
 # ─────────────────────────────────────────────────────────
