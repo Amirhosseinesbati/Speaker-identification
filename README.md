@@ -709,15 +709,6 @@ python -m src.pipelines.run_pipeline --run train --no-mlflow   # partial, no tra
   - **🧪 Analysis** — run the new modules from the UI: `eda_embeddings`,
     `centroid_baseline`, `ensemble_calibrate`, and `submission.inference`.
 
-> **Troubleshooting — training falls back to CPU on Vast.ai:** `uv.lock` pins
-> `torch 2.13.0+cu126` (CUDA 12.6 → host driver ≥ 560), but rented instances have
-> different driver versions. If the lock torch cannot initialise CUDA,
-> `setup_vast.sh` now **detects the host driver** (via `nvidia-smi`) and installs the
-> best compatible wheel automatically: cu124 (driver ≥ 550) → cu121 (≥ 530) →
-> cu118 (≥ 515). You can force a specific level with `TORCH_CUDA_LEVEL=cu118` (or
-> `cu124:2.6.0`). `setup_device()` also prints an actionable message when it falls
-> back to CPU.
-
 > **Troubleshooting — `libtorch_cuda.so: undefined symbol: ncclCommResume` on
 > Vast.ai:** the `pytorch/pytorch:2.2.0` base image ships a system `libnccl`
 > (NCCL < 2.19.3) that shadows the newer NCCL bundled inside the pip torch wheel,

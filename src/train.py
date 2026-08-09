@@ -53,14 +53,6 @@ def setup_device(config: dict) -> torch.device:
     else:
         device = torch.device("cpu")
         print(f"  🖥️  Device: CPU")
-        if preferred == "cuda":
-            print("  ⚠ CUDA requested in config but torch.cuda.is_available()=False!")
-            print(f"    torch={torch.__version__} | cuda_build={torch.version.cuda}")
-            print("    → the venv torch is CPU-only, or its CUDA version needs a")
-            print("      newer host driver than the machine provides.")
-            print("    → fix (match the host/image CUDA), e.g. for CUDA 12.1:")
-            print("      uv pip install torch==2.2.0+cu121 torchaudio==2.2.0+cu121 \\")
-            print("          --index-url https://download.pytorch.org/whl/cu121")
     return device
 
 
