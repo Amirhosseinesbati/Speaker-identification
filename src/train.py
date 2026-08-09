@@ -28,7 +28,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data_pipeline import load_config, get_active_profile, get_dataloaders
-from src.model import TwoHeadedWavLM
+from src.model_factory import create_model_from_config
 from src.metrics import evaluate_macro_f1
 
 warnings.filterwarnings("ignore")
@@ -366,7 +366,7 @@ def train_epoch(
     num_batches = len(dataloader)
 
     progress_bar = tqdm(dataloader, desc="  Train", leave=False)
-    for waveforms, labels in progress_bar:
+    for step, (waveforms, labels) in enumerate(progress_bar):
         waveforms = waveforms.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
@@ -375,6 +375,15 @@ def train_epoch(
         with autocast():
             ood_logits, speaker_logits = forward_multi_window(model, waveforms, labels=labels)
             loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
+
+        # Fail loudly on NaN/Inf instead of silently training a broken model
+        if not torch.isfinite(loss):
+            raise RuntimeError(
+                f"Loss is NaN/Inf at step {step} of the current epoch. This "
+                "usually means the encoder is fully unfrozen under fp16 AMP "
+                "(try mixed_precision: false, a lower learning_rate/encoder_lr, "
+                "or freeze_encoder: true / a smaller unfreeze_last_n_blocks)."
+            )
 
         # Backward pass with AMP
         scaler.scale(loss).backward()
@@ -512,8 +521,11 @@ def train(config_path: str = "configs/default_config.yaml"):
     num_known = config.get("model", {}).get("competition_num_known", len(class_map) - 1)
 
     # ── Model ──
+    # NOTE: use the config-driven factory, NOT the legacy TwoHeadedWavLM
+    # wrapper (which hardcodes a WavLM encoder and ignores `encoder_type`).
     print(f"\n  [2/4] Building model ({num_known} known speakers)...")
-    model = TwoHeadedWavLM(config, num_known_speakers=num_known)
+    from src.model_factory import create_model_from_config
+    model = create_model_from_config(config, num_known_speakers=num_known)
     model = model.to(device)
     model.print_summary()
 
@@ -675,8 +687,9 @@ def main():
     _, val_loader, class_map = get_dataloaders(config)
     num_known = len(class_map) - 1
 
-    # Build model
-    model = TwoHeadedWavLM(config, num_known_speakers=num_known).to(device)
+    # Build model (config-driven factory — honors encoder_type)
+    from src.model_factory import create_model_from_config
+    model = create_model_from_config(config, num_known_speakers=num_known).to(device)
 
     # Loss & optimizer
     criterion = TwoPartLoss(ignore_index=-100)
