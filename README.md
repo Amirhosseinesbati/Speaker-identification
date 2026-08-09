@@ -718,6 +718,14 @@ python -m src.pipelines.run_pipeline --run train --no-mlflow   # partial, no tra
 > `cu124:2.6.0`). `setup_device()` also prints an actionable message when it falls
 > back to CPU.
 
+> **Troubleshooting — `libtorch_cuda.so: undefined symbol: ncclCommResume` on
+> Vast.ai:** the `pytorch/pytorch:2.2.0` base image ships a system `libnccl`
+> (NCCL < 2.19.3) that shadows the newer NCCL bundled inside the pip torch wheel,
+> so `import torch` fails after the CUDA wheel swap. `setup_vast.sh` fixes this
+> automatically (Phase 2.6): it prepends the venv's `torch/lib` to
+> `LD_LIBRARY_PATH` and `LD_PRELOAD`s the bundled `libnccl.so.2`, so the
+> self-consistent bundled NCCL is always loaded.
+
 ### 12.4 Data versioning (DVC)
 
 `data/` is tracked with **DVC** (`.dvc/` cache present) — audio is never committed to git;

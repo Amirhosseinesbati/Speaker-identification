@@ -160,6 +160,30 @@ else
 fi
 
 # ============================================================================
+#  Phase 2.6: Pin the venv's bundled libnccl (fixes ncclCommResume on old images)
+# ============================================================================
+# The pytorch/pytorch:2.2.0 base image ships a SYSTEM libnccl < 2.19.3 at
+# /usr/local/nccl2/lib (listed first in the container's LD_LIBRARY_PATH). The
+# pip torch wheel bundles a NEWER libnccl (with ncclCommResume) inside
+# torch/lib, but LD_LIBRARY_PATH is searched before the wheel's RUNPATH, so the
+# old system NCCL shadows the bundled one → `import torch` dies with
+# "libtorch_cuda.so: undefined symbol: ncclCommResume". Fix: put torch/lib
+# first in LD_LIBRARY_PATH and LD_PRELOAD the bundled libnccl so the correct
+# (self-consistent) NCCL is always loaded.
+TORCH_LIB_DIR="$(uv run --no-sync python - <<'PYEOF' 2>/dev/null
+import os, torch
+print(os.path.join(os.path.dirname(torch.__file__), "lib"))
+PYEOF
+)"
+if [ -n "$TORCH_LIB_DIR" ] && [ -f "$TORCH_LIB_DIR/libnccl.so.2" ]; then
+    echo "   🔧 Pinning bundled NCCL: $TORCH_LIB_DIR/libnccl.so.2"
+    export LD_LIBRARY_PATH="$TORCH_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LD_PRELOAD="$TORCH_LIB_DIR/libnccl.so.2${LD_PRELOAD:+:$LD_PRELOAD}"
+else
+    echo "   ⚠ torch/lib/libnccl.so.2 not found — skipping NCCL pin (${TORCH_LIB_DIR:-torch not importable})"
+fi
+
+# ============================================================================
 #  Phase 3: DVC — Pull Raw Data from DagsHub
 # ============================================================================
 echo ""
