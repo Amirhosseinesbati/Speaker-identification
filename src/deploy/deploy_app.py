@@ -30,6 +30,16 @@ def save_config(cfg: dict):
     st.cache_resource.clear()
 
 
+def _run_local(cmd: list, timeout: int = 7200) -> str:
+    """Run a local subprocess and return the (truncated) combined output."""
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                       cwd=str(PROJECT_ROOT))
+    out = r.stdout or ""
+    if r.returncode != 0:
+        out += "\n[STDERR]\n" + (r.stderr or "")
+    return (f"[exit={r.returncode}]\n" + out)[-8000:]
+
+
 config = load_config()
 
 
@@ -39,6 +49,16 @@ def _enc_val(key, default=None):
     if "encoder_config" in mc and enc in mc["encoder_config"]:
         return mc["encoder_config"][enc].get(key, default)
     return mc.get(key, default)
+
+
+def _enc_freeze() -> bool:
+    """True if the active encoder's freeze flag is set (ECAPA: freeze_encoder)."""
+    return bool(_enc_val("freeze_feature_extractor", _enc_val("freeze_encoder", True)))
+
+
+def _enc_unfreeze_blocks() -> int:
+    """unfreeze_last_n_blocks of the active encoder (0 = not partial)."""
+    return int(_enc_val("unfreeze_last_n_blocks", 0) or 0)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -103,19 +123,29 @@ with st.sidebar:
     mc = config.get("model", {})
     enc = mc.get("encoder_type", "?")
     pool = mc.get("pooling_type", "?")
-    freeze = _enc_val("freeze_feature_extractor", _enc_val("freeze_encoder", True))
+    freeze = _enc_freeze()
+    blocks = _enc_unfreeze_blocks()
     dur = config["audio"]["duration_seconds"]
+    nwin = config["audio"].get("num_train_windows", "-")
+    ehop = config["audio"].get("eval_hop_ratio", "-")
+    mwin = config["audio"].get("max_eval_windows", "-")
+    oodr = config["audio"].get("ood_batch_ratio", "-")
+    enc_lr = config["training"].get("encoder_lr", "-")
     arc = mc.get("speaker_head_config", {}).get("arcface", {})
+    ft_label = ("Frozen" if freeze
+                else (f"Partial (last {blocks})" if blocks and blocks > 0 else "Full"))
     st.markdown(f"""
     | Param | Value |
     |-------|-------|
     | Encoder | `{enc}` |
     | Pooling | `{pool}` |
-    | Head | ArcFace (m={arc.get('margin',0.3)}, s={arc.get('scale',15)}) |
-    | Freeze | `{freeze}` |
+    | Head | ArcFace (m={arc.get('margin',0.4)}, s={arc.get('scale',30)}) |
+    | Fine-tune | `{ft_label}` |
     | Duration | `{dur}s` |
+    | Windows | train `{nwin}` / eval `{mwin}` (hop `{ehop}`) |
+    | OOD ratio | `{oodr}` |
     | Epochs | `{config['training']['epochs']}` |
-    | LR | `{config['training']['learning_rate']}` |
+    | LR (head/enc) | `{config['training']['learning_rate']}` / `{enc_lr}` |
     """)
     st.caption(f"Branch: `feature/advanced-speaker-id`")
 
@@ -124,7 +154,8 @@ with st.sidebar:
 #  Main
 # ═══════════════════════════════════════════════════════════
 st.title("🎤 Speaker-ID MLOps Center")
-tab_cfg, tab_cloud, tab_local = st.tabs(["⚙️ Config", "☁️ Cloud (Vast.ai)", "💻 Local"])
+tab_cfg, tab_cloud, tab_local, tab_analysis = st.tabs(
+    ["⚙️ Config", "☁️ Cloud (Vast.ai)", "💻 Local", "🧪 Analysis"])
 
 # ── TAB: Config ──
 with tab_cfg:
@@ -135,8 +166,27 @@ with tab_cfg:
         encoder_type = st.selectbox(
             "Encoder", ["wavlm", "ecapa", "hubert"],
             index=["wavlm","ecapa","hubert"].index(mc.get("encoder_type","wavlm")))
-        freeze = st.checkbox("🔒 Freeze encoder", value=_enc_val(
-            "freeze_feature_extractor", _enc_val("freeze_encoder", True)))
+
+        # Fine-tune mode: Frozen / Partial (last N, ECAPA) / Full
+        cur_freeze = _enc_freeze()
+        cur_blocks = _enc_unfreeze_blocks()
+        ft_options = ["Frozen", "Full"]
+        if encoder_type == "ecapa":
+            ft_options = ["Frozen", "Partial (last N)", "Full"]
+        if cur_freeze:
+            ft_idx = 0
+        elif encoder_type == "ecapa" and cur_blocks > 0:
+            ft_idx = 1
+        else:
+            ft_idx = len(ft_options) - 1
+        ft_mode = st.radio(
+            "Fine-tune mode", ft_options, index=ft_idx, horizontal=True,
+            help="Frozen: encoder weights fixed. Partial (ECAPA): only the last N "
+                 "SE-Res2Blocks are trainable. Full: all encoder parameters trainable.",
+        )
+        unfreeze_n = 2
+        if ft_mode == "Partial (last N)":
+            unfreeze_n = st.number_input("Unfreeze last N blocks", 1, 8, int(cur_blocks or 2))
 
         pool_opts = ["attentive", "identity"]
         pool_idx = 1 if encoder_type == "ecapa" else 0
@@ -155,25 +205,60 @@ with tab_cfg:
         audio_dur = st.slider("Duration (s)", 2.0, 8.0, float(config["audio"]["duration_seconds"]), 0.5)
         min_dur = st.number_input("Min valid (s)", 0.0, 5.0,
                                   float(config["audio"].get("min_valid_duration",1.0)), 0.5)
+        num_win = st.number_input("Train windows/file", 1, 8,
+                                  int(config["audio"].get("num_train_windows", 3)),
+                                  help="Random crops per file in training (multi-window TTA).")
+        hop_ratio = st.slider("Eval hop ratio", 0.25, 0.9,
+                              float(config["audio"].get("eval_hop_ratio", 0.5)), 0.05)
+        max_win = st.number_input("Max eval windows", 1, 32,
+                                  int(config["audio"].get("max_eval_windows", 8)))
+        ood_ratio = st.slider("OOD batch ratio", 0.1, 0.9,
+                              float(config["audio"].get("ood_batch_ratio", 0.5)), 0.05)
         st.subheader("🏋️ Training")
         epochs = st.number_input("Epochs", 1, 100, config["training"]["epochs"])
-        lr_val = st.number_input("LR", 1e-6, 1e-2, config["training"]["learning_rate"], format="%.6f")
+        lr_val = st.number_input("LR (heads)", 1e-6, 1e-2, config["training"]["learning_rate"], format="%.6f")
+        encoder_lr = st.number_input("LR (encoder)", 1e-7, 1e-2,
+                                     float(config["training"].get("encoder_lr", 1e-5)), format="%.6f",
+                                     help="LR for unfrozen encoder blocks (fine-tune).")
         wd = st.number_input("Weight Decay", 0.0, 1e-2, config["training"]["weight_decay"], format="%.6f")
         grad_norm = st.number_input("Max Grad Norm", 0.1, 50.0, config["training"]["max_grad_norm"])
+        patience = st.number_input("Early stop patience", 1, 50,
+                                   int(config["training"].get("early_stopping_patience", 10)),
+                                   help="Early stopping / checkpoint selection on val Macro-F1.")
         st.subheader("🎯 Loss")
         st.caption("Focal Loss always ON (γ=2).")
         ood_hidden = st.number_input("OOD head hidden dim", 0, 1024,
                                      mc.get("ood_head_config",{}).get("hidden_dim",256), 64)
+        ood_pos_w = st.number_input("OOD pos_weight", 0.1, 10.0,
+                                    float(config["training"].get("ood_pos_weight", 1.0)), 0.1)
+        ood_w = st.number_input("OOD loss weight", 0.0, 1.0,
+                                float(config["training"].get("ood_loss_weight", 0.3)), 0.05)
+        spk_w = st.number_input("Speaker loss weight", 0.0, 1.0,
+                                float(config["training"].get("speaker_loss_weight", 0.7)), 0.05)
+        sm_val = st.number_input("Label smoothing", 0.0, 0.5,
+                                 float(config["training"].get("label_smoothing", 0.1)), 0.05)
 
     if st.button("💾 Save Config", type="primary", use_container_width=True):
-        if encoder_type == "wavlm":
-            enc_cfg = {"base_model": "microsoft/wavlm-base-plus", "freeze_feature_extractor": freeze}
-        elif encoder_type == "ecapa":
-            enc_cfg = {"source": "speechbrain/spkrec-ecapa-voxceleb", "freeze_encoder": freeze}
+        # ── Encoder config: MERGE with existing keys so partial fine-tune
+        #    settings (e.g. unfreeze_last_n_blocks) are never silently dropped.
+        old_enc = dict(config["model"].get("encoder_config", {}).get(encoder_type, {}))
+        if encoder_type == "ecapa":
+            new_enc = {
+                "source": "speechbrain/spkrec-ecapa-voxceleb",
+                "freeze_encoder": ft_mode == "Frozen",
+                "unfreeze_last_n_blocks": int(unfreeze_n) if ft_mode == "Partial (last N)" else 0,
+            }
+            old_enc.pop("freeze_feature_extractor", None)  # stale key for ECAPA
         else:
-            enc_cfg = {"base_model": "facebook/hubert-large-ls960-ft", "freeze_feature_extractor": freeze}
+            new_enc = {
+                "base_model": ("microsoft/wavlm-base-plus" if encoder_type == "wavlm"
+                               else "facebook/hubert-large-ls960-ft"),
+                "freeze_feature_extractor": ft_mode == "Frozen",
+            }
+            old_enc.pop("freeze_encoder", None)
+            old_enc.pop("unfreeze_last_n_blocks", None)
         config["model"]["encoder_type"] = encoder_type
-        config["model"]["encoder_config"][encoder_type] = enc_cfg
+        config["model"].setdefault("encoder_config", {})[encoder_type] = {**old_enc, **new_enc}
         config["model"]["pooling_type"] = pooling_type
         config["model"]["speaker_head_type"] = "arcface"
         config["model"]["speaker_head_config"]["arcface"] = {
@@ -181,10 +266,20 @@ with tab_cfg:
         config["model"]["ood_head_config"]["hidden_dim"] = ood_hidden
         config["audio"]["duration_seconds"] = audio_dur
         config["audio"]["min_valid_duration"] = min_dur
+        config["audio"]["num_train_windows"] = int(num_win)
+        config["audio"]["eval_hop_ratio"] = float(hop_ratio)
+        config["audio"]["max_eval_windows"] = int(max_win)
+        config["audio"]["ood_batch_ratio"] = float(ood_ratio)
         config["training"]["epochs"] = epochs
         config["training"]["learning_rate"] = lr_val
+        config["training"]["encoder_lr"] = float(encoder_lr)
         config["training"]["weight_decay"] = wd
         config["training"]["max_grad_norm"] = grad_norm
+        config["training"]["early_stopping_patience"] = int(patience)
+        config["training"]["ood_pos_weight"] = float(ood_pos_w)
+        config["training"]["ood_loss_weight"] = float(ood_w)
+        config["training"]["speaker_loss_weight"] = float(spk_w)
+        config["training"]["label_smoothing"] = float(sm_val)
         save_config(config)
         config = load_config()
         st.success("✅ Saved!")
@@ -229,7 +324,11 @@ with tab_cloud:
                 st.error("❌ .env missing!"); st.stop()
             os.environ["GPU_TARGET"] = gpu
             os.environ["TARGET_PIPELINE"] = stage
-            os.environ["FREEZE_FEATURE_EXTRACTOR"] = str(freeze).lower()
+            # Encoder fine-tune choice (ECAPA-aware; setup_vast.sh reads these)
+            os.environ["FREEZE_ENCODER"] = str(ft_mode == "Frozen").lower()
+            os.environ["UNFREEZE_LAST_N_BLOCKS"] = str(
+                unfreeze_n if ft_mode == "Partial (last N)" else 0)
+            os.environ["FREEZE_FEATURE_EXTRACTOR"] = str(ft_mode == "Frozen").lower()  # compat
             os.environ["DISK_SIZE_GB"] = str(disk_gb)
             with st.spinner("Creating instance..."):
                 try:
@@ -339,3 +438,88 @@ with tab_local:
                     if r.stderr: st.code(r.stderr[-2000:])
             except subprocess.TimeoutExpired:
                 st.error("⏰ Timeout (2h)")
+
+
+# ── TAB: Analysis ──
+with tab_analysis:
+    st.header("🧪 Analysis & Tools")
+    st.caption("Run the new pipeline modules locally: unbiased EDA, centroid baseline, "
+               "ensemble calibration, and submission inference.")
+
+    ac1, ac2 = st.columns(2)
+    with ac1:
+        st.subheader("📊 Unbiased EDA")
+        st.caption("Multi-window ECAPA embeddings + LOO centroid + Macro-F1 simulation "
+                   "(GPU, several minutes).")
+        if st.button("▶️ eda_embeddings", key="a_eda", use_container_width=True):
+            with st.spinner("Running eda_embeddings..."):
+                try:
+                    out = _run_local([sys.executable, "-m", "src.eda_embeddings"], timeout=3600)
+                    st.code(out)
+                    if out.startswith("[exit=0]"):
+                        st.success("Done!")
+                    else:
+                        st.error("Failed (see log).")
+                except subprocess.TimeoutExpired:
+                    st.error("⏰ Timeout (1h)")
+
+        st.subheader("🎯 Centroid baseline")
+        st.caption("Embedding cache (idempotent) + centroid classifier + fusion report.")
+        force_cache = st.checkbox("Rebuild embedding cache", key="a_force")
+        if st.button("▶️ centroid_baseline", key="a_centroid", use_container_width=True):
+            cmd = [sys.executable, "-m", "src.centroid_baseline"]
+            if force_cache:
+                cmd.append("--force-cache")
+            with st.spinner("Running centroid_baseline..."):
+                try:
+                    out = _run_local(cmd, timeout=7200)
+                    st.code(out)
+                    if out.startswith("[exit=0]"):
+                        st.success("Done!")
+                    else:
+                        st.error("Failed (see log).")
+                except subprocess.TimeoutExpired:
+                    st.error("⏰ Timeout (2h)")
+
+    with ac2:
+        st.subheader("🧩 Ensemble + temperature")
+        st.caption("Per-model & ensemble Macro-F1 + best softmax temperature "
+                   "(needs ≥2 trained checkpoints).")
+        ckpts = st.text_input("Checkpoint paths (space-separated)",
+                              value="checkpoints/best_seed1.pt checkpoints/best_seed2.pt",
+                              key="a_ckpts")
+        if st.button("▶️ ensemble_calibrate", key="a_ens", use_container_width=True):
+            ckpt_list = [c for c in ckpts.split() if c]
+            if len(ckpt_list) < 2:
+                st.warning("⚠️ Provide at least 2 checkpoint paths.")
+            else:
+                cmd = [sys.executable, "-m", "src.ensemble_calibrate",
+                       "--checkpoints"] + ckpt_list
+                with st.spinner("Running ensemble_calibrate..."):
+                    try:
+                        out = _run_local(cmd, timeout=7200)
+                        st.code(out)
+                        if out.startswith("[exit=0]"):
+                            st.success("Done!")
+                        else:
+                            st.error("Failed (see log).")
+                    except subprocess.TimeoutExpired:
+                        st.error("⏰ Timeout (2h)")
+
+        st.subheader("📤 Submission CSV")
+        st.caption("Run submission.inference on a test folder → 447-column CSV.")
+        s_dir = st.text_input("Test data dir", value="data/processed/audio_wav", key="a_dir")
+        s_out = st.text_input("Output CSV", value="predictions.csv", key="a_out")
+        if st.button("▶️ inference → CSV", key="a_inf", use_container_width=True):
+            cmd = [sys.executable, "-m", "submission.inference",
+                   "--data-dir", s_dir, "--predictions-file-path", s_out]
+            with st.spinner("Running inference..."):
+                try:
+                    out = _run_local(cmd, timeout=7200)
+                    st.code(out)
+                    if out.startswith("[exit=0]"):
+                        st.success("Done!")
+                    else:
+                        st.error("Failed (see log).")
+                except subprocess.TimeoutExpired:
+                    st.error("⏰ Timeout (2h)")

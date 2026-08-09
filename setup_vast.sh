@@ -137,20 +137,35 @@ case "$GPU_TARGET" in
         ;;
 esac
 
-# ── Apply freeze choice from user selection ──
-# FREEZE_FEATURE_EXTRACTOR comes from deploy_app.py → deploy.py → env var
-FREEZE_FE="${FREEZE_FEATURE_EXTRACTOR:-true}"
-if [ "$FREEZE_FE" = "true" ]; then
-    echo "   Keeping feature extractor FROZEN (as selected by user)..."
-    # Ensure it's set to true in config
-    sed -i 's/freeze_feature_extractor: false/freeze_feature_extractor: true/' configs/default_config.yaml 2>/dev/null || true
-else
-    echo "   Unfreezing feature extractor for full fine-tune (as selected by user)..."
-    sed -i 's/freeze_feature_extractor: true/freeze_feature_extractor: false/' configs/default_config.yaml
-fi
+# ── Apply encoder fine-tune choice from user selection ──
+# FREEZE_ENCODER / UNFREEZE_LAST_N_BLOCKS come from deploy_app.py → deploy.py → env.
+# We edit the YAML with Python (encoder-aware) instead of sed, so the right key
+# is used per encoder: ECAPA → freeze_encoder/unfreeze_last_n_blocks,
+# WavLM/HuBERT → freeze_feature_extractor.
+FREEZE_ENCODER="${FREEZE_ENCODER:-true}"
+UNFREEZE_BLOCKS="${UNFREEZE_LAST_N_BLOCKS:-0}"
+echo "   Applying encoder fine-tune choice (freeze=${FREEZE_ENCODER}, blocks=${UNFREEZE_BLOCKS})..."
+uv run --no-sync python - <<'PYEOF' || true
+import os, yaml
+p = "configs/default_config.yaml"
+c = yaml.safe_load(open(p, encoding="utf-8"))
+mc = c.setdefault("model", {})
+enc_type = mc.get("encoder_type", "ecapa")
+enc_cfg = mc.setdefault("encoder_config", {}).setdefault(enc_type, {})
+freeze = os.getenv("FREEZE_ENCODER", "true").lower() == "true"
+blocks = int(os.getenv("UNFREEZE_LAST_N_BLOCKS", "0") or 0)
+if enc_type == "ecapa":
+    enc_cfg["freeze_encoder"] = freeze
+    enc_cfg["unfreeze_last_n_blocks"] = blocks if (not freeze and blocks > 0) else 0
+else:
+    enc_cfg["freeze_feature_extractor"] = freeze
+yaml.dump(c, open(p, "w", encoding="utf-8"), default_flow_style=False,
+          sort_keys=False, allow_unicode=True)
+print(f"   Config updated: encoder={enc_type} freeze={freeze} unfreeze_blocks={blocks}")
+PYEOF
 
 echo "✅ Environment configured for DagsHub MLflow tracking."
-echo "   GPU: $GPU_TARGET | Freeze: $FREEZE_FE | Pipeline: $TARGET_PIPELINE"
+echo "   GPU: $GPU_TARGET | Freeze: $FREEZE_ENCODER | Blocks: $UNFREEZE_BLOCKS | Pipeline: $TARGET_PIPELINE"
 
 # ============================================================================
 #  Phase 5: Initialize ZenML
@@ -168,7 +183,7 @@ echo "🔥 Starting Pipeline: $TARGET_PIPELINE"
 echo "   Running: python -m src.pipelines.run_pipeline --run $TARGET_PIPELINE"
 echo ""
 
-uv run python -m src.pipelines.run_pipeline --run "$TARGET_PIPELINE"
+uv run --no-sync python -m src.pipelines.run_pipeline --run "$TARGET_PIPELINE"
 
 # ============================================================================
 #  Phase 7: Complete

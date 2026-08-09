@@ -13,7 +13,7 @@ import json
 import os
 from pathlib import Path
 
-import librosa
+import soundfile as sf
 from tqdm import tqdm
 
 
@@ -30,7 +30,9 @@ def scan_directory(audio_dir: str, min_duration: float = 1.0) -> list[dict]:
     corrupted = []
     for fpath in tqdm(wav_files, desc="  Scanning"):
         try:
-            dur = librosa.get_duration(path=str(fpath))
+            # Header-only soundfile.info: fast and avoids librosa's lazy
+            # submodule loader, which trips over SpeechBrain's LazyModules.
+            dur = sf.info(str(fpath)).duration
             if dur < min_duration:
                 corrupted.append({
                     "file": fpath.name,

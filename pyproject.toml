@@ -11,6 +11,10 @@ dependencies = [
     "pandas",
     "pyyaml",
     "seaborn",
+    # Metrics / EDA / centroid baseline rely on these (metrics.py, eda_*.py,
+    # centroid_baseline.py) — declared explicitly for fresh Vast.ai installs.
+    "scikit-learn",
+    "scipy",
     "torch",
     "torchaudio",
     "torchcodec",
@@ -50,3 +54,4 @@ dev = [
 dev = [
     "pytest>=9.1.1",
 ]
+

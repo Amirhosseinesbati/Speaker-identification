@@ -51,6 +51,10 @@ def load_environment() -> dict:
     # Runtime overrides (set by deploy_app.py or CLI)
     config["GPU_TARGET"] = os.getenv("GPU_TARGET", "RTX_3090")
     config["TARGET_PIPELINE"] = os.getenv("TARGET_PIPELINE", "all")
+    # Encoder fine-tune choice (ECAPA-aware). FREEZE_FEATURE_EXTRACTOR kept for
+    # backward compatibility with the old WavLM-only naming.
+    config["FREEZE_ENCODER"] = os.getenv("FREEZE_ENCODER", "true")
+    config["UNFREEZE_LAST_N_BLOCKS"] = os.getenv("UNFREEZE_LAST_N_BLOCKS", "0")
     config["FREEZE_FEATURE_EXTRACTOR"] = os.getenv("FREEZE_FEATURE_EXTRACTOR", "true")
 
     # Validate required variables
@@ -167,6 +171,8 @@ def main():
             "GIT_BRANCH": config["GIT_BRANCH"],
             "GPU_TARGET": config["GPU_TARGET"],
             "TARGET_PIPELINE": config["TARGET_PIPELINE"],
+            "FREEZE_ENCODER": config["FREEZE_ENCODER"],
+            "UNFREEZE_LAST_N_BLOCKS": config["UNFREEZE_LAST_N_BLOCKS"],
             "FREEZE_FEATURE_EXTRACTOR": config["FREEZE_FEATURE_EXTRACTOR"],
             "KAGGLE_USERNAME": config["KAGGLE_USERNAME"],
             "KAGGLE_KEY": config["KAGGLE_KEY"],

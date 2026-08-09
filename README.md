@@ -685,8 +685,19 @@ python -m src.pipelines.run_pipeline --run train --no-mlflow   # partial, no tra
 ### 12.3 Remote GPU (Vast.ai) & UI
 
 - `src/deploy/deploy.py` rents a GPU on Vast.ai, pushes `setup_vast.sh`, and runs the
-  pipeline remotely.
-- `src/deploy/deploy_app.py` is a Streamlit UI for launching deployments.
+  pipeline remotely. It forwards the encoder fine-tune choice (`FREEZE_ENCODER`,
+  `UNFREEZE_LAST_N_BLOCKS`) so the config edited on the remote matches the UI selection.
+- `src/deploy/deploy_app.py` is a Streamlit UI (`uv run --no-sync streamlit run
+  src/deploy/deploy_app.py`) with four tabs:
+  - **⚙️ Config** — full model/audio/training/loss settings, including the new
+    multi-window params (`num_train_windows`, `eval_hop_ratio`, `max_eval_windows`,
+    `ood_batch_ratio`), the 3-way fine-tune mode (Frozen / Partial last-N / Full) and
+    `encoder_lr`/`ood_pos_weight`. Saving **merges** the encoder config so
+    `unfreeze_last_n_blocks` is never dropped.
+  - **☁️ Cloud (Vast.ai)** — launch/destroy instances with live log streaming.
+  - **💻 Local** — run the ZenML pipeline stages locally.
+  - **🧪 Analysis** — run the new modules from the UI: `eda_embeddings`,
+    `centroid_baseline`, `ensemble_calibrate`, and `submission.inference`.
 
 ### 12.4 Data versioning (DVC)
 
