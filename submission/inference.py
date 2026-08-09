@@ -99,7 +99,14 @@ def _load_waveform(audio_path: Path, sample_rate: int) -> Optional[torch.Tensor]
             if wav.ndim > 1:
                 wav = wav.mean(axis=1)
         else:
-            wav, sr = librosa.load(str(audio_path), sr=sample_rate, mono=True)
+            # libsndfile first — the same decoder used by MP3→WAV conversion
+            # (src/audio_preprocessing.py) so served audio matches the
+            # training-time decode; librosa as fallback for formats libsndfile
+            # cannot read (e.g. M4A/AAC).
+            try:
+                wav, sr = sf.read(str(audio_path), dtype="float32", always_2d=False)
+            except Exception:
+                wav, sr = librosa.load(str(audio_path), sr=sample_rate, mono=True)
         if wav.ndim > 1:
             wav = wav.mean(axis=1)
         if sr != sample_rate:

@@ -85,27 +85,25 @@ def convert_audio(
     """
     Convert raw MP3 files to WAV (mono 16kHz) for reliable dataloading.
 
+    Uses the SAME code path as the local conversion script
+    (`scripts/convert_mp3_to_wav.py`) via `src.audio_preprocessing.convert_all`
+    (libsndfile decoder), so local and server produce byte-identical WAVs.
+
     This step:
     1. Loads config from config_path
-    2. Checks if WAV files already exist (>4000 = skip)
-    3. Converts all MP3 → WAV using FFmpeg (fast) or librosa (fallback)
-    4. Generates updated labels CSV pointing to .wav files
-    5. Returns updated config dict with WAV paths
+    2. Converts all audio files → data/processed/audio_wav (per-file skip)
+    3. Generates updated labels CSV pointing to .wav files
+    4. Returns updated config dict with WAV paths
 
     Returns:
         Updated config dict with audio_dir and labels_path pointing to WAV
     """
-    import subprocess
-    from pathlib import Path
     from datetime import datetime
-    from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
 
-    import librosa
-    import numpy as np
-    import pandas as pd
-    import soundfile as sf
     import yaml
-    from tqdm import tqdm
+
+    from src.audio_preprocessing import convert_all
 
     print("=" * 55)
     print("  [ZenML Step 0/5] Converting MP3 → WAV")
@@ -115,73 +113,23 @@ def convert_audio(
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    raw_dir = Path("data/raw")
-    wav_dir = Path("data/processed/audio_wav")
-    wav_labels_path = Path("data/processed/audio_wav_labels.csv")
+    # Paths (raw_dir/audio_dir read from config when present, else canonical
+    # defaults — lets the step run against a fixture config in tests).
+    data_cfg = config.get("data", {})
+    raw_dir = Path(data_cfg.get("raw_dir", "data/raw"))
+    wav_dir = Path(data_cfg.get("audio_dir", "data/processed/audio_wav"))
+    wav_labels_path = wav_dir.parent / f"{wav_dir.name}_labels.csv"
 
-    # ── Check if already converted ──
-    wav_dir.mkdir(parents=True, exist_ok=True)
-    existing_wavs = list(wav_dir.glob("*.wav"))
-    if len(existing_wavs) > 4000:
-        print(f"  ✅ {len(existing_wavs)} WAV files already exist. Skipping conversion.")
-        config["data"]["audio_dir"] = str(wav_dir)
-        config["data"]["labels_path"] = str(wav_labels_path)
-        return config
-
-    # ── Load raw labels ──
-    raw_labels = raw_dir / "labels.csv"
-    if not raw_labels.exists():
-        raise FileNotFoundError(f"Raw labels not found: {raw_labels}")
-
-    df = pd.read_csv(raw_labels)
-    df.columns = df.columns.str.strip()
-    print(f"  Raw labels: {len(df)} rows")
-
-    # ── Find MP3 files to convert ──
-    mp3_files = list(raw_dir.glob("*.mp3"))
-    print(f"  MP3 files found: {len(mp3_files)}")
-    print(f"  Converting to: {wav_dir}")
-
-    # ── Convert (parallel) ──
-    def _convert_one(mp3_path):
-        wav_path = wav_dir / (mp3_path.stem + ".wav")
-        if wav_path.exists():
-            return "skip"
-        try:
-            # Try FFmpeg first (fast)
-            result = subprocess.run(
-                ["ffmpeg", "-i", str(mp3_path), "-ac", "1", "-ar", "16000",
-                 "-sample_fmt", "s16", "-v", "error", "-y", str(wav_path)],
-                capture_output=True, timeout=30,
-            )
-            if result.returncode == 0 and wav_path.stat().st_size > 1000:
-                return "ok"
-            # FFmpeg failed — fallback to librosa
-            wav_path.unlink(missing_ok=True)
-            y, sr = librosa.load(str(mp3_path), sr=16000, mono=True)
-            sf.write(str(wav_path), y, 16000, subtype="PCM_16")
-            return "ok"
-        except Exception:
-            return "fail"
-
-    converted, skipped, failed = 0, 0, 0
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(tqdm(
-            pool.map(_convert_one, mp3_files),
-            total=len(mp3_files),
-            desc="  Converting",
-        ))
-    for r in results:
-        if r == "ok": converted += 1
-        elif r == "skip": skipped += 1
-        else: failed += 1
-
-    print(f"  ✅ Converted: {converted} | Skipped: {skipped} | Failed: {failed}")
-
-    # ── Build updated labels CSV ──
-    df["audio_file"] = df["audio_file"].apply(lambda x: Path(x).stem + ".wav")
-    df.to_csv(wav_labels_path, index=False)
-    print(f"  Labels saved: {wav_labels_path} ({len(df)} rows)")
+    # ── Convert (same code as the local script) ──
+    stats = convert_all(
+        raw_dir=raw_dir,
+        wav_dir=wav_dir,
+        labels_out=wav_labels_path,
+    )
+    print(f"  ✅ Converted: {stats['converted']} | "
+          f"Skipped: {stats['skipped']} | Failed: {stats['failed']}")
+    for err in stats["errors"]:
+        print(f"  ⚠ {err}")
 
     # ── Update config and save to file ──
     config["data"]["audio_dir"] = str(wav_dir)
@@ -199,7 +147,7 @@ def convert_audio(
     tracker.log_params({
         "encoder_type": encoder_type,
         "pipeline_stage": "convert_audio",
-        "wav_files_converted": converted,
+        "wav_files_converted": stats["converted"],
     })
     tracker.log_code_snapshot()
     tracker.log_config_snapshot()

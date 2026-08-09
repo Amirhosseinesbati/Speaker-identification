@@ -340,13 +340,22 @@ about a known identity, `p_unknown` is suppressed; when the voice is off-manifol
 
 ### 5.1 MP3 → WAV conversion
 
-`scripts/convert_mp3_to_wav.py` converts all 4,529 MP3s to **16 kHz mono PCM-16 WAV**
-in `data/processed/audio_wav/`, and writes `data/processed/audio_wav_labels.csv`
-(labels with `.wav` names). Rationale: on Windows, `librosa/audioread` relies on `mpg123`
-for MP3 decoding which fails intermittently during long runs; WAV is read natively by
-`soundfile` with zero external dependencies. The ZenML pipeline also contains this as its
-step 0 (`convert_audio` in [`src/pipelines/steps.py`](src/pipelines/steps.py)), skipping
-if >4000 WAVs already exist.
+Local and server share **one** conversion code path —
+[`src/audio_preprocessing.py`](src/audio_preprocessing.py) (`convert_all`) — so they
+produce **byte-identical** WAVs from the same raw files:
+
+- **Local:** `uv run --no-sync python scripts/convert_mp3_to_wav.py [--force]` — converts
+  all 4,529 MP3s to **16 kHz mono PCM-16 WAV** in `data/processed/audio_wav/` and writes
+  `data/processed/audio_wav_labels.csv` (labels with `.wav` names).
+- **Server:** the ZenML pipeline runs the same `convert_all` as its step 0 (`convert_audio`
+  in [`src/pipelines/steps.py`](src/pipelines/steps.py)) — there is no separate ffmpeg path.
+
+Decoder: `soundfile` (libsndfile, bundled in the pinned wheel) decodes every supported
+format (MP3/FLAC/OGG/…), which is deterministic across platforms — unlike
+`librosa/audioread`, which routes MP3 to `mpg123` on Windows but `ffmpeg` on Linux and can
+produce different samples on each machine. Stereo is downmixed to mono, resampled to
+16 kHz (`librosa.resample`/soxr), and written as PCM-16. The labels CSV is the
+authoritative file list, and per-file skip avoids re-converting existing WAVs.
 
 ### 5.2 Label cleaning & class mapping
 
