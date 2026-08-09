@@ -699,6 +699,13 @@ python -m src.pipelines.run_pipeline --run train --no-mlflow   # partial, no tra
   - **🧪 Analysis** — run the new modules from the UI: `eda_embeddings`,
     `centroid_baseline`, `ensemble_calibrate`, and `submission.inference`.
 
+> **Troubleshooting — training falls back to CPU on Vast.ai:** `uv.lock` pins
+> `torch 2.13.0+cu126` (CUDA 12.6 → host driver ≥ 560), but the `pytorch/pytorch:2.2.0-cuda12.1`
+> image only guarantees driver ≥ 530. If the host driver is too old, `torch.cuda.is_available()`
+> returns False and training silently runs on CPU. `setup_vast.sh` now verifies CUDA after
+> `uv sync` and automatically reinstalls the CUDA 12.1 wheels (`torch==2.2.0+cu121`) that
+> match the image; `setup_device()` also prints an actionable message when it falls back to CPU.
+
 ### 12.4 Data versioning (DVC)
 
 `data/` is tracked with **DVC** (`.dvc/` cache present) — audio is never committed to git;

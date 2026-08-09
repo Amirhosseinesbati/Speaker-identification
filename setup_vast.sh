@@ -80,6 +80,37 @@ echo "📦 Installing Python dependencies with uv..."
 uv sync
 
 # ============================================================================
+#  Phase 2.5: Ensure CUDA-enabled PyTorch in the venv
+# ============================================================================
+# uv.lock pins torch 2.13.0+cu126 (CUDA 12.6), which needs a host driver
+# >= 560. Many Vast.ai instances — this image is cuda12.1 (driver >= 530) —
+# have drivers too old for cu126, so torch.cuda.is_available() silently
+# becomes False and training falls back to CPU. If CUDA is unavailable we
+# reinstall the CUDA 12.1 wheels (matching the image) into the venv.
+echo ""
+echo "🖥️  Verifying CUDA-enabled PyTorch in the venv..."
+if uv run --no-sync python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+    echo "   ✅ CUDA available: $(uv run --no-sync python -c "import torch; print(torch.__version__, torch.cuda.get_device_name(0))" 2>/dev/null)"
+else
+    echo "   ⚠ torch.cuda.is_available()=False "
+    echo "     (torch $(uv run --no-sync python -c "import torch; print(torch.__version__)" 2>/dev/null))"
+    echo "   Reinstalling CUDA 12.1 wheels (matching the cuda12.1 image)..."
+    uv pip install --python .venv/bin/python \
+        "torch==2.2.0+cu121" "torchaudio==2.2.0+cu121" \
+        --index-url https://download.pytorch.org/whl/cu121
+    if uv run --no-sync python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+        echo "   ✅ CUDA-enabled PyTorch installed."
+    else
+        echo "   ❌ CUDA still unavailable after reinstall. Diagnostics:"
+        nvidia-smi 2>/dev/null || echo "   (nvidia-smi not found — GPU not visible?)"
+        uv run --no-sync python -c "import torch; print('   torch', torch.__version__, '| cuda_build', torch.version.cuda)"
+        echo "   → The host driver is too old for CUDA, or the GPU is not exposed."
+        echo "   → Re-rent an instance with a newer driver, or keep the cu121 image."
+        exit 1
+    fi
+fi
+
+# ============================================================================
 #  Phase 3: DVC — Pull Raw Data from DagsHub
 # ============================================================================
 echo ""
