@@ -121,11 +121,16 @@ class TwoHeadedSpeakerModel(nn.Module):
             probs: (batch, 1 + num_known) — sum(dim=1) ≈ 1.0
         """
         if waveforms.dim() == 4:
+            # Loop windows (peak stays at (B, 1, T)) and average the LOGITS,
+            # then fuse once — identical math to a flattened (B*W, ...) batch.
             B, W = waveforms.shape[0], waveforms.shape[1]
-            wf = waveforms.reshape(B * W, 1, -1)
-            ood_logit, speaker_logits = self.forward(wf, labels=None)
-            ood_logit = ood_logit.view(B, W, 1).mean(dim=1)
-            speaker_logits = speaker_logits.view(B, W, -1).mean(dim=1)
+            ood_sum = spk_sum = None
+            for w in range(W):
+                o, s = self.forward(waveforms[:, w], labels=None)
+                ood_sum = o if ood_sum is None else ood_sum + o
+                spk_sum = s if spk_sum is None else spk_sum + s
+            ood_logit = ood_sum / W
+            speaker_logits = spk_sum / W
         else:
             ood_logit, speaker_logits = self.forward(waveforms, labels=None)
 
