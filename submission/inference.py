@@ -220,49 +220,62 @@ def compute_file_embedding(
 #  Centroid fusion (step-6 embedding cache)
 # ────────────────────────────────────────────────────────────────
 
+def load_train_embedding_cache(
+    expected_encoder: Optional[str] = None,
+    expected_dim: Optional[int] = None,
+) -> Tuple[np.ndarray, np.ndarray, dict]:
+    """Load + validate the encoder-aware train embedding cache.
+
+    Shared by CentroidFuser and the optional FAISS OOD detector. Returns
+    (train_embs, train_labels, meta); raises FileNotFoundError (no cache) or
+    ValueError (cache encoder/dim doesn't match the first checkpoint).
+    """
+    from src.centroid_baseline import _cache_paths, _active_encoder
+
+    encoder = expected_encoder or _active_encoder()
+    paths = _cache_paths(encoder)
+    if not all(p.exists() for p in paths.values()):
+        raise FileNotFoundError(
+            f"Embedding cache for encoder '{encoder}' missing — run "
+            f"`uv run --no-sync python -m src.centroid_baseline "
+            f"--encoder-type {encoder}` first (or drop the flag)."
+        )
+    train_embs = np.load(paths["train_embs"])
+    train_labels = np.load(paths["train_labels"])
+
+    meta = {}
+    if paths["meta"].exists():
+        meta = json.loads(paths["meta"].read_text(encoding="utf-8"))
+    cache_encoder = meta.get("encoder", encoder)
+    cache_dim = int(meta.get("dim", train_embs.shape[1]))
+    if expected_encoder is not None and cache_encoder != expected_encoder:
+        raise ValueError(
+            f"Embedding cache is for encoder '{cache_encoder}' but the first "
+            f"checkpoint uses '{expected_encoder}'. Rebuild with "
+            f"`python -m src.centroid_baseline --encoder-type "
+            f"{expected_encoder}`."
+        )
+    if expected_dim is not None and cache_dim != expected_dim:
+        raise ValueError(
+            f"Embedding cache dim {cache_dim} != checkpoint embedding dim "
+            f"{expected_dim}."
+        )
+    return train_embs, train_labels, meta
+
+
 class CentroidFuser:
     """Fuses model probabilities with the centroid classifier output."""
 
     def __init__(self, alpha: float = 0.5, expected_encoder: Optional[str] = None,
                  expected_dim: Optional[int] = None):
-        from src.centroid_baseline import (
-            _cache_paths, _active_encoder, fit_centroids, centroid_probs_global,
-        )
+        from src.centroid_baseline import fit_centroids, centroid_probs_global
 
-        # The cache is keyed by encoder — validate it matches the checkpoint
-        # so cosine fusion never mixes 192-d with 512-d embeddings.
-        encoder = expected_encoder or _active_encoder()
-        paths = _cache_paths(encoder)
-        if not all(p.exists() for p in paths.values()):
-            raise FileNotFoundError(
-                f"Embedding cache for encoder '{encoder}' missing — run "
-                f"`uv run --no-sync python -m src.centroid_baseline "
-                f"--encoder-type {encoder}` first (or drop --fuse-centroid)."
-            )
-        train_embs = np.load(paths["train_embs"])
-        train_labels = np.load(paths["train_labels"])
-
-        meta = {}
-        if paths["meta"].exists():
-            meta = json.loads(paths["meta"].read_text(encoding="utf-8"))
-        cache_encoder = meta.get("encoder", encoder)
-        cache_dim = int(meta.get("dim", train_embs.shape[1]))
-        if expected_encoder is not None and cache_encoder != expected_encoder:
-            raise ValueError(
-                f"Centroid cache is for encoder '{cache_encoder}' but the "
-                f"first checkpoint uses '{expected_encoder}'. Rebuild the "
-                f"cache: `python -m src.centroid_baseline --encoder-type "
-                f"{expected_encoder}`."
-            )
-        if expected_dim is not None and cache_dim != expected_dim:
-            raise ValueError(
-                f"Centroid cache dim {cache_dim} != checkpoint embedding dim "
-                f"{expected_dim} — rebuild with --encoder-type "
-                f"{expected_encoder or cache_encoder}."
-            )
-
+        train_embs, train_labels, meta = load_train_embedding_cache(
+            expected_encoder, expected_dim)
         self.centroids, self.speakers = fit_centroids(train_embs, train_labels)
         self.alpha = alpha
+        cache_encoder = meta.get("encoder", expected_encoder or "?")
+        cache_dim = int(meta.get("dim", train_embs.shape[1]))
         print(f"  🎯 Centroid fuser ready: {len(self.speakers)} centroids "
               f"[{cache_encoder} {cache_dim}-d], alpha_model={alpha}")
 
@@ -345,6 +358,11 @@ def write_predictions_csv(
                    "(requires the embedding cache).")
 @click.option("--centroid-alpha", default=0.5, type=float, show_default=True,
               help="Weight of the model probs in the fusion (1-alpha for centroid).")
+@click.option("--faiss-ood", "faiss_ood", default=None, type=float,
+              help="Fuse the learned OOD head with the FAISS cosine OOD detector "
+                   "(alpha = weight of the head score, 1-alpha = FAISS). Requires "
+                   "the encoder-aware train embedding cache; adds one embedding "
+                   "forward per file (runtime cost). Default: OFF.")
 @click.option("--max-eval-windows", default=None, type=int,
               help="Override max_eval_windows from config.")
 @click.option("--no-amp", is_flag=True, default=False,
@@ -358,6 +376,7 @@ def main(
     apply_ood_threshold: bool,
     fuse_centroid: bool,
     centroid_alpha: float,
+    faiss_ood: Optional[float],
     max_eval_windows: Optional[int],
     no_amp: bool,
 ) -> None:
@@ -395,6 +414,25 @@ def main(
     ood_thresholds = [thr for _, _, thr in models]
     if apply_ood_threshold:
         print(f"  🎯 OOD thresholds from checkpoints: {ood_thresholds}")
+
+    detector = None
+    _combine = None
+    if faiss_ood is not None:
+        try:
+            from src.ood_detector import FAISSOODDetector, combine_ood_scores
+            train_embs, train_labels, meta = load_train_embedding_cache(
+                expected_encoder=models[0][0].encoder_name,
+                expected_dim=models[0][0].encoder.output_dim,
+            )
+            known = train_labels > 0
+            detector = FAISSOODDetector(dim=int(train_embs.shape[1]))
+            detector.fit(train_embs[known], train_labels[known])
+            _combine = combine_ood_scores
+            print(f"  🔍 FAISS OOD detector ready: {detector.num_enrolled:,} "
+                  f"known embeddings [{meta.get('encoder', '?')}-d], "
+                  f"alpha_head={faiss_ood}")
+        except (FileNotFoundError, ValueError) as e:
+            print(f"  ⚠ {e}")
 
     fuser = None
     if fuse_centroid:
@@ -441,7 +479,7 @@ def main(
         peak = torch.cuda.max_memory_allocated() / 1e9 if device.type == "cuda" else 0
         print(f"  ⏱ Model {idx+1} ({model.encoder_name}): {dt:.1f}s "
               f"({dt/max(n_ok,1)*1000:.0f} ms/file, {n_ok} scored, peak {peak:.2f} GB)")
-        if idx == 0 and fuse_centroid:
+        if idx == 0 and (fuse_centroid or detector is not None):
             first_model = model  # keep for embedding extraction
         else:
             del model
@@ -462,15 +500,29 @@ def main(
             probs = acc[i] / len(models)
             probs = probs / probs.sum()
 
-            if fuser is not None and first_model is not None:
+            if (fuser is not None or detector is not None) and first_model is not None:
                 emb = compute_file_embedding(
                     first_model, f, device, sample_rate=sample_rate,
                     duration_seconds=duration_seconds,
                     eval_hop_ratio=eval_hop_ratio,
                     max_eval_windows=max_windows,
                 )
-                if emb is not None:
+                if fuser is not None and emb is not None:
                     probs = fuser.fuse(probs, emb)
+                if detector is not None and emb is not None:
+                    # FAISS OOD gate: combined = alpha*P_head + (1-alpha)*FAISS
+                    # score; the known mass is re-normalised to (1 - P_unknown).
+                    combined = _combine(
+                        torch.tensor([probs[0]]),
+                        detector.compute_ood_score(emb.reshape(1, -1), k=5),
+                        alpha=faiss_ood,
+                    )[0]
+                    p0 = float(np.clip(combined, 0.0, 1.0))
+                    known = np.clip(probs[1:], 0.0, None)
+                    ksum = known.sum()
+                    if ksum > 0:
+                        known = known / ksum * (1.0 - p0)
+                    probs = np.concatenate([[p0], known])
 
             if apply_ood_threshold and ood_thresholds[0] is not None and probs[0] > ood_thresholds[0]:
                 probs = np.zeros(num_classes)
