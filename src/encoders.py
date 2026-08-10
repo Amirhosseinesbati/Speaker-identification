@@ -184,10 +184,16 @@ class WavLMEncoder(BaseEncoder):
         # WavLM expects (batch, T) — squeeze channel dim
         input_values = waveforms.squeeze(1)  # (batch, T)
 
-        outputs = self.wavlm(
-            input_values=input_values,
-            output_hidden_states=False,
-        )
+        # WavLM-Large is numerically unstable under fp16 autocast on some GPUs
+        # (attention logits overflow → NaN in softmax — verified on GTX 1660 Ti
+        # with both noise and real speech). Run the transformer in fp32; the
+        # heads still compute under the outer autocast.
+        dev = input_values.device
+        with torch.autocast(device_type=dev.type, enabled=False):
+            outputs = self.wavlm(
+                input_values=input_values,
+                output_hidden_states=False,
+            )
         hidden_states = outputs.last_hidden_state  # (batch, seq_len, hidden_dim)
         return hidden_states, None
 
@@ -556,24 +562,38 @@ def _modelscope_forward(model, waveforms: torch.Tensor) -> torch.Tensor:
       - ``torchaudio.compliance.kaldi.fbank`` drops a batch dim of 1, so a
         ``(1, T)`` input yields the per-sample fbank the nets expect.
 
-    The models compute on their internal device and return CPU tensors
-    (``embedding.detach().cpu()``); we move the result to the caller's device.
+    Device handling: the wrapper stores ``model.device`` at load time, but the
+    outer ``nn.Module.to()`` moves parameters via ``_apply`` WITHOUT calling
+    our ``to()`` override — so we re-sync ``model.device`` from the actual
+    parameter device here and run the fbank + net on that device.
+
+    The whole call runs OUTSIDE autocast (``enabled=False``): the torchaudio
+    fbank frontend is float32-only and the ModelScope nets mix non-autocast
+    ops (BatchNorm) — fp32 compute on these small models costs nothing and
+    avoids FloatTensor-vs-HalfTensor mismatches under an outer autocast.
 
     Returns:
         embeddings: (batch, 1, D) — identity-pooled shape.
     """
-    dev = waveforms.device
-    wav = waveforms.squeeze(1).float()  # (batch, T)
+    params = list(model.parameters())
+    model_dev = params[0].device if params else torch.device("cpu")
+    try:
+        model.device = model_dev  # sync wrapper's stored device attr
+    except Exception:
+        pass
+
+    wav = waveforms.squeeze(1).float().to(model_dev)  # (batch, T)
 
     embs = []
-    for i in range(wav.shape[0]):
-        emb = model.forward(wav[i : i + 1])  # (1, D) on CPU
-        embs.append(emb)
+    with torch.autocast(device_type=model_dev.type, enabled=False):
+        for i in range(wav.shape[0]):
+            emb = model.forward(wav[i : i + 1])  # (1, D)
+            embs.append(emb)
     out = torch.cat(embs, dim=0)  # (batch, D)
 
     if out.ndim == 3 and out.size(1) == 1:
         out = out.squeeze(1)
-    return out.to(dev).unsqueeze(1)  # (batch, 1, D)
+    return out.to(waveforms.device).unsqueeze(1)  # (batch, 1, D)
 
 
 class _ModelScopeEncoderBase(BaseEncoder):
@@ -829,11 +849,14 @@ class ERes2NetV2Encoder(BaseEncoder):
         wav = waveforms.squeeze(1).float()  # (batch, T)
 
         embs = []
-        for i in range(wav.shape[0]):
-            feature = _eres2net_fbank(wav[i : i + 1])  # (1, T_f, 80)
-            feature = feature.to(dev)
-            emb = self.model(feature)  # (1, 192)
-            embs.append(emb)
+        # fp32 compute (like the ModelScope wrappers): BatchNorm/Conv mixing
+        # breaks under an outer autocast (Float vs Half weights).
+        with torch.autocast(device_type=dev.type, enabled=False):
+            for i in range(wav.shape[0]):
+                feature = _eres2net_fbank(wav[i : i + 1])  # (1, T_f, 80)
+                feature = feature.to(dev)
+                emb = self.model(feature)  # (1, 192)
+                embs.append(emb)
         out = torch.cat(embs, dim=0)  # (batch, 192)
         return out.unsqueeze(1), None  # (batch, 1, 192)
 
@@ -974,18 +997,24 @@ class TitaNetEncoder(BaseEncoder):
     def _embed_from_waveform(
         self, wav: torch.Tensor, wav_lens: torch.Tensor
     ) -> torch.Tensor:
-        """Run preprocessor → encoder → decoder and return the embedding."""
-        processed, plen = self.titanet.preprocessor(
-            input_signal=wav, length=wav_lens,
-        )
-        encoded, elen = self.titanet.encoder(
-            audio_signal=processed, length=plen,
-        )
-        if elen is None:
-            elen = plen
-        logits, embs = self.titanet.decoder(
-            encoder_output=encoded, length=elen,
-        )
+        """Run preprocessor → encoder → decoder and return the embedding.
+
+        Computed in fp32 (autocast disabled): NeMo's mel preprocessor is
+        float32-only and TitaNet mixes BatchNorm ops that mismatch Half weights.
+        """
+        dev = wav.device
+        with torch.autocast(device_type=dev.type, enabled=False):
+            processed, plen = self.titanet.preprocessor(
+                input_signal=wav, length=wav_lens,
+            )
+            encoded, elen = self.titanet.encoder(
+                audio_signal=processed, length=plen,
+            )
+            if elen is None:
+                elen = plen
+            logits, embs = self.titanet.decoder(
+                encoder_output=encoded, length=elen,
+            )
         if embs is None:
             # Some decoder configs return only logits — fall back to logits
             # only if it has the embedding dim (192); otherwise error loudly.
