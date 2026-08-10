@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 import torch
 from tqdm import tqdm
 
@@ -41,15 +42,19 @@ setup_utf8_stdio()
 def collect_val_logits(
     model: torch.nn.Module,
     device: torch.device,
-    config_path: str,
+    config: dict,
     batch_size: int = 16,
 ) -> dict:
-    """Run multi-window validation forward (no margin) over the val split."""
+    """Run multi-window validation forward (no margin) over the val split.
+
+    Args:
+        config: the effective config (first checkpoint's embedded one or the
+                --config-path fallback) that defines audio TTA + data paths.
+    """
     from torch.utils.data import DataLoader
-    from src.data_pipeline import load_config, prepare_clean_split, SpeakerDataset
+    from src.data_pipeline import prepare_clean_split, SpeakerDataset
     from src.train import forward_multi_window
 
-    config = load_config(config_path)
     audio_cfg = config["audio"]
     data_cfg = config["data"]
 
@@ -92,9 +97,56 @@ def collect_val_logits(
 #  Main
 # ────────────────────────────────────────────────────────────────
 
+def load_checkpoint_model(
+    checkpoint_path: str,
+    device: torch.device,
+    fallback_config_path: Optional[str],
+) -> Tuple[torch.nn.Module, dict, Dict[str, int]]:
+    """Build a model from the config EMBEDDED in the checkpoint.
+
+    Mirrors submission/inference.load_model — each checkpoint carries its own
+    config (encoder type, pooling, embedding dims), so the 5-encoder ensemble
+    must NOT be built from one shared config file (that breaks load_state_dict
+    for every non-ECAPA encoder).
+
+    Returns:
+        model, config, class_map
+    """
+    from src.data_pipeline import load_config
+    from src.model_factory import create_model_from_config
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+    config = checkpoint.get("config")
+    if config is None:
+        if fallback_config_path is None:
+            raise RuntimeError(
+                f"Checkpoint {checkpoint_path} has no embedded config — pass "
+                "--config-path as the fallback."
+            )
+        config = load_config(fallback_config_path)
+        print(f"  ⚠ {checkpoint_path}: no embedded config — used {fallback_config_path}")
+
+    class_map = checkpoint.get("class_map")
+    if class_map is None:
+        labels_path = config["data"]["labels_path"]
+        df = pd.read_csv(labels_path)
+        df.columns = df.columns.str.strip()
+        from src.data_pipeline import create_class_mapping
+        class_map = create_class_mapping(df)
+        print(f"  ⚠ class_map not in checkpoint — rebuilt from {labels_path}")
+
+    num_known = config.get("model", {}).get(
+        "competition_num_known", len(class_map) - 1,
+    )
+    model = create_model_from_config(config, num_known_speakers=num_known)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.to(device).eval()
+    return model, config, class_map
+
+
 def main(checkpoints: List[str], config_path: str, batch_size: int) -> None:
     from src.metrics import evaluate_macro_f1, calibrate_temperature
-    from src.model_factory import create_model_from_config
     from src.data_pipeline import load_config
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -103,8 +155,13 @@ def main(checkpoints: List[str], config_path: str, batch_size: int) -> None:
     print("=" * 60)
     print(f"  Device: {device} | Checkpoints: {len(checkpoints)}")
 
-    config = load_config(config_path)
-    num_known = config["model"].get("competition_num_known", 446)
+    # TTA + data params come from the FIRST checkpoint's embedded config
+    # (fallback to --config-path), mirroring submission/inference.py.
+    first_ckpt = torch.load(checkpoints[0], map_location="cpu", weights_only=False)
+    first_cfg = first_ckpt.get("config")
+    if first_cfg is None:
+        first_cfg = load_config(config_path)
+        print(f"  ⚠ {checkpoints[0]}: no embedded config — used {config_path}")
 
     per_model = []
     probs_sum: Optional[np.ndarray] = None
@@ -115,19 +172,18 @@ def main(checkpoints: List[str], config_path: str, batch_size: int) -> None:
 
     for ckpt in checkpoints:
         print(f"\n  Loading {ckpt}...")
-        model = create_model_from_config(config, num_known_speakers=num_known)
-        checkpoint = torch.load(ckpt, map_location="cpu", weights_only=False)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        model.to(device)
+        model, _, class_map = load_checkpoint_model(ckpt, device, config_path)
+        num_classes = len(class_map)
 
-        val = collect_val_logits(model, device, config_path, batch_size=batch_size)
+        val = collect_val_logits(model, device, first_cfg, batch_size=batch_size)
         num_classes = val["num_classes"]
         m = evaluate_macro_f1(
             val["ood"], val["spk"], val["labels"], num_classes=num_classes,
         )
         per_model.append({"checkpoint": ckpt, **m})
         print(f"  Model Macro-F1: {m['macro_f1']:.4f} "
-              f"(OOD-F1 {m['ood_f1']:.4f}, known_acc {m['known_acc']:.4f})")
+              f"(OOD-F1 {m['ood_f1']:.4f}, known_acc {m['known_acc']:.4f}) "
+              f"[{getattr(model, 'encoder_name', '?')}]")
 
         # accumulate for the ensemble (average probs + average logits)
         probs = torch.cat(
@@ -139,6 +195,10 @@ def main(checkpoints: List[str], config_path: str, batch_size: int) -> None:
         ood_sum = val["ood"] if ood_sum is None else ood_sum + val["ood"]
         spk_sum = val["spk"] if spk_sum is None else spk_sum + val["spk"]
         labels = val["labels"].numpy()
+
+        del model
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
     assert probs_sum is not None and labels is not None
     ensemble_probs = probs_sum / len(checkpoints)
