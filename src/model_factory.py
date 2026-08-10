@@ -51,7 +51,12 @@ def create_model_from_config(
         encoder_name = model_cfg.get("encoder_type", "unknown")
 
     # ── 2. Pooling ──
+    # Per-encoder pooling wins over the global default (the ensemble mixes
+    # identity-pooled encoders with statistical-pooled WavLM).
     pooling_type = model_cfg.get("pooling_type", "statistical")
+    enc_type_key = model_cfg.get("encoder_type", "unknown").lower().strip()
+    enc_cfg = model_cfg.get("encoder_config", {}).get(enc_type_key, {})
+    pooling_type = enc_cfg.get("pooling_type", pooling_type)
     pooling = create_pooling(pooling_type, encoder.output_dim)
     pooled_dim = encoder.output_dim * pooling.output_multiplier
 

@@ -82,6 +82,8 @@ model:
       base_model: microsoft/wavlm-large
       freeze_feature_extractor: true
       local_path: weights/wavlm_large
+      # WavLM emits frame-level features → statistical pooling (mean+std).
+      pooling_type: statistical
     campp:
       model_id: iic/speech_campplus_sv_en_voxceleb_16k
       revision: v1.0.2
