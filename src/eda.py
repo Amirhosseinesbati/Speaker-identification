@@ -429,7 +429,7 @@ The task is a **447-way open-set classification**:
 - Every known speaker has only **≈5 training samples** → few-shot recognition, not
   standard closed-set classification. Per-speaker accuracy is the main driver of
   Macro-F1 (446 of 447 classes).
-- **Strategy:** strong pretrained speaker encoder (ECAPA / WavLM / HuBERT), heavy
+- **Strategy:** strong pretrained speaker encoder (ECAPA / WavLM / CAM++ / ERes2NetV2 / TitaNet), heavy
   time-domain augmentation + random window cropping to multiply effective samples,
   and **ArcFace-style angular margin** to squeeze separation between near-identical
   utterances.

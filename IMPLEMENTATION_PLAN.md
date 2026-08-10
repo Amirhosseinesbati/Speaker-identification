@@ -193,7 +193,7 @@ data/
                               │
         ┌─────────────────────┴─────────────────────┐
         │   Encoder قوی pretrained (ECAPA-TDNN /     │
-        │   WavLM-Large / HuBERT) — frozen یا جزئی   │
+        │   WavLM-Large / CAM++ / ERes2NetV2 / TitaNet) — frozen یا جزئی   │
         │   fine-tune (unfreeze آخرین بلوک‌ها)        │
         └─────────────────────┬─────────────────────┘
                               │ embedding 192d (میانگین روی پنجره‌ها)
@@ -673,7 +673,7 @@ print('INFERENCE SMOKE OK ✅')
 
 **تغییرات:**
 1. **`src/ensemble.py` (`EnsembleModel`)** از قبل موجود است (average fusion و LearnedFusion). آن را به مسیر inference متصل کن:
-   - چند مدل را با **seedهای متفاوت** یا **encoderهای متفاوت** (ECAPA + WavLM-Large + HuBERT) آموزش بده (هر کدام یک checkpoint).
+   - چند مدل را با **seedهای متفاوت** یا **encoderهای متفاوت** (ECAPA + WavLM-Large + CAM++ + ERes2NetV2 + TitaNet) آموزش بده (هر کدام یک checkpoint).
    - در inference، احتمالات همه‌ی مدل‌ها را میانگین بگیر (average fusion) یا LearnedFusion را روی val آموزش بده.
 2. **کالیبراسیون دما (temperature scaling):** روی val، دمای `T` را برای softmax speaker طوری انتخاب کن که Macro-F1 (یا NLL) بهینه شود. `fused_probs_from_logits` در `src/metrics.py` پارامتر `temperature` دارد — از آن استفاده کن و `T` بهینه را ذخیره و در inference اعمال کن.
 3. گزارش: Macro-F1 هر مدل به‌تنهایی و انسمبل، + دمای بهینه.

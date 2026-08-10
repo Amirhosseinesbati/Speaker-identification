@@ -10,7 +10,7 @@ multiple base models with potentially different encoder architectures.
 
 Usage:
     # Average fusion
-    ensemble = EnsembleModel([model_wavlm, model_ecapa, model_hubert])
+    ensemble = EnsembleModel([model_wavlm, model_ecapa, model_campp, model_eres2net, model_titanet])
 
     # Learned fusion
     fusion = LearnedFusion(num_models=3, num_classes=447)

@@ -78,9 +78,6 @@ model:
       source: speechbrain/spkrec-ecapa-voxceleb
       unfreeze_last_n_blocks: 2
       local_path: weights/ecapa
-    hubert:
-      base_model: facebook/hubert-large-ls960-ft
-      freeze_feature_extractor: true
     wavlm:
       base_model: microsoft/wavlm-large
       freeze_feature_extractor: true

@@ -2,7 +2,7 @@
 Modular Two-Headed Speaker Identification Model.
 
 Architecture:
-    Encoder (WavLM/ECAPA/HuBERT) → Pooling (Statistical/Attentive) →
+    Encoder (WavLM/ECAPA/CAM++/ERes2NetV2/TitaNet) → Pooling →
     ├── OOD Head (Linear → Sigmoid)      → P(unknown)
     └── Speaker Head (Linear/ArcFace)     → P(known_i)
 

@@ -74,6 +74,11 @@ During evaluation the organizers:
   are collapsed into the single `unknown` class.
 - For the training split only, the organizers ship a metadata CSV: `audio_file,speaker_id`.
 
+> ⚠️ **Submission API, packaging format, and runtime limits** are marked as
+> **"TO_BE_FILLED BY ORGANIZERS"** in the official guide (as of the competition PDF).
+> The inference pipeline (`submission/inference.py`) is designed to adapt to whichever
+> CLI contract the organizers finalize.
+
 ### 1.3 Why Macro-F1 makes this hard
 
 Macro-F1 treats every class equally:
@@ -91,7 +96,7 @@ rewards models that keep **known-speaker recall high** (recognizing each specifi
 
 | Rule | Implication for our solution |
 |------|------------------------------|
-| Public pretrained audio models allowed | We use pretrained **ECAPA-TDNN (VoxCeleb)**, **WavLM**, **HuBERT** backbones |
+| Public pretrained audio models allowed | We use pretrained **ECAPA-TDNN (VoxCeleb)**, **WavLM-Large**, **CAM++**, **ERes2NetV2**, **TitaNet-Large** backbones |
 | External speech datasets / self-supervision allowed | Feasible future pretraining on VoxCeleb/LibriSpeech |
 | **No** labeled data containing eval speakers | We never add outside labels that could overlap hidden identities |
 | **No** access to hidden eval labels | Model selection uses our own local hold-out |
@@ -153,6 +158,11 @@ see [Section 3](#3-exploratory-data-analysis-eda-suite)).
 These numbers are measured *before any training* — the frozen encoder already separates
 voices and OOD very well, which the learned heads are designed to exploit.
 
+> **Note:** the Phase-3 EDA that produced these numbers was recently rewritten to use
+> **unbiased leave-one-out** evaluation and to **drop corrupted/duplicate files**.
+> Re-run `uv run --no-sync python -m src.eda_embeddings` to regenerate the latest
+> unbiased estimates — see the caveat in [Section 3](#3-exploratory-data-analysis-eda-suite).
+
 ---
 
 ## 3. Exploratory Data Analysis (EDA suite)
@@ -208,7 +218,7 @@ Raw audio (16 kHz mono, 8 s window)
         │
         ▼
 ┌─────────────────────┐      ┌─────────────────────────────────────────────┐
-│  ENCODER            │      │  ECAPA-TDNN 192-d   │ WavLM 768-d │ HuBERT  │
+│  ENCODER            │      │  ECAPA 192-d │ WavLM-Large 1024-d │ CAM++ 512-d │ ERes2NetV2 192-d │ TitaNet 192-d │
 │  (pretrained,       │ ───► │  (frozen)           │ (FE frozen) │ 1024-d  │
 │  interchangeable)   │      └─────────────────────────────────────────────┘
 └─────────────────────┘
@@ -257,8 +267,10 @@ plus `output_dim`, `freeze()`, `unfreeze()` — so backbones are **hot-swappable
 | Encoder | Source / dims | Notes |
 |---------|---------------|-------|
 | **ECAPA-TDNN** (default) | `speechbrain/spkrec-ecapa-voxceleb`, 192-d | SOTA speaker embedding trained on VoxCeleb1+2 (0.80% EER). Ships its own attentive statistical pooling → use `pooling_type: identity`. Frozen. |
-| WavLM | `microsoft/wavlm-base-plus`, 768-d (94M) | HuBERT-style with gated relative position bias; strong speaker transfer. Feature extractor frozen, transformer trainable. |
-| HuBERT | `facebook/hubert-large-ls960-ft`, 1024-d (317M) | Large SSL speech model; needs fine-tuning for best speaker transfer. |
+| WavLM-Large | `microsoft/wavlm-large`, 1024-d (317M) | Large SSL speech model with gated relative position bias. Feature extractor frozen, transformer trainable. |
+| CAM++ | `iic/speech_campplus_sv_en_voxceleb_16k`, 512-d (7.3M) | ModelScope speaker model (3D-Speaker). Frozen encoder, trainable heads. |
+| ERes2NetV2 | vendored arch + official ckpt, 192-d (17.9M) | Res2Net-based, no modelscope/3dspeaker needed. Frozen. |
+| TitaNet-Large | `nvidia/speakerverification_en_titanet_large`, 192-d (23M) | NeMo speaker model. Frozen. |
 
 Engineering notes baked into `src/encoders.py`:
 
@@ -273,7 +285,7 @@ Engineering notes baked into `src/encoders.py`:
   `torch.no_grad()` — avoiding CPU/CUDA mismatches, AMP half-precision crashes, and
   BatchNorm corruption. The encoder is always kept in `eval()` mode (overridden
   `train()`/`to()`).
-- Frozen WavLM/HuBERT **feature extractors** (CNN stem) stay frozen; transformer layers
+- Frozen WavLM **feature extractor** (CNN stem) stays frozen; transformer layers
   remain trainable — a memory/quality trade-off.
 
 ### 4.3 Pooling
@@ -282,7 +294,7 @@ Engineering notes baked into `src/encoders.py`:
 
 | Pooling | Output | When to use |
 |---------|--------|-------------|
-| `StatisticalPooling` | `(B, 2D)` — concat(mean, std) | WavLM/HuBERT frame features |
+| `StatisticalPooling` | `(B, 2D)` — concat(mean, std) | WavLM frame features |
 | `AttentiveStatisticalPooling` | `(B, 2D)` — attention-weighted mean/std | When frame importance varies |
 | `IdentityPooling` | `(B, D)` — pass-through | **ECAPA** (already has internal pooling) — the current default |
 
@@ -481,12 +493,12 @@ L = w_ood · BCEWithLogits(σ(ood_logit), y_ood)   +   w_spk · CE_focal(spk_log
 | LR schedule | `CosineAnnealingLR` (`T_max = epochs`) — ZenML variant: 3-epoch linear warmup → `CosineAnnealingWarmRestarts` |
 | Mixed precision | AMP (`torch.cuda.amp`) with `GradScaler` |
 | Gradient clipping | **separate** — `ood_grad_norm = 1.0` for OOD-head params, `max_grad_norm = 5.0` elsewhere (prevents OOD head overfitting) |
-| Early stopping | `patience = 10` **on validation Macro-F1** (the competition metric) |
+| Early stopping | `patience = 15` **on validation Macro-F1** (the competition metric) |
 | Checkpoint selection | **best by val Macro-F1** (was: val loss) → `best_model.pt` + `latest_model.pt` every epoch; full state (model, optimizer, scheduler, config, class_map) + `val_macro_f1` |
 | Eval forward | **without labels** → no ArcFace margin at eval time (honest metrics) |
 | Fine-tuning | `model.encoder_config.ecapa.unfreeze_last_n_blocks: 2` — only the last 2 SE-Res2Blocks trainable (5.4 M encoder params) with `encoder_lr`; `forward()` keeps the graph only when partially unfrozen |
 | Hardware profiles | `local` (GTX 1660 Ti 6 GB, batch 8, workers 0) / `vastai` (3090/4090, batch 32) / `vastai_3060` (batch 16) / `vastai_a4000` (RTX A4000 16 GB, batch 24) — **batch size is per-profile, everything else is shared** |
-| Epochs | 50 (config default) |
+| Epochs | 150 (config default) |
 
 Metrics logged per epoch: train/val **loss**, **OOD accuracy**, **known-speaker accuracy**,
 and **val Macro-F1** (via `src/metrics.evaluate_macro_f1`, the exact 447-class metric the
@@ -540,7 +552,7 @@ near the known-speaker manifold?" — its sigmoid is fused directly into the 447
   (`N·447 → 512 → ReLU → Dropout → 447 → Softmax`), trained on the validation set while
   base models stay frozen.
 
-Planned ensemble: ECAPA + WavLM + HuBERT models, average-fused — diversity in encoder
+Planned ensemble: ECAPA + WavLM-Large + CAM++ + ERes2NetV2 + TitaNet models, average-fused — diversity in encoder
 biases typically improves Macro-F1 on both known and OOD classes.
 
 ---
@@ -621,13 +633,12 @@ audio:
   hop_length: 160
 
 model:
-  encoder_type: ecapa             # ecapa | wavlm | hubert
+  encoder_type: ecapa             # ecapa | wavlm | campp | eres2net | titanet
   competition_num_known: 446      # 446 known → 447-way output
   encoder_config:
     wavlm:   {base_model: microsoft/wavlm-base-plus, freeze_feature_extractor: true}
     ecapa:   {source: speechbrain/spkrec-ecapa-voxceleb, freeze_encoder: false,
               unfreeze_last_n_blocks: 2}   # fine-tune last 2 SE-Res2Blocks only
-    hubert:  {base_model: facebook/hubert-large-ls960-ft, freeze_feature_extractor: true}
   pooling_type: identity          # identity (ECAPA) | statistical | attentive
   speaker_head_type: arcface      # arcface | linear
   speaker_head_config:
@@ -637,7 +648,7 @@ model:
   fusion: {ensemble_method: none}
 
 training:
-  epochs: 50
+  epochs: 150
   learning_rate: 0.0001           # head LR
   encoder_lr: 1.0e-05             # LR for unfrozen encoder blocks (param group)
   weight_decay: 1.0e-05
@@ -647,7 +658,7 @@ training:
   ood_pos_weight: 1.0             # BCE pos_weight for the OOD head
   ood_loss_weight: 0.3            # OOD : speaker = 3 : 7
   speaker_loss_weight: 0.7
-  early_stopping_patience: 10     # on val Macro-F1
+  early_stopping_patience: 15     # on val Macro-F1
   label_smoothing: 0.1
 
 data:
@@ -742,11 +753,12 @@ Fixed random seeds in data splits (42), balanced sampler (42), and the EDA suite
 ├── eda/                          # EDA reports, charts, JSON summaries, .npy
 ├── checkpoints/                  # best/latest/init models + corrupted_files.json
 ├── scripts/
-│   ├── convert_mp3_to_wav.py
-│   └── clean_corrupted.py
+│   ├── convert_mp3_to_wav.py     # thin CLI wrapper over src/audio_preprocessing
+│   └── clean_corrupted.py        # scan and remove corrupted/short audio files
 ├── src/
 │   ├── data_pipeline.py          # labels, leak-free split, augmentation, dataset, loaders, balanced sampler
-│   ├── encoders.py               # ECAPA / WavLM / HuBERT + factory + partial unfreeze
+│   ├── audio_preprocessing.py    # MP3 → WAV conversion (libsndfile, deterministic cross-platform)
+│   ├── encoders.py               # 5 encoders (ECAPA/WavLM-Large/CAM++/ERes2NetV2/TitaNet) + factory
 │   ├── pooling.py                # statistical / attentive / identity
 │   ├── heads.py                  # OODHead, LinearSpeakerHead, ArcFaceHead
 │   ├── model.py                  # TwoHeadedSpeakerModel + fusion + multi-window predict_proba
@@ -758,14 +770,21 @@ Fixed random seeds in data splits (42), balanced sampler (42), and the EDA suite
 │   ├── ensemble.py               # average / learned fusion
 │   ├── ensemble_calibrate.py     # step-9: per-model + ensemble Macro-F1 + temperature report
 │   ├── mlflow_helper.py          # standalone MLflow tracker
-│   ├── eda*.py                   # 5-phase EDA suite (Phase 3 is unbiased / LOO)
+│   ├── cli_utils.py              # UTF-8 stdio for Windows console compatibility
+│   ├── eda*.py                   # 4-phase EDA suite (Phase 3 is unbiased / LOO)
 │   ├── pipelines/                # ZenML steps + orchestrator
-│   └── deploy/                   # Vast.ai + Streamlit
+│   └── deploy/                   # Vast.ai + Streamlit UI (deploy_app.py, deploy.py)
 ├── submission/
 │   ├── inference.py              # competition CLI → 447-column CSV (TTA + ensemble + fusion)
 │   └── __init__.py
-├── tests/smoke/                  # pipeline smoke tests
-└── setup_vast.sh / setup_project.py / .env.example
+├── tests/
+│   └── test_audio_preprocessing.py  # deterministic MP3→WAV conversion tests
+├── setup_vast.sh                 # Vast.ai GPU instance bootstrap script
+├── setup_project.py              # project environment setup utility
+├── pyproject.toml                # dependencies & project metadata
+├── IMPLEMENTATION_PLAN.md        # full implementation spec & architecture reasoning
+├── FINAL_REPORT.md               # project summary & technical briefing
+└── .env.example                  # template for DagsHub/Vast.ai credentials
 ```
 
 ---
@@ -780,6 +799,8 @@ uv run --no-sync python -c "import torch; print(torch.__version__, torch.cuda.is
 
 # 1. Data (DVC remote) or local copy
 dvc pull                       # restores data/raw + data/processed
+#    → Requires DagsHub credentials in .env (DAGSHUB_USER_TOKEN, DAGSHUB_REPO_OWNER).
+#    → Without DVC access, place the raw MP3s + labels.csv manually under data/raw/.
 
 # 2. (Optional) Unbiased EDA — embeddings + LOO centroid + Macro-F1 simulation
 uv run --no-sync python -m src.eda_embeddings          # GPU, several minutes
@@ -811,7 +832,11 @@ dropdown (`RTX_3090` / `RTX_3060` / `RTX_A4000`) selects the matching profile
 
 ## 15. Current Results & Roadmap
 
-### 15.1 Reproduced run (recorded in `mlruns/`)
+### 15.1 Initial prototype run (recorded in `mlruns/`)
+
+The current `best_model.pt` / `latest_model.pt` checkpoints are from an **early prototype
+training run** (3 epochs, old config) that was used to validate the training loop,
+loss function, and MLOps plumbing end-to-end:
 
 | Metric | Value |
 |--------|------:|
@@ -819,9 +844,15 @@ dropdown (`RTX_3090` / `RTX_3060` / `RTX_A4000`) selects the matching profile
 | Best epoch | 3 |
 | Final validation OOD accuracy | 0.85 |
 
-> The recorded run used an early snapshot of the pipeline. **Note:** the competition
-> metric is **Macro-F1 across 447 classes**, not OOD binary accuracy — the roadmap below
-> is about converting these partial numbers into a strong Macro-F1.
+> ⚠️ **These numbers are NOT the final competition result.** They come from a quick
+> smoke-test run with an older config (fewer epochs, different sampler, no multi-window
+> averaging, no ArcFace head). The architecture, training loop, and inference pipeline
+> have all been substantially upgraded since that run — see the roadmap below.
+>
+> **Current status:** the full pipeline (data, model, training, inference, MLOps) is
+> **code-complete and smoke-tested**. A full training run with the current config
+> (150 epochs, ArcFace m=0.4/s=30, multi-window TTA, balanced 50/50 batches) is the
+> next action item for the user.
 
 ### 15.2 Empirical ceilings to aim at (Phase 3 EDA)
 
@@ -835,8 +866,8 @@ dropdown (`RTX_3090` / `RTX_3060` / `RTX_A4000`) selects the matching profile
    (per-class precision/recall, unknown threshold tuning).
 2. **OOD threshold / calibration tuning** on validation to trade known-recall ↔
    unknown-recall where it maximizes Macro-F1 (the known classes are 446/447 of the F1).
-3. **Multi-encoder ensemble** (ECAPA + WavLM + HuBERT), average fusion first, then learned.
-4. **Fine-tuning** WavLM/HuBERT (unfreeze transformer) with larger batches on the
+3. **Multi-encoder ensemble** (ECAPA + WavLM-Large + CAM++ + ERes2NetV2 + TitaNet), average fusion first, then learned.
+4. **Fine-tuning** WavLM-Large (unfreeze transformer) with larger batches on the
    `vastai` profile; compare vs frozen-ECAPA.
 5. **External-data pretraining** (allowed by the rules) — e.g. fine-tune on VoxCeleb then
    transfer, while keeping the held-out split free of any eval-speaker labels.
@@ -847,7 +878,7 @@ dropdown (`RTX_3090` / `RTX_3060` / `RTX_A4000`) selects the matching profile
 
 ## 16. Rule Compliance Notes
 
-- ✅ **Pretrained models allowed** — ECAPA/WavLM/HuBERT are public pretrained weights; we
+- ✅ **Pretrained models allowed** — ECAPA/WavLM-Large/CAM++/ERes2NetV2/TitaNet are public pretrained weights; we
   comply.
 - ✅ **No eval-speaker labels** — the model is trained exclusively on `data/raw/labels.csv`;
   any future external data will be filtered to never contain the hidden OOD identities

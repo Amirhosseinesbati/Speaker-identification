@@ -8,9 +8,8 @@ Classes:
     BaseEncoder           — Abstract interface
     WavLMEncoder          — Microsoft WavLM (HuggingFace), base or large
     ECAPAEncoder          — ECAPA-TDNN (SpeechBrain)
-    HuBERTEncoder         — Facebook HuBERT (HuggingFace) — REMOVED in Phase 3
     CAMPlusPlusEncoder    — CAM++ (ModelScope) — Phase 2a
-    ERes2NetV2Encoder     — ERes2NetV2 (ModelScope) — Phase 2c
+    ERes2NetV2Encoder     — ERes2NetV2 (vendored arch + official ckpt) — Phase 2c
     TitaNetEncoder        — TitaNet-Large (NeMo) — Phase 2d
 
 All encoders load from LOCAL paths at inference time (offline). Hub downloads
@@ -117,7 +116,7 @@ class WavLMEncoder(BaseEncoder):
     """
     Microsoft WavLM encoder for speaker recognition.
 
-    WavLM is a HuBERT-based model with gated relative position bias
+    WavLM is a self-supervised speech model with gated relative position bias
     and utterance mixing, designed to preserve speaker identity.
 
     Supported models:
@@ -208,60 +207,6 @@ class WavLMEncoder(BaseEncoder):
             for param in self.wavlm.feature_extractor.parameters():
                 param.requires_grad = True
         print("  🔓 WavLM feature extractor UNFROZEN.")
-
-
-# ═══════════════════════════════════════════════════════════
-#  HuBERT Encoder
-#  ⚠️  REMOVED in Phase 3 — kept here only until the removal commit.
-# ═══════════════════════════════════════════════════════════
-
-class HuBERTEncoder(BaseEncoder):
-    """
-    Facebook HuBERT encoder for speaker recognition. (REMOVED — Phase 3)
-
-    Deprecated: this encoder is being removed from the ensemble. The class is
-    kept in the tree only so the Phase 3 removal commit can delete it cleanly.
-    """
-
-    def __init__(
-        self,
-        base_model: str = "facebook/hubert-large-ls960-ft",
-        freeze_feature_extractor: bool = True,
-    ):
-        super().__init__()
-        self.base_model_name = base_model
-
-        from transformers import HubertModel
-        self.hubert = HubertModel.from_pretrained(base_model)
-
-        if freeze_feature_extractor:
-            self.freeze()
-            print(f"  🔒 HuBERT feature extractor: FROZEN")
-        else:
-            print(f"  🔓 HuBERT feature extractor: UNFROZEN")
-
-    def forward(
-        self,
-        waveforms: torch.Tensor,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        input_values = waveforms.squeeze(1)  # (batch, T)
-        outputs = self.hubert(input_values=input_values, output_hidden_states=False)
-        return outputs.last_hidden_state, None
-
-    @property
-    def output_dim(self) -> int:
-        return self.hubert.config.hidden_size
-
-    def freeze(self) -> None:
-        if hasattr(self.hubert, "feature_extractor"):
-            for param in self.hubert.feature_extractor.parameters():
-                param.requires_grad = False
-
-    def unfreeze(self) -> None:
-        if hasattr(self.hubert, "feature_extractor"):
-            for param in self.hubert.feature_extractor.parameters():
-                param.requires_grad = True
-        print("  🔓 HuBERT feature extractor UNFROZEN.")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1046,7 +991,6 @@ class TitaNetEncoder(BaseEncoder):
 ENCODER_REGISTRY = {
     "wavlm": WavLMEncoder,
     "ecapa": ECAPAEncoder,
-    "hubert": HuBERTEncoder,          # ⚠️ removed in Phase 3
     "campp": CAMPlusPlusEncoder,
     "eres2net": ERes2NetV2Encoder,
     "titanet": TitaNetEncoder,
@@ -1058,7 +1002,7 @@ def create_encoder(config: dict) -> BaseEncoder:
     Build an encoder from config.
 
     Reads:
-        model.encoder_type         → "wavlm" | "ecapa" | "hubert" | "campp"
+        model.encoder_type         → "wavlm" | "ecapa" | "campp"
                                      | "eres2net" | "titanet"
         model.encoder_config.<type> → encoder-specific kwargs
         model.allow_hub_download    → global offline override (default False)
@@ -1117,11 +1061,6 @@ def create_encoder(config: dict) -> BaseEncoder:
             local_path=enc_cfg.get("local_path"),
             allow_hub_download=enc_cfg.get("allow_hub_download", False),
         )
-    elif encoder_type == "hubert":  # ⚠️ removed in Phase 3
-        return HuBERTEncoder(
-            base_model=enc_cfg.get("base_model", "facebook/hubert-large-ls960-ft"),
-            freeze_feature_extractor=enc_cfg.get("freeze_feature_extractor", True),
-        )
     elif encoder_type == "campp":
         model_id = enc_cfg.get("model_id", "iic/speech_campplus_sv_en_voxceleb_16k")
         return CAMPlusPlusEncoder(
@@ -1166,7 +1105,7 @@ def _factory_resolve_smoke():
         cls = ENCODER_REGISTRY[name]
         print(f"  ✅ {name:<12} → {cls.__name__}")
 
-    expected = {"ecapa", "wavlm", "hubert", "campp", "eres2net", "titanet"}
+    expected = {"ecapa", "wavlm", "campp", "eres2net", "titanet"}
     assert set(ENCODER_REGISTRY) == expected, (
         f"Registry mismatch: {sorted(ENCODER_REGISTRY)} vs {sorted(expected)}"
     )

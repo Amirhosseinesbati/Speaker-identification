@@ -21,7 +21,7 @@ dependencies = [
     "tqdm",
     # Leaderboard server pins: transformers>=4.57,<4.58 + huggingface-hub>=0.30
     # (see Competition-Guide/leaderbordpakage.txt). The old 4.46.x pin was for
-    # WavLM/HuBERT; WavLM-Large requires the newer transformers too.
+    # WavLM-Large requires the newer transformers too.
     "transformers>=4.57,<4.58",
     "huggingface-hub>=0.30",
     # MLOps & Deployment

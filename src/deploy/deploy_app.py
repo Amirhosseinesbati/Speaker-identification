@@ -254,9 +254,10 @@ with tab_cfg:
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("🧠 Encoder")
+        _ENC_OPTS = ["wavlm", "ecapa", "campp", "eres2net", "titanet"]
         encoder_type = st.selectbox(
-            "Encoder", ["wavlm", "ecapa", "hubert"],
-            index=["wavlm","ecapa","hubert"].index(mc.get("encoder_type","wavlm")))
+            "Encoder", _ENC_OPTS,
+            index=_ENC_OPTS.index(mc.get("encoder_type", "wavlm")))
 
         # Fine-tune mode: Frozen / Partial (last N, ECAPA) / Full
         cur_freeze = _enc_freeze()
@@ -338,16 +339,36 @@ with tab_cfg:
                 "source": "speechbrain/spkrec-ecapa-voxceleb",
                 "freeze_encoder": ft_mode == "Frozen",
                 "unfreeze_last_n_blocks": int(unfreeze_n) if ft_mode == "Partial (last N)" else 0,
+                "local_path": "weights/ecapa",
             }
             old_enc.pop("freeze_feature_extractor", None)  # stale key for ECAPA
-        else:
+        elif encoder_type == "wavlm":
             new_enc = {
-                "base_model": ("microsoft/wavlm-base-plus" if encoder_type == "wavlm"
-                               else "facebook/hubert-large-ls960-ft"),
+                "base_model": "microsoft/wavlm-large",
                 "freeze_feature_extractor": ft_mode == "Frozen",
+                "local_path": "weights/wavlm_large",
             }
             old_enc.pop("freeze_encoder", None)
             old_enc.pop("unfreeze_last_n_blocks", None)
+        elif encoder_type == "campp":
+            new_enc = {
+                "model_id": "iic/speech_campplus_sv_en_voxceleb_16k",
+                "revision": "v1.0.2",
+                "freeze_encoder": True,
+                "local_path": "weights/campp",
+            }
+        elif encoder_type == "eres2net":
+            new_enc = {
+                "ckpt_name": "eres2netv2.ckpt",
+                "freeze_encoder": True,
+                "local_path": "weights/eres2net",
+            }
+        else:  # titanet
+            new_enc = {
+                "model_id": "nvidia/speakerverification_en_titanet_large",
+                "freeze_encoder": True,
+                "local_path": "weights/titanet/titanet_large.nemo",
+            }
         config["model"]["encoder_type"] = encoder_type
         config["model"].setdefault("encoder_config", {})[encoder_type] = {**old_enc, **new_enc}
         config["model"]["pooling_type"] = pooling_type

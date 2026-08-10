@@ -189,7 +189,7 @@ esac
 # FREEZE_ENCODER / UNFREEZE_LAST_N_BLOCKS come from deploy_app.py → deploy.py → env.
 # We edit the YAML with Python (encoder-aware) instead of sed, so the right key
 # is used per encoder: ECAPA → freeze_encoder/unfreeze_last_n_blocks,
-# WavLM/HuBERT → freeze_feature_extractor.
+# WavLM → freeze_feature_extractor; ECAPA → freeze_encoder/unfreeze_last_n_blocks;
 FREEZE_ENCODER="${FREEZE_ENCODER:-true}"
 UNFREEZE_BLOCKS="${UNFREEZE_LAST_N_BLOCKS:-0}"
 echo "   Applying encoder fine-tune choice (freeze=${FREEZE_ENCODER}, blocks=${UNFREEZE_BLOCKS})..."
