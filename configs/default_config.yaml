@@ -68,17 +68,35 @@ mlops:
     image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel
 model:
   competition_num_known: 446
+  # ⚠️ Global offline gate. At submission time this MUST stay false — every
+  # encoder then loads from its local_path (weights/) with zero hub calls.
+  # On the dev machine (training), flip to true for one-time downloads.
+  allow_hub_download: false
   encoder_config:
     ecapa:
       freeze_encoder: false
       source: speechbrain/spkrec-ecapa-voxceleb
       unfreeze_last_n_blocks: 2
+      local_path: weights/ecapa
     hubert:
       base_model: facebook/hubert-large-ls960-ft
       freeze_feature_extractor: true
     wavlm:
-      base_model: microsoft/wavlm-base-plus
+      base_model: microsoft/wavlm-large
       freeze_feature_extractor: true
+      local_path: weights/wavlm_large
+    campp:
+      model_id: iic/speech_campplus_sv_en_voxceleb_16k
+      freeze_encoder: true
+      local_path: weights/campp
+    eres2net:
+      model_id: iic/speech_eres2netv2_sv_en_voxceleb_16k
+      freeze_encoder: true
+      local_path: weights/eres2net
+    titanet:
+      model_id: nvidia/speakerverification_en_titanet_large
+      freeze_encoder: true
+      local_path: weights/titanet/titanet_large.nemo
   encoder_type: ecapa
   fusion:
     ensemble_method: none
@@ -96,7 +114,7 @@ model:
 training:
   early_stopping_patience: 15
   encoder_lr: 1.0e-05
-  epochs: 100
+  epochs: 150
   label_smoothing: 0.1
   learning_rate: 0.0001
   max_grad_norm: 5.0
