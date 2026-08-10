@@ -113,3 +113,71 @@ effective); the 3090 reaches ~142 TFLOPS fp16. A documented, conservative
 | checkpoints/ (5 trained models, ~100 MB each) | ~500 MB |
 | src/ + configs + inference.py + README | ~1 MB |
 | **submission.zip** | **~2.1 GB** (≈ 1.9 GB zipped) |
+
+## 7. Phase 7 — Improvement Implementation (2026-08-10)
+
+Post-audit fixes applied on `feature/advanced-speaker-id`, one commit per step
+(commits `eb7d2e3` → `2fb23ba`).
+
+### 7.1 Fresh-machine bootstrap (critical)
+
+- **`src/encoders.py`** (`eb7d2e3`): all 5 encoders + the ModelScope helper now
+  fall back to a hub download **into the configured `local_path`** when the path
+  is configured but missing **and** `allow_hub_download=true` (a fresh Vast.ai
+  instance has no `weights/` — it is gitignored and DVC pulls only `data/raw`).
+  The offline guarantee is unchanged: `allow_hub_download=false` still raises
+  loudly before training.
+- **`setup_vast.sh`** (`9f111af`): Phase 4.5 runs the idempotent
+  `scripts/download_all_weights.py` before the pipeline so training runs
+  offline-first regardless of the flag. The config edit is now encoder-aware
+  (`ENCODER_TYPE` / `ALLOW_HUB_DOWNLOAD` / `LOCAL_PATH_<ENC>` from the deploy
+  env) and writes the correct per-encoder freeze key — ecapa →
+  `freeze_encoder`+`unfreeze_last_n_blocks`, wavlm → `freeze_feature_extractor`,
+  campp/eres2net/titanet → `freeze_encoder` only (stale keys removed).
+- **`src/deploy/deploy.py`** (`a5a9f50`): forwards `ENCODER_TYPE`,
+  `ALLOW_HUB_DOWNLOAD` and `LOCAL_PATH_<ENC>` to the instance. Previously only
+  `FREEZE_*` were sent, so the UI's encoder selection never reached Vast and it
+  always trained the committed `ecapa`.
+
+### 7.2 Streamlit UI (`72de0f1`)
+
+- Pooling dropdown now offers identity / statistical / attentive and defaults
+  per encoder (WavLM → statistical), saved into `encoder_config.<enc>.pooling_type`.
+- "Full" fine-tune is respected for campp/eres2net/titanet (was hardcoded frozen).
+- New "Allow hub downloads (dev only)" checkbox (`model.allow_hub_download`).
+- Save logic extracted to pure `_encoder_save_config()` (unit-tested).
+
+### 7.3 Post-encoder misalignments
+
+- **`src/ensemble_calibrate.py`** (`9344e89`): each model is built from the
+  **config embedded in its own checkpoint** (mirrors `submission/inference.py`);
+  TTA/data params come from the first checkpoint's config. Previously one shared
+  ECAPA config built every model → `load_state_dict` failed as soon as the
+  ensemble mixed encoders.
+- **`src/eda_embeddings.py` + `src/centroid_baseline.py`** (`3cdd917`):
+  `extract_embeddings` is config-driven (`create_encoder`); the embedding cache
+  is keyed by encoder (`embeddings_{train,val}_<enc>.npy` + `embeddings_<enc>_meta.json`);
+  `CentroidFuser` validates cache vs the first checkpoint's encoder + dim and
+  fails loudly on mismatch (WavLM/CAM++ previously broke the fusion silently).
+- **FAISS OOD** (`07d5b0f`): `--faiss-ood <alpha>` is now wired into
+  `submission/inference.py` (optional, **default off** → no runtime cost). It
+  combines the learned OOD head with the FAISS cosine OOD score built from the
+  known-speaker cache and re-normalises the 447-way output.
+
+### 7.4 Training artefacts (`2fb23ba`)
+
+- `src/train.py` + ZenML `steps.py` save `checkpoints/<enc>_best.pt` and
+  `<enc>_latest.pt` (build_submission.py globs `*_best.pt`); `best_model.pt` /
+  `latest_model.pt` are kept as backward-compat copies.
+- `train.py` tunes and persists `ckpt['ood_threshold']` (binary-F1 sweep over
+  val, median fallback if the head collapsed) so `--apply-ood-threshold` works
+  from the plain `python -m src.train` path too.
+
+### 7.5 Deferred / still open
+
+- **Runtime (20k/25k files vs 20-min budget):** batching of short single-window
+  files is deferred until the real 3090 measurement (the 2.8 s/file figure is
+  batch-1 on the 1660 Ti). Mitigation levers are documented in §3.
+- **Training the 5 models** (`<enc>_best.pt`) still needs a Vast.ai run (GPU
+  compute budget); all code paths for it are now ready.
+
