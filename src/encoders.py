@@ -943,29 +943,61 @@ class TitaNetEncoder(BaseEncoder):
         waveforms: torch.Tensor,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
-        Bypasses NeMo's encode_batch-style preprocessing by calling the
-        underlying TitaNet model directly with raw 16 kHz waveforms.
+        Extract TitaNet embeddings directly from raw 16 kHz waveforms.
+
+        NeMo 2.7+ dropped the tensor-based ``get_embedding(input_signal, ...)``
+        (it now takes a file path), so we run the model's internal pipeline
+        manually — the same ops ``forward`` performs:
+            preprocessor (mel) → encoder (TitaNet) → decoder (SpeakerDecoder)
+        whose second output is the ``(B, 192)`` embedding.
 
         Returns:
             (batch, 1, 192), None
         """
-        # NeMo expects (batch, T) raw audio.
-        wav = waveforms.squeeze(1).to(self.titanet.device)
-        wav_lens = torch.ones(wav.shape[0], device=wav.device)
+        dev = next(self.titanet.parameters()).device
+        wav = waveforms.squeeze(1).to(dev)  # (batch, T) raw audio
+        # NeMo preprocessor expects `length` in SAMPLES per utterance, not ones.
+        wav_lens = torch.full(
+            (wav.shape[0],), wav.shape[1], dtype=torch.long, device=wav.device,
+        )
 
         if self._frozen:
             with torch.no_grad():
-                emb = self.titanet.get_embedding(
-                    input_signal=wav, input_signal_length=wav_lens,
-                )
+                emb = self._embed_from_waveform(wav, wav_lens)
         else:
-            emb = self.titanet.get_embedding(
-                input_signal=wav, input_signal_length=wav_lens,
-            )
+            emb = self._embed_from_waveform(wav, wav_lens)
 
         if emb.ndim == 2:
             emb = emb.unsqueeze(1)  # (batch, 1, 192)
         return emb, None
+
+    def _embed_from_waveform(
+        self, wav: torch.Tensor, wav_lens: torch.Tensor
+    ) -> torch.Tensor:
+        """Run preprocessor → encoder → decoder and return the embedding."""
+        processed, plen = self.titanet.preprocessor(
+            input_signal=wav, length=wav_lens,
+        )
+        encoded, elen = self.titanet.encoder(
+            audio_signal=processed, length=plen,
+        )
+        if elen is None:
+            elen = plen
+        logits, embs = self.titanet.decoder(
+            encoder_output=encoded, length=elen,
+        )
+        if embs is None:
+            # Some decoder configs return only logits — fall back to logits
+            # only if it has the embedding dim (192); otherwise error loudly.
+            if logits.ndim == 2 and logits.size(1) == self._output_dim:
+                embs = logits
+            else:
+                raise RuntimeError(
+                    "TitaNet decoder returned no embedding (embs=None) and "
+                    f"logits shape {tuple(logits.shape)} doesn't match "
+                    f"embedding dim {self._output_dim}."
+                )
+        return embs  # (batch, 192)
 
     @property
     def output_dim(self) -> int:
