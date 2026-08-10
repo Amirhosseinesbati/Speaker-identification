@@ -55,27 +55,46 @@ MIN_VALID_DURATION = 1.0
 #  1. Embedding cache (idempotent)
 # ────────────────────────────────────────────────────────────────
 
-def _cache_paths() -> dict:
+def _active_encoder(config_path: str = str(CONFIG_PATH)) -> str:
+    """encoder_type from the given config (default: configs/default_config.yaml)."""
+    from src.data_pipeline import load_config
+    return str(load_config(config_path).get("model", {}).get("encoder_type", "ecapa"))
+
+
+def _cache_paths(encoder: Optional[str] = None) -> dict:
+    """Embedding cache paths keyed by encoder (192-d vs 512-d must not mix)."""
+    if encoder is None:
+        encoder = _active_encoder()
     return {
-        "train_embs": DATA_PROCESSED / "embeddings_train.npy",
-        "val_embs": DATA_PROCESSED / "embeddings_val.npy",
-        "train_labels": DATA_PROCESSED / "embeddings_train_labels.npy",
-        "val_labels": DATA_PROCESSED / "embeddings_val_labels.npy",
+        "train_embs": DATA_PROCESSED / f"embeddings_train_{encoder}.npy",
+        "val_embs": DATA_PROCESSED / f"embeddings_val_{encoder}.npy",
+        "train_labels": DATA_PROCESSED / f"embeddings_train_{encoder}_labels.npy",
+        "val_labels": DATA_PROCESSED / f"embeddings_val_{encoder}_labels.npy",
+        "meta": DATA_PROCESSED / f"embeddings_{encoder}_meta.json",
     }
 
 
-def build_embedding_cache(force: bool = False) -> dict:
-    """Idempotent: multi-window ECAPA embeddings for the leak-free split."""
-    paths = _cache_paths()
+def build_embedding_cache(force: bool = False,
+                          encoder_type: Optional[str] = None) -> dict:
+    """Idempotent: multi-window embeddings for the leak-free split.
+
+    The cache is keyed by the active encoder (model.encoder_type, or
+    --encoder-type) so 192-d and 512-d caches never mix. Metadata (encoder,
+    dim, pooling) is written alongside for validation at fusion time.
+    """
+    encoder = encoder_type or _active_encoder()
+    paths = _cache_paths(encoder)
     cached = all(p.exists() for p in paths.values())
 
     if cached and not force:
-        print("  ✅ Embedding cache found — loading.")
+        print(f"  ✅ Embedding cache found ({encoder}) — loading.")
         return {
             "train_embs": np.load(paths["train_embs"]),
             "val_embs": np.load(paths["val_embs"]),
             "train_labels": np.load(paths["train_labels"]),
             "val_labels": np.load(paths["val_labels"]),
+            "encoder": encoder,
+            "dim": int(np.load(paths["train_embs"]).shape[1]),
         }
 
     from src.data_pipeline import load_config, prepare_clean_split
@@ -95,10 +114,12 @@ def build_embedding_cache(force: bool = False) -> dict:
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"  Extracting train embeddings ({len(train_df):,} files)...")
-    train_embs = extract_embeddings(train_df, Path(data_cfg["audio_dir"]), device)
-    print(f"  Extracting val embeddings ({len(val_df):,} files)...")
-    val_embs = extract_embeddings(val_df, Path(data_cfg["audio_dir"]), device)
+    print(f"  Extracting train embeddings ({len(train_df):,} files, {encoder})...")
+    train_embs = extract_embeddings(train_df, Path(data_cfg["audio_dir"]), device,
+                                    encoder_type=encoder)
+    print(f"  Extracting val embeddings ({len(val_df):,} files, {encoder})...")
+    val_embs = extract_embeddings(val_df, Path(data_cfg["audio_dir"]), device,
+                                  encoder_type=encoder)
 
     train_labels = train_df["label"].values.astype(np.int64)
     val_labels = val_df["label"].values.astype(np.int64)
@@ -108,11 +129,26 @@ def build_embedding_cache(force: bool = False) -> dict:
         ("train_labels", train_labels), ("val_labels", val_labels),
     ]:
         np.save(paths[name], arr)
-    print("  ✅ Embedding cache saved to data/processed/.")
+
+    # Metadata sidecar — read by CentroidFuser at inference to guarantee the
+    # cache matches the checkpoint's encoder + embedding dim.
+    enc_cfg = config["model"].get("encoder_config", {}).get(encoder, {})
+    meta = {
+        "encoder": encoder,
+        "dim": int(train_embs.shape[1]),
+        "pooling": enc_cfg.get("pooling_type")
+                   or config["model"].get("pooling_type", "identity"),
+        "n_train": int(len(train_embs)),
+        "n_val": int(len(val_embs)),
+    }
+    paths["meta"].write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    print(f"  ✅ Embedding cache saved to data/processed/ ({encoder}, {meta['dim']}-d).")
 
     return {
         "train_embs": train_embs, "val_embs": val_embs,
         "train_labels": train_labels, "val_labels": val_labels,
+        "encoder": encoder,
+        "dim": meta["dim"],
     }
 
 
@@ -213,12 +249,12 @@ def load_trained_val_probs(val_df: pd.DataFrame) -> np.ndarray | None:
     from src.data_pipeline import load_config, SpeakerDataset
     from src.model_factory import create_model_from_config
 
-    config = load_config(str(CONFIG_PATH))
+    checkpoint = torch.load(ckpt, map_location="cpu", weights_only=False)
+    config = checkpoint.get("config") or load_config(str(CONFIG_PATH))
     audio_cfg = config["audio"]
-    num_known = config["model"].get("competition_num_known", 446)
+    num_known = config.get("model", {}).get("competition_num_known", 446)
 
     model = create_model_from_config(config, num_known_speakers=num_known)
-    checkpoint = torch.load(ckpt, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device).eval()
@@ -271,13 +307,13 @@ def evaluate_fusion(
 #  Main
 # ────────────────────────────────────────────────────────────────
 
-def main(force_cache: bool = False):
+def main(force_cache: bool = False, encoder_type: Optional[str] = None):
     print("=" * 60)
     print("  Centroid Baseline + Fusion")
     print("=" * 60)
 
     print("\n[1/4] Embedding cache...")
-    cache = build_embedding_cache(force=force_cache)
+    cache = build_embedding_cache(force=force_cache, encoder_type=encoder_type)
     train_embs, val_embs = cache["train_embs"], cache["val_embs"]
     train_labels, val_labels = cache["train_labels"], cache["val_labels"]
     print(f"  Train: {train_embs.shape} | Val: {val_embs.shape}")
@@ -286,7 +322,7 @@ def main(force_cache: bool = False):
 
     print("\n[2/4] Fitting centroids on train...")
     centroids, speakers = fit_centroids(train_embs, train_labels)
-    print(f"  {len(speakers)} known-speaker centroids (192-d)")
+    print(f"  {len(speakers)} known-speaker centroids ({train_embs.shape[1]}-d)")
 
     print("\n[3/4] Centroid-only evaluation on val (threshold tuned for Macro-F1)...")
     cent = evaluate_centroid(val_embs, val_labels, centroids, speakers)
@@ -348,6 +384,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Centroid baseline + fusion")
     parser.add_argument("--force-cache", action="store_true",
                         help="Recompute the embedding cache even if it exists")
+    parser.add_argument("--encoder-type", default=None,
+                        choices=["ecapa", "wavlm", "campp", "eres2net", "titanet"],
+                        help="Override the active encoder (default: config's encoder_type)")
     args = parser.parse_args()
-    main(force_cache=args.force_cache)
+    main(force_cache=args.force_cache, encoder_type=args.encoder_type)
 

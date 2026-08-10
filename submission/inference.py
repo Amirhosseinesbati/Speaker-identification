@@ -223,23 +223,48 @@ def compute_file_embedding(
 class CentroidFuser:
     """Fuses model probabilities with the centroid classifier output."""
 
-    def __init__(self, alpha: float = 0.5):
+    def __init__(self, alpha: float = 0.5, expected_encoder: Optional[str] = None,
+                 expected_dim: Optional[int] = None):
         from src.centroid_baseline import (
-            _cache_paths, fit_centroids, centroid_probs_global,
+            _cache_paths, _active_encoder, fit_centroids, centroid_probs_global,
         )
 
-        paths = _cache_paths()
+        # The cache is keyed by encoder — validate it matches the checkpoint
+        # so cosine fusion never mixes 192-d with 512-d embeddings.
+        encoder = expected_encoder or _active_encoder()
+        paths = _cache_paths(encoder)
         if not all(p.exists() for p in paths.values()):
             raise FileNotFoundError(
-                "Embedding cache missing — run `uv run --no-sync python -m "
-                "src.centroid_baseline` first (or drop --fuse-centroid)."
+                f"Embedding cache for encoder '{encoder}' missing — run "
+                f"`uv run --no-sync python -m src.centroid_baseline "
+                f"--encoder-type {encoder}` first (or drop --fuse-centroid)."
             )
         train_embs = np.load(paths["train_embs"])
         train_labels = np.load(paths["train_labels"])
+
+        meta = {}
+        if paths["meta"].exists():
+            meta = json.loads(paths["meta"].read_text(encoding="utf-8"))
+        cache_encoder = meta.get("encoder", encoder)
+        cache_dim = int(meta.get("dim", train_embs.shape[1]))
+        if expected_encoder is not None and cache_encoder != expected_encoder:
+            raise ValueError(
+                f"Centroid cache is for encoder '{cache_encoder}' but the "
+                f"first checkpoint uses '{expected_encoder}'. Rebuild the "
+                f"cache: `python -m src.centroid_baseline --encoder-type "
+                f"{expected_encoder}`."
+            )
+        if expected_dim is not None and cache_dim != expected_dim:
+            raise ValueError(
+                f"Centroid cache dim {cache_dim} != checkpoint embedding dim "
+                f"{expected_dim} — rebuild with --encoder-type "
+                f"{expected_encoder or cache_encoder}."
+            )
+
         self.centroids, self.speakers = fit_centroids(train_embs, train_labels)
         self.alpha = alpha
-        print(f"  🎯 Centroid fuser ready: {len(self.speakers)} centroids, "
-              f"alpha_model={alpha}")
+        print(f"  🎯 Centroid fuser ready: {len(self.speakers)} centroids "
+              f"[{cache_encoder} {cache_dim}-d], alpha_model={alpha}")
 
     def probs(self, embedding: np.ndarray, num_classes: int) -> np.ndarray:
         """Embedding (D,) → (num_classes,) centroid probability vector."""
@@ -374,8 +399,12 @@ def main(
     fuser = None
     if fuse_centroid:
         try:
-            fuser = CentroidFuser(alpha=centroid_alpha)
-        except FileNotFoundError as e:
+            fuser = CentroidFuser(
+                alpha=centroid_alpha,
+                expected_encoder=models[0][0].encoder_name,
+                expected_dim=models[0][0].encoder.output_dim,
+            )
+        except (FileNotFoundError, ValueError) as e:
             print(f"  ⚠ {e}")
 
     files = sorted(p for p in Path(data_dir).iterdir()

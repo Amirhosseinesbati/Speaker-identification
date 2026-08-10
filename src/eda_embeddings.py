@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 import matplotlib
 matplotlib.use("Agg")
@@ -129,30 +130,46 @@ def clean_labels(df: pd.DataFrame, wav_dir: Path) -> tuple:
 # ────────────────────────────────────────────────────────────────
 
 @torch.no_grad()
-def extract_embeddings(df: pd.DataFrame, wav_dir: Path, device: torch.device) -> np.ndarray:
-    """Extract one 192-d ECAPA embedding per file (multi-window TTA).
+def extract_embeddings(
+    df: pd.DataFrame,
+    wav_dir: Path,
+    device: torch.device,
+    config_path: str = str(PROJECT_ROOT / "configs" / "default_config.yaml"),
+    encoder_type: Optional[str] = None,
+) -> np.ndarray:
+    """Extract one D-dim embedding per file (multi-window TTA).
+
+    The encoder is built from config (model.encoder_type + encoder_config), so
+    the same code serves EVERY registered encoder (ECAPA 192-d, CAM++ 512-d,
+    ERes2NetV2/TitaNet 192-d, WavLM statistical 2048-d). Pass encoder_type to
+    override the config's active encoder.
 
     Windows of a batch are forwarded **one window index at a time** so peak
     VRAM stays at (batch_size, 1, T) instead of (batch_size * W, 1, T) — the
     GTX 1660 Ti (6 GB) OOMs on the full reshape for large W.
     """
     from torch.utils.data import DataLoader
-    from src.encoders import ECAPAEncoder
-    from src.data_pipeline import SpeakerDataset, create_class_mapping
+    from src.data_pipeline import SpeakerDataset, create_class_mapping, load_config
+    from src.encoders import create_encoder
 
     class_map = create_class_mapping(df)
     df = df.copy()
     df["label"] = df["speaker_id"].map(class_map)
 
-    encoder = ECAPAEncoder(
-        source="speechbrain/spkrec-ecapa-voxceleb",
-        freeze_encoder=True,
-    ).to(device)
+    config = load_config(config_path)
+    if encoder_type is not None:
+        config["model"]["encoder_type"] = encoder_type
+    # Embeddings are extracted for local analysis → load weights offline-first.
+    config["model"].setdefault("allow_hub_download", False)
+    encoder = create_encoder(config).to(device)
     encoder.eval()
 
+    audio_cfg = config["audio"]
     ds = SpeakerDataset(
-        df, str(wav_dir), sample_rate=TARGET_SR, duration_seconds=DURATION_SECONDS,
-        augment=False, eval_hop_ratio=EVAL_HOP_RATIO, max_eval_windows=MAX_EVAL_WINDOWS,
+        df, str(wav_dir), sample_rate=audio_cfg.get("sample_rate", TARGET_SR),
+        duration_seconds=audio_cfg.get("duration_seconds", DURATION_SECONDS),
+        augment=False, eval_hop_ratio=audio_cfg.get("eval_hop_ratio", EVAL_HOP_RATIO),
+        max_eval_windows=audio_cfg.get("max_eval_windows", MAX_EVAL_WINDOWS),
     )
     dl = DataLoader(ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
