@@ -57,6 +57,7 @@ def download_ecapa(force: bool = False) -> Path:
     `EncoderClassifier.from_hparams(source=..., savedir=local_dir)` copies the
     full model (hyperparams.yaml + model.ckpt + normalizer.ckpt) into the local
     dir, so inference can later instantiate from that dir with no hub fetch.
+    `local_strategy=COPY` avoids symlinks (Windows-compatible + zip-portable).
     """
     target = WEIGHTS_DIR / "ecapa"
     marker = target / "hyperparams.yaml"
@@ -70,13 +71,16 @@ def download_ecapa(force: bool = False) -> Path:
     # Neutralise SpeechBrain lazy-module breakage (same patch as src/encoders.py).
     from src.encoders import _patch_speechbrain_lazy_modules
 
+    import speechbrain  # noqa: F401  (must import first so lazy modules register)
     _patch_speechbrain_lazy_modules()
     from speechbrain.inference.speaker import EncoderClassifier
+    from speechbrain.utils.fetching import LocalStrategy
 
     EncoderClassifier.from_hparams(
         source="speechbrain/spkrec-ecapa-voxceleb",
         savedir=str(target),
         run_opts={"device": "cpu"},
+        local_strategy=LocalStrategy.COPY,
     )
     _done("ECAPA-TDNN", target)
     return target

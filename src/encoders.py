@@ -363,6 +363,7 @@ class ECAPAEncoder(BaseEncoder):
         _patch_speechbrain_lazy_modules()
 
         from speechbrain.inference.speaker import EncoderClassifier
+        from speechbrain.utils.fetching import LocalStrategy
 
         # ── Source resolution: local savedir (offline) vs hub (dev) ──
         if local_path is not None:
@@ -383,11 +384,14 @@ class ECAPAEncoder(BaseEncoder):
                 "dev machine set allow_hub_download=True."
             )
 
-        # Load on CPU first — device will be synced via self.to()
+        # Load on CPU first — device will be synced via self.to().
+        # local_strategy=COPY: self-contained savedir (no symlinks), which is
+        # required on Windows and makes the weights dir zip-portable.
         self.classifier = EncoderClassifier.from_hparams(
             source=src,
             savedir=src if local_path is not None else None,
             run_opts={"device": "cpu"},
+            local_strategy=LocalStrategy.COPY,
         )
 
         if freeze_encoder:
