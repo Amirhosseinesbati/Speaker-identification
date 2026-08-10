@@ -140,26 +140,27 @@ class WavLMEncoder(BaseEncoder):
         self.base_model_name = base_model
         self.local_path = local_path
 
-        if local_path is not None:
+        if local_path is not None and os.path.isdir(local_path):
             # Offline / submission path — never hit the hub.
-            if not os.path.isdir(local_path):
-                raise FileNotFoundError(
-                    f"WavLM local weights dir not found: {local_path}. "
-                    "Run `python scripts/download_all_weights.py` on the dev "
-                    "machine first."
-                )
             self.wavlm = WavLMModel.from_pretrained(
                 local_path, local_files_only=True,
             )
             print(f"  ⬇️  WavLM: loaded from local {local_path}")
         elif allow_hub_download:
+            if local_path is not None:
+                # Fresh machine (Vast.ai): local_path configured but missing —
+                # fall back to the hub once (dev/training mode only).
+                print(f"  ⬇️  WavLM: local {local_path} missing — "
+                      f"falling back to hub {base_model}")
+            else:
+                print(f"  ⬇️  WavLM: downloaded from hub {base_model}")
             self.wavlm = WavLMModel.from_pretrained(base_model)
-            print(f"  ⬇️  WavLM: downloaded from hub {base_model}")
         else:
             raise RuntimeError(
-                f"WavLM '{base_model}': no local_path and allow_hub_download=False. "
-                "At inference the model must load from a local directory; on the "
-                "dev machine set allow_hub_download=True."
+                f"WavLM '{base_model}': local weights missing and "
+                "allow_hub_download=False. At inference the model must load "
+                "from a local directory; on the dev machine set "
+                "allow_hub_download=True."
             )
 
         if freeze_feature_extractor:
@@ -317,22 +318,28 @@ class ECAPAEncoder(BaseEncoder):
         from speechbrain.utils.fetching import LocalStrategy
 
         # ── Source resolution: local savedir (offline) vs hub (dev) ──
-        if local_path is not None:
-            if not os.path.isdir(local_path):
-                raise FileNotFoundError(
-                    f"ECAPA savedir not found: {local_path}. Run "
-                    "`python scripts/download_all_weights.py` on the dev machine."
-                )
+        if local_path is not None and os.path.isdir(local_path):
             src = local_path
+            savedir = local_path
             print(f"  ⬇️  ECAPA-TDNN: loading from local savedir {local_path}")
         elif allow_hub_download:
             src = source
-            print(f"  ⬇️  ECAPA-TDNN: downloading from hub {source}")
+            if local_path is not None:
+                # Fresh machine (Vast.ai): local savedir missing — download from
+                # the hub INTO it so the offline layout gets populated.
+                os.makedirs(local_path, exist_ok=True)
+                savedir = local_path
+                print(f"  ⬇️  ECAPA-TDNN: local savedir {local_path} missing — "
+                      f"downloading from hub {source} into it")
+            else:
+                savedir = None
+                print(f"  ⬇️  ECAPA-TDNN: downloading from hub {source}")
         else:
             raise RuntimeError(
-                f"ECAPA '{source}': no local_path and allow_hub_download=False. "
-                "At inference the model must load from a local directory; on the "
-                "dev machine set allow_hub_download=True."
+                f"ECAPA '{source}': local savedir missing and "
+                "allow_hub_download=False. At inference the model must load "
+                "from a local directory; on the dev machine set "
+                "allow_hub_download=True."
             )
 
         # Load on CPU first — device will be synced via self.to().
@@ -340,7 +347,7 @@ class ECAPAEncoder(BaseEncoder):
         # required on Windows and makes the weights dir zip-portable.
         self.classifier = EncoderClassifier.from_hparams(
             source=src,
-            savedir=src if local_path is not None else None,
+            savedir=savedir,
             run_opts={"device": "cpu"},
             local_strategy=LocalStrategy.COPY,
         )
@@ -523,12 +530,7 @@ def _modelscope_load_model(
             f"environment (leaderboard server has it). Original error: {e}"
         ) from e
 
-    if local_cache is not None:
-        if not os.path.isdir(local_cache):
-            raise FileNotFoundError(
-                f"ModelScope cache dir not found: {local_cache}. Run "
-                "`python scripts/download_all_weights.py` on the dev machine."
-            )
+    if local_cache is not None and os.path.isdir(local_cache):
         os.environ["MODELSCOPE_CACHE"] = local_cache
         os.environ["MODELSCOPE_HOME"] = local_cache
         # Resolve the snapshot from disk only — zero network calls (C1).
@@ -537,14 +539,27 @@ def _modelscope_load_model(
             cache_dir=local_cache, local_files_only=True,
         )
         model = Model.from_pretrained(model_dir, device="cpu")
+    elif allow_hub_download and local_cache is not None:
+        # Fresh machine (Vast.ai): local cache configured but missing — download
+        # INTO it (populating weights/<enc>) instead of the default cache.
+        os.makedirs(local_cache, exist_ok=True)
+        os.environ["MODELSCOPE_CACHE"] = local_cache
+        os.environ["MODELSCOPE_HOME"] = local_cache
+        print(f"  ⬇️  ModelScope: local cache {local_cache} missing — "
+              f"downloading {model_id} into it")
+        model_dir = snapshot_download(
+            model_id, revision=revision, cache_dir=local_cache,
+        )
+        model = Model.from_pretrained(model_dir, device="cpu")
     elif allow_hub_download:
         # Dev machine — download into the default ModelScope cache.
         model = Model.from_pretrained(model_id, revision=revision, device="cpu")
     else:
         raise RuntimeError(
-            f"ModelScope '{model_id}': no local_path and allow_hub_download=False. "
-            "At inference the model must load from a local cache dir; on the "
-            "dev machine set allow_hub_download=True."
+            f"ModelScope '{model_id}': local cache missing and "
+            "allow_hub_download=False. At inference the model must load from "
+            "a local cache dir; on the dev machine set "
+            "allow_hub_download=True."
         )
 
     return model
@@ -782,13 +797,10 @@ class ERes2NetV2Encoder(BaseEncoder):
             embed_dim=self._output_dim, baseWidth=26, scale=2, expansion=2,
         )
 
-        if local_path is not None:
+        if local_path is not None and os.path.isfile(
+            os.path.join(local_path, ckpt_name)
+        ):
             ckpt_path = os.path.join(local_path, ckpt_name)
-            if not os.path.isfile(ckpt_path):
-                raise FileNotFoundError(
-                    f"ERes2NetV2 checkpoint not found: {ckpt_path}. Run "
-                    "`python scripts/download_all_weights.py` on the dev machine."
-                )
             print(f"  ⬇️  ERes2NetV2: loading checkpoint from {ckpt_path}")
             state = torch.load(ckpt_path, map_location="cpu")
             if isinstance(state, dict) and "state_dict" in state:
@@ -797,20 +809,35 @@ class ERes2NetV2Encoder(BaseEncoder):
         elif allow_hub_download:
             # Dev machine — fetch the official release from HF (reliable CDN).
             from huggingface_hub import hf_hub_download
-            ckpt_path = hf_hub_download(
-                "bandad/eres2netv2_pretrained",
-                "pretrained_eres2netv2.ckpt",
-            )
-            print(f"  ⬇️  ERes2NetV2: downloading from HF hub → {ckpt_path}")
+            if local_path is not None:
+                # Fresh machine (Vast.ai): local checkpoint missing — download
+                # INTO the configured dir so the offline layout is populated.
+                os.makedirs(local_path, exist_ok=True)
+                ckpt_path = os.path.join(local_path, ckpt_name)
+                print(f"  ⬇️  ERes2NetV2: local checkpoint missing — "
+                      f"downloading official release into {ckpt_path}")
+                downloaded = hf_hub_download(
+                    "bandad/eres2netv2_pretrained",
+                    "pretrained_eres2netv2.ckpt",
+                )
+                import shutil
+                shutil.copyfile(downloaded, ckpt_path)
+            else:
+                ckpt_path = hf_hub_download(
+                    "bandad/eres2netv2_pretrained",
+                    "pretrained_eres2netv2.ckpt",
+                )
+                print(f"  ⬇️  ERes2NetV2: downloading from HF hub → {ckpt_path}")
             state = torch.load(ckpt_path, map_location="cpu")
             if isinstance(state, dict) and "state_dict" in state:
                 state = state["state_dict"]
             self.model.load_state_dict(state, strict=True)
         else:
             raise RuntimeError(
-                "ERes2NetV2: no local_path and allow_hub_download=False. "
-                "At inference the model must load from a local checkpoint; on "
-                "the dev machine set allow_hub_download=True."
+                "ERes2NetV2: local checkpoint missing and "
+                "allow_hub_download=False. At inference the model must load "
+                "from a local checkpoint; on the dev machine set "
+                "allow_hub_download=True."
             )
 
         self.model.eval()
@@ -918,26 +945,35 @@ class TitaNetEncoder(BaseEncoder):
                 f"environment (leaderboard server has it). Original error: {e}"
             ) from e
 
-        if local_path is not None:
-            if not os.path.isfile(local_path):
-                raise FileNotFoundError(
-                    f"TitaNet .nemo file not found: {local_path}. Run "
-                    "`python scripts/download_all_weights.py` on the dev machine."
-                )
+        if local_path is not None and os.path.isfile(local_path):
             print(f"  ⬇️  TitaNet-Large: restoring from {local_path}")
             self.titanet = EncDecSpeakerLabelModel.restore_from(
                 local_path, map_location="cpu",
             )
         elif allow_hub_download:
-            print(f"  ⬇️  TitaNet-Large: downloading from hub {model_id}")
-            self.titanet = EncDecSpeakerLabelModel.from_pretrained(
-                model_id, map_location="cpu",
-            )
+            if local_path is not None:
+                # Fresh machine (Vast.ai): local .nemo missing — download from
+                # the hub and persist a copy into the configured path.
+                print(f"  ⬇️  TitaNet-Large: local .nemo missing — "
+                      f"downloading from hub {model_id}")
+                model = EncDecSpeakerLabelModel.from_pretrained(
+                    model_id, map_location="cpu",
+                )
+                os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+                model.save_to(str(local_path))
+                print(f"  ⬇️  TitaNet-Large: saved local copy → {local_path}")
+                self.titanet = model
+            else:
+                print(f"  ⬇️  TitaNet-Large: downloading from hub {model_id}")
+                self.titanet = EncDecSpeakerLabelModel.from_pretrained(
+                    model_id, map_location="cpu",
+                )
         else:
             raise RuntimeError(
-                f"TitaNet '{model_id}': no local_path and allow_hub_download=False. "
-                "At inference the model must load from a local .nemo file; on the "
-                "dev machine set allow_hub_download=True."
+                f"TitaNet '{model_id}': local .nemo missing and "
+                "allow_hub_download=False. At inference the model must load "
+                "from a local .nemo file; on the dev machine set "
+                "allow_hub_download=True."
             )
 
         self.titanet.eval()
