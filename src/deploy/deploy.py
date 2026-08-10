@@ -73,6 +73,40 @@ def load_environment() -> dict:
 
 
 # ─────────────────────────────────────────────────────────
+#  Encoder Selection (config → Vast instance)
+# ─────────────────────────────────────────────────────────
+
+def read_model_selection() -> dict:
+    """
+    Read the active encoder selection from configs/default_config.yaml.
+
+    Returns env-style keys for setup_vast.sh to apply on the instance:
+        ENCODER_TYPE, ALLOW_HUB_DOWNLOAD, LOCAL_PATH_<ENC> (per encoder).
+
+    An empty dict is returned if the config cannot be read — deployment then
+    simply falls back to the committed config on the instance.
+    """
+    try:
+        import yaml
+        with open("configs/default_config.yaml", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+    except Exception:
+        return {}
+
+    mc = cfg.get("model", {})
+    result = {}
+    enc_type = mc.get("encoder_type")
+    if enc_type:
+        result["ENCODER_TYPE"] = str(enc_type)
+    result["ALLOW_HUB_DOWNLOAD"] = str(bool(mc.get("allow_hub_download", False))).lower()
+    for enc_name, enc_cfg in mc.get("encoder_config", {}).items():
+        lp = enc_cfg.get("local_path")
+        if lp:
+            result[f"LOCAL_PATH_{str(enc_name).upper()}"] = str(lp)
+    return result
+
+
+# ─────────────────────────────────────────────────────────
 #  Shell Command Runner
 # ─────────────────────────────────────────────────────────
 
@@ -135,6 +169,16 @@ def main():
     config = load_environment()
     print(f"🔍 Searching for cheapest {config['GPU_TARGET']} for pipeline: {config['TARGET_PIPELINE']}...")
 
+    # ── Forward the active encoder selection to the instance ──
+    # setup_vast.sh applies ENCODER_TYPE / ALLOW_HUB_DOWNLOAD / LOCAL_PATH_<ENC>
+    # on the instance. Env overrides (deploy_app.py / CLI) win over the config
+    # file values.
+    for k, v in read_model_selection().items():
+        config[k] = os.getenv(k, v)
+    if config.get("ENCODER_TYPE"):
+        print(f"   Encoder: {config['ENCODER_TYPE']} | "
+              f"allow_hub_download: {config.get('ALLOW_HUB_DOWNLOAD')}")
+
     # ── Authenticate Vast.ai ──
     run_cmd(f"vastai set api-key {config['VAST_API_KEY']}", silent_error=True)
 
@@ -178,6 +222,13 @@ def main():
             "FREEZE_ENCODER": config["FREEZE_ENCODER"],
             "UNFREEZE_LAST_N_BLOCKS": config["UNFREEZE_LAST_N_BLOCKS"],
             "FREEZE_FEATURE_EXTRACTOR": config["FREEZE_FEATURE_EXTRACTOR"],
+            "ENCODER_TYPE": config.get("ENCODER_TYPE", ""),
+            "ALLOW_HUB_DOWNLOAD": config.get("ALLOW_HUB_DOWNLOAD", ""),
+            "LOCAL_PATH_ECAPA": config.get("LOCAL_PATH_ECAPA", ""),
+            "LOCAL_PATH_CAMPP": config.get("LOCAL_PATH_CAMPP", ""),
+            "LOCAL_PATH_ERES2NET": config.get("LOCAL_PATH_ERES2NET", ""),
+            "LOCAL_PATH_TITANET": config.get("LOCAL_PATH_TITANET", ""),
+            "LOCAL_PATH_WAVLM": config.get("LOCAL_PATH_WAVLM", ""),
             "KAGGLE_USERNAME": config["KAGGLE_USERNAME"],
             "KAGGLE_KEY": config["KAGGLE_KEY"],
         }.items()
