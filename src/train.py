@@ -290,6 +290,34 @@ def compute_speaker_accuracy(
     return correct / total, total
 
 
+def tune_ood_threshold(
+    ood_logits: torch.Tensor,
+    labels: torch.Tensor,
+) -> float:
+    """Tune a binary OOD threshold on the val set for the checkpoint.
+
+    Mirrors the ZenML evaluate step: sweep 0.1..0.9 by unknown-class binary
+    F1 (fallback to the median P(unknown) if the head collapsed). Persisted
+    as ckpt['ood_threshold'] so --apply-ood-threshold works from plain
+    `python -m src.train` too.
+    """
+    from sklearn.metrics import f1_score
+
+    ood_probs = torch.sigmoid(ood_logits.squeeze(1)).numpy()
+    ood_targets = (labels == 0).numpy().astype(int)
+    best_threshold = 0.5
+    best_f1 = 0.0
+    for thr in np.arange(0.1, 0.9, 0.05):
+        preds = (ood_probs > thr).astype(int)
+        f1 = f1_score(ood_targets, preds, zero_division=0)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_threshold = thr
+    if best_f1 == 0.0:
+        best_threshold = float(np.median(ood_probs))
+    return float(best_threshold)
+
+
 # ─────────────────────────────────────────────────────────
 #  Multi-Window Forward Helper (TTA)
 # ─────────────────────────────────────────────────────────
@@ -496,6 +524,7 @@ def train(config_path: str = "configs/default_config.yaml"):
     hw_profile = get_active_profile(config)
     train_cfg = config["training"]
     log_cfg = config["logging"]
+    encoder_type = str(config.get("model", {}).get("encoder_type", "model"))
 
     print("=" * 55)
     print("  Training Engine — Open-Set Speaker ID")
@@ -604,34 +633,42 @@ def train(config_path: str = "configs/default_config.yaml"):
         print(f"     Macro-F1: {val_metrics['macro_f1']:.4f} (val)  |  "
               f"LR: {current_lr:.2e} | Time: {epoch_time:.1f}s")
 
-        # Save best checkpoint (based on competition Macro-F1)
+        # Save best checkpoint (based on competition Macro-F1). Named by
+        # encoder (<enc>_best.pt) so the submission package can ship one per
+        # encoder; best_model.pt is kept as a backward-compat copy.
         if val_metrics["macro_f1"] > best_val_f1:
             best_val_f1 = val_metrics["macro_f1"]
             best_epoch = epoch
-            checkpoint_path = checkpoint_dir / "best_model.pt"
-            torch.save({
+            ood_threshold = tune_ood_threshold(
+                val_metrics["ood_logits"], val_metrics["labels"])
+            ckpt = {
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
                 "config": config,
                 "class_map": class_map,
+                "ood_threshold": ood_threshold,
                 "val_loss": val_metrics["loss"],
                 "val_ood_acc": val_metrics["ood_acc"],
                 "val_speaker_acc": val_metrics["speaker_acc"],
                 "val_macro_f1": val_metrics["macro_f1"],
-            }, checkpoint_path)
-            print(f"     💾 Saved new best model (val_macro_f1={best_val_f1:.4f})")
+            }
+            torch.save(ckpt, checkpoint_dir / f"{encoder_type}_best.pt")
+            torch.save(ckpt, checkpoint_dir / "best_model.pt")
+            print(f"     💾 Saved new best model (val_macro_f1={best_val_f1:.4f}, "
+                  f"ood_thr={ood_threshold:.2f})")
 
-        # Save latest checkpoint
-        latest_path = checkpoint_dir / "latest_model.pt"
-        torch.save({
+        # Save latest checkpoint (encoder-named + back-compat copy)
+        latest_ckpt = {
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "config": config,
             "class_map": class_map,
-        }, latest_path)
+        }
+        torch.save(latest_ckpt, checkpoint_dir / f"{encoder_type}_latest.pt")
+        torch.save(latest_ckpt, checkpoint_dir / "latest_model.pt")
 
         # Record history (exclude tensors collected for Macro-F1)
         val_history = {k: v for k, v in val_metrics.items()
@@ -653,7 +690,7 @@ def train(config_path: str = "configs/default_config.yaml"):
     if best_epoch > 0 and len(history) >= best_epoch:
         print(f"  Best val OOD acc: {history[best_epoch-1]['val_ood_acc']:.3f}")
         print(f"  Best val Speaker acc: {history[best_epoch-1]['val_speaker_acc']:.3f}")
-    print(f"  Checkpoint saved: {checkpoint_dir / 'best_model.pt'}")
+    print(f"  Checkpoint saved: {checkpoint_dir / f'{encoder_type}_best.pt'}")
     print()
 
     return history

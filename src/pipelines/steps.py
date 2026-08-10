@@ -303,6 +303,7 @@ def train_model(
 
     # ── Device ──
     device = setup_device(config)
+    encoder_type = str(config.get("model", {}).get("encoder_type", "model"))
 
     # ── DataLoaders (from train_df/val_df directly) ──
     audio_cfg = config["audio"]
@@ -499,8 +500,7 @@ def train_model(
             best_val_f1 = val_metrics["macro_f1"]
             best_epoch = epoch
             patience_counter = 0
-            best_path = checkpoint_dir / "best_model.pt"
-            torch.save({
+            best_ckpt = {
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
@@ -511,7 +511,12 @@ def train_model(
                 "val_ood_acc": val_metrics["ood_acc"],
                 "val_speaker_acc": val_metrics["speaker_acc"],
                 "val_macro_f1": val_metrics["macro_f1"],
-            }, best_path)
+            }
+            # Encoder-named best (build_submission.py globs *_best.pt) +
+            # back-compat copy for tools that still read best_model.pt.
+            best_path = checkpoint_dir / f"{encoder_type}_best.pt"
+            torch.save(best_ckpt, best_path)
+            torch.save(best_ckpt, checkpoint_dir / "best_model.pt")
         else:
             patience_counter += 1
 
@@ -527,14 +532,15 @@ def train_model(
         })
 
         # Save latest checkpoint (BEFORE early stopping check)
-        latest_path = checkpoint_dir / "latest_model.pt"
-        torch.save({
+        latest_ckpt = {
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "config": config,
             "class_map": class_map,
-        }, latest_path)
+        }
+        torch.save(latest_ckpt, checkpoint_dir / f"{encoder_type}_latest.pt")
+        torch.save(latest_ckpt, checkpoint_dir / "latest_model.pt")
 
         # Early stopping based on val Macro-F1 (no improvement for N epochs)
         if patience_counter >= early_stop_patience:
@@ -543,7 +549,7 @@ def train_model(
             break
 
     # ── Final logging ──
-    final_best_path = str(checkpoint_dir / "best_model.pt")
+    final_best_path = str(checkpoint_dir / f"{encoder_type}_best.pt")
 
     # Safety: if early stopping happened before any improvement, use last epoch
     safe_idx = best_epoch - 1
