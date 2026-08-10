@@ -10,6 +10,10 @@ checkpoints/*
 # Model weights — downloaded via scripts/download_all_weights.py,
 # never committed (they are bundled into the submission zip instead).
 weights/
+# Submission package build outputs (rebuilt via scripts/build_submission.py).
+submission/src/
+submission/configs/
+submission/README.md
 data/processed/*
 !data/processed/.gitkeep
 Competition-Guide

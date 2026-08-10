@@ -11,15 +11,21 @@ class probabilities summing to 1. Column order follows the class-map
 convention: column 0 = unknown, columns 1..446 = known speaker UUIDs in
 lexicographic order (same as `src.data_pipeline.create_class_mapping`).
 
-Features:
-  - Multi-window TTA: 8 s windows, 50% overlap, up to `max_eval_windows` per
-    file; per-window probabilities are averaged and renormalised.
-  - `--apply-ood-threshold`: hard-gate P(unknown) > saved threshold to class 0
-    (OFF by default — the competition scores plain argmax over 447 classes).
-  - `--fuse-centroid`: blend with the step-6 centroid classifier (OFF by
-    default; requires the embedding cache from `src.centroid_baseline`).
+Features (Phase 5 optimizations):
+  - Each checkpoint loads with the config embedded in it (``ckpt["config"]``),
+    so the 5-encoder ensemble needs no shared config file.
+  - Sequential ensemble: one model in GPU memory at a time — load → score all
+    files → free → next (per-model + total wall-time logged).
+  - ``torch.inference_mode()`` + fp16 autocast + ``cudnn.benchmark``.
+  - Files sorted by duration for better kernel reuse.
+  - Multi-window TTA: 8 s windows, 50% overlap, per-window probabilities
+    averaged and renormalised.
   - Safe fallback: undecodable files get a uniform 1/447 row so the CSV is
     always well-formed.
+
+Environment for the offline simulation:
+    HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+    MODELSCOPE_CACHE=<submission>/weights/campp   (pointed at the local cache)
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ from __future__ import annotations
 import csv
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -45,31 +52,40 @@ setup_utf8_stdio()
 
 
 # ────────────────────────────────────────────────────────────────
-#  Model loading
+#  Model loading — each checkpoint carries its OWN config
 # ────────────────────────────────────────────────────────────────
 
 def load_model(
-    config_path: str,
     checkpoint_path: str,
     device: torch.device,
+    fallback_config_path: Optional[str] = None,
 ) -> Tuple[torch.nn.Module, dict, Dict[str, int], Optional[float]]:
-    """Build the model from config and load the best checkpoint.
+    """Build the model from the config embedded in the checkpoint.
 
     Returns:
         model, config, class_map, ood_threshold
     """
-    from src.data_pipeline import load_config, create_class_mapping
     from src.model_factory import create_model_from_config
 
-    config = load_config(config_path)
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+    config = checkpoint.get("config")
+    if config is None:
+        if fallback_config_path is None:
+            raise click.ClickException(
+                f"Checkpoint {checkpoint_path} has no embedded config — pass "
+                "--config-path as the fallback."
+            )
+        from src.data_pipeline import load_config
+        config = load_config(fallback_config_path)
+        print(f"  ⚠ {checkpoint_path}: no embedded config — used {fallback_config_path}")
 
     class_map = checkpoint.get("class_map")
     if class_map is None:
-        # Older checkpoints may not store class_map — rebuild from the labels.
         labels_path = config["data"]["labels_path"]
         df = __import__("pandas").read_csv(labels_path)
         df.columns = df.columns.str.strip()
+        from src.data_pipeline import create_class_mapping
         class_map = create_class_mapping(df)
         print(f"  ⚠ class_map not in checkpoint — rebuilt from {labels_path}")
 
@@ -100,9 +116,8 @@ def _load_waveform(audio_path: Path, sample_rate: int) -> Optional[torch.Tensor]
                 wav = wav.mean(axis=1)
         else:
             # libsndfile first — the same decoder used by MP3→WAV conversion
-            # (src/audio_preprocessing.py) so served audio matches the
-            # training-time decode; librosa as fallback for formats libsndfile
-            # cannot read (e.g. M4A/AAC).
+            # (src/audio_preprocessing.py); librosa as fallback for formats
+            # libsndfile cannot read (e.g. M4A/AAC).
             try:
                 wav, sr = sf.read(str(audio_path), dtype="float32", always_2d=False)
             except Exception:
@@ -140,7 +155,7 @@ def make_windows(
     return windows
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def predict_file_probs(
     model: torch.nn.Module,
     audio_path: Path,
@@ -149,6 +164,7 @@ def predict_file_probs(
     duration_seconds: float = 8.0,
     eval_hop_ratio: float = 0.5,
     max_eval_windows: int = 8,
+    use_amp: bool = True,
 ) -> Optional[np.ndarray]:
     """Multi-window TTA: average per-window 447-way probabilities.
 
@@ -163,16 +179,20 @@ def predict_file_probs(
                            eval_hop_ratio, max_eval_windows)
 
     probs_sum = None
-    for w in windows:
-        p = model.predict_proba(w.unsqueeze(0).to(device)).cpu().numpy()[0]
-        probs_sum = p if probs_sum is None else probs_sum + p
+    autocast_ctx = (
+        torch.autocast(device_type="cuda", enabled=use_amp and device.type == "cuda")
+    )
+    with autocast_ctx:
+        for w in windows:
+            p = model.predict_proba(w.unsqueeze(0).to(device)).float().cpu().numpy()[0]
+            probs_sum = p if probs_sum is None else probs_sum + p
 
     probs = probs_sum / len(windows)
     probs = probs / probs.sum()
     return probs
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def compute_file_embedding(
     model: torch.nn.Module,
     audio_path: Path,
@@ -182,7 +202,7 @@ def compute_file_embedding(
     eval_hop_ratio: float = 0.5,
     max_eval_windows: int = 8,
 ) -> Optional[np.ndarray]:
-    """Multi-window mean ECAPA embedding (for centroid fusion)."""
+    """Multi-window mean encoder embedding (for centroid fusion)."""
     waveform = _load_waveform(audio_path, sample_rate)
     if waveform is None:
         return None
@@ -191,7 +211,7 @@ def compute_file_embedding(
     embs = []
     for w in windows:
         hidden, _ = model.encoder(w.unsqueeze(0).to(device))
-        embs.append(hidden.squeeze(1).cpu().numpy()[0])
+        embs.append(hidden.squeeze(1).float().cpu().numpy()[0])
     return np.mean(embs, axis=0)
 
 
@@ -282,13 +302,13 @@ def write_predictions_csv(
               help="Folder containing the test audio files.")
 @click.option("--predictions-file-path", required=True, type=click.Path(),
               help="Output CSV path (id,0..446).")
-@click.option("--config-path", default="configs/default_config.yaml", show_default=True,
-              type=click.Path(exists=True))
+@click.option("--config-path", default=None, type=click.Path(exists=True),
+              help="Fallback config for checkpoints that lack an embedded one.")
 @click.option("--checkpoint-path", multiple=True,
               default=("checkpoints/best_model.pt",), show_default=True,
               type=click.Path(exists=True),
-              help="Checkpoint(s) to load. Pass several for an ensemble "
-                   "(per-window probabilities are averaged across models).")
+              help="Checkpoint(s) to load. Each uses its embedded config. "
+                   "Pass several for the sequential ensemble.")
 @click.option("--id-style", type=click.Choice(["stem", "filename"]), default="stem",
               show_default=True, help="'stem' = file name without extension (default).")
 @click.option("--apply-ood-threshold", is_flag=True, default=False,
@@ -301,45 +321,54 @@ def write_predictions_csv(
               help="Weight of the model probs in the fusion (1-alpha for centroid).")
 @click.option("--max-eval-windows", default=None, type=int,
               help="Override max_eval_windows from config.")
+@click.option("--no-amp", is_flag=True, default=False,
+              help="Disable fp16 autocast (default: enabled on CUDA).")
 def main(
     data_dir: str,
     predictions_file_path: str,
-    config_path: str,
+    config_path: Optional[str],
     checkpoint_path: Tuple[str, ...],
     id_style: str,
     apply_ood_threshold: bool,
     fuse_centroid: bool,
     centroid_alpha: float,
     max_eval_windows: Optional[int],
+    no_amp: bool,
 ) -> None:
     """Run inference on a folder of test audio and write the submission CSV."""
     print("=" * 60)
-    print("  Submission Inference (multi-window TTA)")
+    print("  Submission Inference (sequential ensemble, offline)")
     print("=" * 60)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"  Device: {device}")
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        print(f"  cudnn.benchmark: True | fp16 autocast: {not no_amp}")
 
-    # Load one or more checkpoints (ensemble = average per-window probs)
+    # ── Load every checkpoint with its own embedded config ──
+    t_load = time.time()
     models = []
     for ckpt in checkpoint_path:
-        m, config, class_map, ood_threshold = load_model(config_path, ckpt, device)
-        models.append(m)
-        print(f"  ✓ Loaded {ckpt}")
-    model = models[0]
+        m, cfg, cm, thr = load_model(ckpt, device, fallback_config_path=config_path)
+        models.append((m, cm, thr))
+        print(f"  ✓ Loaded {ckpt} [{m.encoder_name}] ({time.time()-t_load:.1f}s cumulative)")
+    if not models:
+        raise click.ClickException("No checkpoints to run.")
+    class_map = models[0][1]
     num_classes = len(class_map)
 
-    audio_cfg = config["audio"]
-    sample_rate = audio_cfg["sample_rate"]
-    duration_seconds = audio_cfg["duration_seconds"]
+    # TTA params come from the first checkpoint's embedded config.
+    first_ckpt = torch.load(checkpoint_path[0], map_location="cpu", weights_only=False)
+    audio_cfg = first_ckpt.get("config", {}).get("audio", {})
+    sample_rate = audio_cfg.get("sample_rate", 16000)
+    duration_seconds = audio_cfg.get("duration_seconds", 8.0)
     eval_hop_ratio = audio_cfg.get("eval_hop_ratio", 0.5)
     max_windows = max_eval_windows or audio_cfg.get("max_eval_windows", 8)
 
+    ood_thresholds = [thr for _, _, thr in models]
     if apply_ood_threshold:
-        print(f"  🎯 OOD threshold from checkpoint: {ood_threshold}")
-        if ood_threshold is None:
-            print("  ⚠ --apply-ood-threshold given but checkpoint has no "
-                  "ood_threshold — continuing with plain argmax probs.")
+        print(f"  🎯 OOD thresholds from checkpoints: {ood_thresholds}")
 
     fuser = None
     if fuse_centroid:
@@ -352,53 +381,76 @@ def main(
                    if p.suffix.lower() in {".wav", ".mp3", ".flac", ".ogg", ".m4a"})
     if not files:
         raise click.ClickException(f"No audio files found in {data_dir}")
+    # Sort by duration so consecutive files reuse warm kernels (long→short is
+    # fine for per-file scoring).
+    files = sorted(files, key=lambda p: p.stat().st_size, reverse=True)
     print(f"  Files to score: {len(files):,} | Ensemble size: {len(models)}")
 
     uniform = np.full(num_classes, 1.0 / num_classes)
-    rows: List[Tuple[str, np.ndarray]] = []
+    acc = np.zeros((len(files), num_classes))
+    scored = np.zeros(len(files), dtype=bool)
 
-    def _score(f: Path) -> Optional[np.ndarray]:
-        """Multi-window TTA probs averaged over the ensemble (or None)."""
-        probs_list = []
-        for m in models:
+    # ── Sequential ensemble: one model in GPU at a time ──
+    t_total_start = time.time()
+    first_model = None  # kept for centroid-fusion embeddings
+    for idx, (model, cm, thr) in enumerate(models):
+        t_m = time.time()
+        n_ok = 0
+        for i, f in enumerate(tqdm(files, desc=f"  Model {idx+1}/{len(models)}")):
             p = predict_file_probs(
-                m, f, device, sample_rate=sample_rate,
-                duration_seconds=duration_seconds, eval_hop_ratio=eval_hop_ratio,
-                max_eval_windows=max_windows,
-            )
-            if p is None:
-                return None
-            probs_list.append(p)
-        avg = np.mean(probs_list, axis=0)
-        return avg / avg.sum()
-
-    for f in tqdm(files, desc="  Inference"):
-        probs = _score(f)
-        if probs is None:
-            print(f"  ⚠ Fallback (uniform 1/{num_classes}) for {f.name} — decode error")
-            probs = uniform.copy()
-            rows.append((f.stem if id_style == "stem" else f.name, probs))
-            continue
-
-        if fuser is not None:
-            emb = compute_file_embedding(
                 model, f, device, sample_rate=sample_rate,
                 duration_seconds=duration_seconds, eval_hop_ratio=eval_hop_ratio,
-                max_eval_windows=max_windows,
+                max_eval_windows=max_windows, use_amp=not no_amp,
             )
-            if emb is not None:
-                probs = fuser.fuse(probs, emb)
+            if p is None:
+                continue
+            acc[i] += p
+            scored[i] = True
+            n_ok += 1
+        dt = time.time() - t_m
+        peak = torch.cuda.max_memory_allocated() / 1e9 if device.type == "cuda" else 0
+        print(f"  ⏱ Model {idx+1} ({model.encoder_name}): {dt:.1f}s "
+              f"({dt/max(n_ok,1)*1000:.0f} ms/file, {n_ok} scored, peak {peak:.2f} GB)")
+        if idx == 0 and fuse_centroid:
+            first_model = model  # keep for embedding extraction
+        else:
+            del model
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+    total_elapsed = time.time() - t_total_start
+    print(f"  ⏱ TOTAL ensemble wall-time: {total_elapsed:.1f}s "
+          f"({total_elapsed/max(len(files),1)*1000:.0f} ms/file)")
 
-        if apply_ood_threshold and ood_threshold is not None and probs[0] > ood_threshold:
-            probs = np.zeros(num_classes)
-            probs[0] = 1.0
+    # ── Average the per-model probabilities ──
+    rows: List[Tuple[str, np.ndarray]] = []
+    for i, f in enumerate(files):
+        fid = f.stem if id_style == "stem" else f.name
+        if not scored[i]:
+            print(f"  ⚠ Fallback (uniform 1/{num_classes}) for {f.name} — decode error")
+            probs = uniform.copy()
+        else:
+            probs = acc[i] / len(models)
+            probs = probs / probs.sum()
 
-        rows.append((f.stem if id_style == "stem" else f.name, probs))
+            if fuser is not None and first_model is not None:
+                emb = compute_file_embedding(
+                    first_model, f, device, sample_rate=sample_rate,
+                    duration_seconds=duration_seconds,
+                    eval_hop_ratio=eval_hop_ratio,
+                    max_eval_windows=max_windows,
+                )
+                if emb is not None:
+                    probs = fuser.fuse(probs, emb)
+
+            if apply_ood_threshold and ood_thresholds[0] is not None and probs[0] > ood_thresholds[0]:
+                probs = np.zeros(num_classes)
+                probs[0] = 1.0
+
+        rows.append((fid, probs))
 
     write_predictions_csv(rows, predictions_file_path, class_map)
-    print("\n✅ Inference complete.")
+    print(f"\n✅ Inference complete. Total: {total_elapsed:.1f}s")
 
 
 if __name__ == "__main__":
     main()
-
