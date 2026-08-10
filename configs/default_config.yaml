@@ -87,10 +87,14 @@ model:
       local_path: weights/wavlm_large
     campp:
       model_id: iic/speech_campplus_sv_en_voxceleb_16k
+      revision: v1.0.2
       freeze_encoder: true
       local_path: weights/campp
     eres2net:
-      model_id: iic/speech_eres2netv2_sv_en_voxceleb_16k
+      # Vendored architecture (src/sv_arch.py) + official HF checkpoint.
+      # NO modelscope / 3dspeaker dependency — verified in Phase 2c.
+      # NOTE: official VoxCeleb checkpoint is 192-dim, not 512.
+      ckpt_name: eres2netv2.ckpt
       freeze_encoder: true
       local_path: weights/eres2net
     titanet:

@@ -7,6 +7,9 @@ checkpoints/*
 !checkpoints/.gitkeep
 *.pt
 *.pth
+# Model weights — downloaded via scripts/download_all_weights.py,
+# never committed (they are bundled into the submission zip instead).
+weights/
 data/processed/*
 !data/processed/.gitkeep
 Competition-Guide

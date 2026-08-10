@@ -538,21 +538,30 @@ class ECAPAEncoder(BaseEncoder):
 #  ModelScope helpers (CAM++ / ERes2NetV2 share this path)
 # ═══════════════════════════════════════════════════════════
 
-def _modelscope_embedding_model(model_id: str, local_cache: Optional[str]):
+def _modelscope_load_model(
+    model_id: str,
+    local_cache: Optional[str],
+    allow_hub_download: bool,
+    revision: str = "master",
+):
     """
-    Build a ModelScope ``SpeechEmbedding`` model, loading purely from the local
-    cache at inference time.
+    Load a ModelScope speaker model (CAM++ / ERes2NetV2), offline-first.
 
-    ModelScope resolves models from its cache (``MODELSCOPE_CACHE``). On the
-    dev machine we download the snapshot with ``snapshot_download(cache_dir=...)``
-    into ``weights/<model>/``; at inference we point ``MODELSCOPE_CACHE`` at the
-    same dir so ``Model.from_pretrained`` reads from disk and never fetches.
+    ModelScope resolves models via its cache. On the dev machine the snapshot
+    is downloaded into ``weights/<model>/`` (with ``cache_dir=...``); at
+    inference we point ``MODELSCOPE_CACHE`` at the same dir and resolve the
+    snapshot with ``local_files_only=True`` so nothing touches the network.
+
+    The returned object is the registered ``TorchModel`` subclass for the
+    model id (e.g. ``SpeakerVerificationCAMPPlus``), whose ``forward`` takes
+    raw ``[N, T]`` waveforms and returns ``[N, D]`` embeddings.
 
     Returns:
-        The ``SpeechEmbedding`` wrapper (an ``nn.Module``).
+        The modelscope model (an ``nn.Module``).
     """
     try:
-        from modelscope.models.audio.sv import SpeechEmbedding
+        from modelscope.models import Model
+        from modelscope.hub.snapshot_download import snapshot_download
     except ImportError as e:  # pragma: no cover
         raise RuntimeError(
             "modelscope is not installed. Add `modelscope>=1.38.1` to your "
@@ -565,59 +574,71 @@ def _modelscope_embedding_model(model_id: str, local_cache: Optional[str]):
                 f"ModelScope cache dir not found: {local_cache}. Run "
                 "`python scripts/download_all_weights.py` on the dev machine."
             )
-        # Point the cache at the local dir so the pipeline reads from disk.
         os.environ["MODELSCOPE_CACHE"] = local_cache
         os.environ["MODELSCOPE_HOME"] = local_cache
+        # Resolve the snapshot from disk only — zero network calls (C1).
+        model_dir = snapshot_download(
+            model_id, revision=revision,
+            cache_dir=local_cache, local_files_only=True,
+        )
+        model = Model.from_pretrained(model_dir, device="cpu")
+    elif allow_hub_download:
+        # Dev machine — download into the default ModelScope cache.
+        model = Model.from_pretrained(model_id, revision=revision, device="cpu")
+    else:
+        raise RuntimeError(
+            f"ModelScope '{model_id}': no local_path and allow_hub_download=False. "
+            "At inference the model must load from a local cache dir; on the "
+            "dev machine set allow_hub_download=True."
+        )
 
-    return SpeechEmbedding(model_id=model_id, model_revision="v1.0.2")
+    return model
 
 
 def _modelscope_forward(model, waveforms: torch.Tensor) -> torch.Tensor:
     """
-    Run a ModelScope SpeechEmbedding on a batch of raw 16 kHz waveforms.
+    Run a ModelScope speaker model on a batch of raw 16 kHz waveforms.
 
-    ModelScope embeddings are extracted via a numpy-based frontend (fbank),
-    so we convert to numpy, run the model, and convert back to torch on the
-    original device.
+    Both CAM++ and ERes2NetV2 are called PER SAMPLE:
+      - CAM++'s ``__extract_feature`` already loops per row internally.
+      - ERes2NetV2's ``__extract_feature`` mean-normalises over dim 0, which
+        is only correct when the batch dim is 1 → must be called per sample
+        (the official ModelScope pipeline does exactly this).
+      - ``torchaudio.compliance.kaldi.fbank`` drops a batch dim of 1, so a
+        ``(1, T)`` input yields the per-sample fbank the nets expect.
+
+    The models compute on their internal device and return CPU tensors
+    (``embedding.detach().cpu()``); we move the result to the caller's device.
 
     Returns:
-        embeddings: (batch, 1, D) — utterance-level, identity-pooled shape.
+        embeddings: (batch, 1, D) — identity-pooled shape.
     """
     dev = waveforms.device
-    wav = waveforms.squeeze(1)  # (batch, T)
-    wav_np = wav.detach().float().cpu().numpy()
+    wav = waveforms.squeeze(1).float()  # (batch, T)
 
-    result = model.forward(wav_np)
+    embs = []
+    for i in range(wav.shape[0]):
+        emb = model.forward(wav[i : i + 1])  # (1, D) on CPU
+        embs.append(emb)
+    out = torch.cat(embs, dim=0)  # (batch, D)
 
-    if isinstance(result, dict):
-        # Some model wrappers return dicts (e.g. {"spk_embedding": ...}).
-        for key in ("spk_embedding", "embedding", "embeddings"):
-            if key in result:
-                result = result[key]
-                break
-        else:
-            raise RuntimeError(
-                f"ModelScope forward returned dict without a known embedding "
-                f"key: {sorted(result.keys())}"
-            )
-
-    emb = torch.as_tensor(result, dtype=torch.float32, device=dev)
-    if emb.ndim == 2:
-        emb = emb.unsqueeze(1)  # (batch, 1, D)
-    elif emb.ndim == 3 and emb.size(1) > 1:
-        # Frame-level output — mean-pool to one vector per sample.
-        emb = emb.mean(dim=1, keepdim=True)
-    return emb
+    if out.ndim == 3 and out.size(1) == 1:
+        out = out.squeeze(1)
+    return out.to(dev).unsqueeze(1)  # (batch, 1, D)
 
 
 class _ModelScopeEncoderBase(BaseEncoder):
     """
     Shared behaviour for ModelScope speaker encoders (CAM++, ERes2NetV2).
 
-    Both models wrap ``SpeechEmbedding`` and produce utterance-level
-    embeddings, so they use ``pooling_type: identity`` and stay frozen
-    (trainable heads only). The ``train()`` override keeps the encoder in
-    eval mode so BatchNorm running stats are never corrupted.
+    Both models are loaded via ``Model.from_pretrained`` (registered
+    ``TorchModel`` subclasses) and produce utterance-level embeddings, so they
+    use ``pooling_type: identity`` and stay frozen (trainable heads only).
+
+    Device handling: the ModelScope wrapper holds its own ``self.device`` and
+    an ``embedding_model`` nn.Module. ``to()`` syncs both so forward runs on
+    the outer model's device; the fbank frontend runs on CPU (torchaudio
+    compliance kaldi is CPU-only) — safe and correct, the nets are small.
     """
 
     def __init__(
@@ -626,23 +647,21 @@ class _ModelScopeEncoderBase(BaseEncoder):
         local_path: Optional[str] = None,
         allow_hub_download: bool = False,
         freeze_encoder: bool = True,
+        revision: str = "master",
     ):
         super().__init__()
         self.model_id = model_id
         self.local_path = local_path
+        self.revision = revision
         self._frozen = freeze_encoder
+        self._device = torch.device("cpu")
 
-        if local_path is not None:
-            self.model = _modelscope_embedding_model(model_id, local_cache=local_path)
-        elif allow_hub_download:
-            # Dev machine — download into the default ModelScope cache.
-            self.model = _modelscope_embedding_model(model_id, local_cache=None)
-        else:
-            raise RuntimeError(
-                f"ModelScope '{model_id}': no local_path and allow_hub_download=False. "
-                "At inference the model must load from a local cache dir; on the "
-                "dev machine set allow_hub_download=True."
-            )
+        self.model = _modelscope_load_model(
+            model_id, local_cache=local_path,
+            allow_hub_download=allow_hub_download,
+            revision=revision,
+        )
+        print(f"  ⬇️  {type(self).__name__}: loaded {type(self.model).__name__}")
 
         if freeze_encoder:
             self.freeze()
@@ -655,10 +674,27 @@ class _ModelScopeEncoderBase(BaseEncoder):
         self.eval()
 
     def to(self, *args, **kwargs):
-        """Move both the wrapper and internal module (ModelScope is nn.Module)."""
+        """Move both the wrapper and its internal embedding model + device."""
         super().to(*args, **kwargs)
-        if hasattr(self, "model"):
-            self.model.to(*args, **kwargs)
+        target = None
+        for a in args:
+            if isinstance(a, torch.device):
+                target = a
+                break
+            if isinstance(a, (str, int)):
+                target = torch.device(a)
+                break
+        if target is None and "device" in kwargs:
+            target = torch.device(kwargs["device"])
+        if target is not None and hasattr(self, "model"):
+            emb_model = getattr(self.model, "embedding_model", None)
+            if emb_model is not None:
+                emb_model.to(target)
+            try:
+                self.model.device = target
+            except Exception:
+                pass
+            self._device = target
         return self
 
     def train(self, mode: bool = True):
@@ -710,12 +746,14 @@ class CAMPlusPlusEncoder(_ModelScopeEncoderBase):
         local_path: Optional[str] = None,
         allow_hub_download: bool = False,
         freeze_encoder: bool = True,
+        revision: str = "v1.0.2",
     ):
         super().__init__(
             model_id=model_id,
             local_path=local_path,
             allow_hub_download=allow_hub_download,
             freeze_encoder=freeze_encoder,
+            revision=revision,
         )
         self._output_dim = 512
 
@@ -725,44 +763,145 @@ class CAMPlusPlusEncoder(_ModelScopeEncoderBase):
 
 
 # ═══════════════════════════════════════════════════════════
-#  ERes2NetV2 Encoder (ModelScope) — Phase 2c
+#  ERes2NetV2 Encoder — Phase 2c
 # ═══════════════════════════════════════════════════════════
 
-class ERes2NetV2Encoder(_ModelScopeEncoderBase):
+def _eres2net_fbank(audio: torch.Tensor) -> torch.Tensor:
     """
-    ERes2NetV2 speaker verification model (ModelScope), 512-dim embeddings.
+    Per-sample fbank frontend matching the official 3D-Speaker pipeline.
 
-    ERes2NetV2 is an enhanced Res2Net-based speaker embedding model from the
-    3D-Speaker family. It uses the SAME ModelScope ``SpeechEmbedding`` wrapper
-    as CAM++, so it shares the offline cache pattern and returns (B, 1, 512).
+    ``torchaudio.compliance.kaldi.fbank`` drops the batch dim of 1, so a
+    ``(1, T)`` input yields ``(T_f, 80)``; we mean-normalise over time and add
+    the batch dim back, giving the ``(1, T_f, 80)`` the ERes2NetV2 net expects.
+    """
+    from torchaudio.compliance import kaldi as Kaldi
+    feature = Kaldi.fbank(audio, num_mel_bins=80)          # (T_f, 80)
+    feature = feature - feature.mean(dim=0, keepdim=True)  # per-mel time mean
+    return feature.unsqueeze(0)                            # (1, T_f, 80)
 
-    Source (dev download):
-        iic/speech_eres2netv2_sv_en_voxceleb_16k
 
-    ⚠️ Dependency note: if the ModelScope pipeline for this model requires the
-    standalone ``3dspeaker`` package (NOT installed on the leaderboard server),
-    the download/load fails and this encoder must be skipped — verified during
-    Phase 2c on the dev machine.
+class ERes2NetV2Encoder(BaseEncoder):
+    """
+    ERes2NetV2 speaker embedding model, 192-dim embeddings (official release).
+
+    ERes2NetV2 (BDFF + BLFF) is Alibaba 3D-Speaker's enhanced Res2Net model.
+    The architecture is VENDORED in ``src/sv_arch.py`` (needs only torch +
+    torchaudio), and the official pretrained checkpoint loads with a plain
+    ``torch.load`` + ``load_state_dict`` — NO modelscope / 3dspeaker needed.
+
+    Verified on dev (Phase 2c): the official VoxCeleb checkpoint is 192-dim
+    (not 512) with 17.86 M params; strict state_dict load succeeds.
+
+    Offline weights: ``weights/eres2net/eres2netv2.ckpt``.
     """
 
     def __init__(
         self,
-        model_id: str = "iic/speech_eres2netv2_sv_en_voxceleb_16k",
         local_path: Optional[str] = None,
         allow_hub_download: bool = False,
         freeze_encoder: bool = True,
+        ckpt_name: str = "eres2netv2.ckpt",
     ):
-        super().__init__(
-            model_id=model_id,
-            local_path=local_path,
-            allow_hub_download=allow_hub_download,
-            freeze_encoder=freeze_encoder,
+        super().__init__()
+        self.local_path = local_path
+        self._output_dim = 192  # verified from official checkpoint (seg_1)
+        self._frozen = freeze_encoder
+
+        from src.sv_arch import ERes2NetV2
+
+        self.model = ERes2NetV2(
+            embed_dim=self._output_dim, baseWidth=26, scale=2, expansion=2,
         )
-        self._output_dim = 512
+
+        if local_path is not None:
+            ckpt_path = os.path.join(local_path, ckpt_name)
+            if not os.path.isfile(ckpt_path):
+                raise FileNotFoundError(
+                    f"ERes2NetV2 checkpoint not found: {ckpt_path}. Run "
+                    "`python scripts/download_all_weights.py` on the dev machine."
+                )
+            print(f"  ⬇️  ERes2NetV2: loading checkpoint from {ckpt_path}")
+            state = torch.load(ckpt_path, map_location="cpu")
+            if isinstance(state, dict) and "state_dict" in state:
+                state = state["state_dict"]
+            self.model.load_state_dict(state, strict=True)
+        elif allow_hub_download:
+            # Dev machine — fetch the official release from HF (reliable CDN).
+            from huggingface_hub import hf_hub_download
+            ckpt_path = hf_hub_download(
+                "bandad/eres2netv2_pretrained",
+                "pretrained_eres2netv2.ckpt",
+            )
+            print(f"  ⬇️  ERes2NetV2: downloading from HF hub → {ckpt_path}")
+            state = torch.load(ckpt_path, map_location="cpu")
+            if isinstance(state, dict) and "state_dict" in state:
+                state = state["state_dict"]
+            self.model.load_state_dict(state, strict=True)
+        else:
+            raise RuntimeError(
+                "ERes2NetV2: no local_path and allow_hub_download=False. "
+                "At inference the model must load from a local checkpoint; on "
+                "the dev machine set allow_hub_download=True."
+            )
+
+        self.model.eval()
+        self.eval()
+
+        if freeze_encoder:
+            self.freeze()
+            print(f"  🔒 ERes2NetV2: encoder FROZEN")
+        else:
+            print(f"  🔓 ERes2NetV2: encoder UNFROZEN")
+
+    def to(self, *args, **kwargs):
+        """Move the internal ERes2NetV2 nn.Module."""
+        super().to(*args, **kwargs)
+        if hasattr(self, "model"):
+            self.model.to(*args, **kwargs)
+        return self
+
+    def train(self, mode: bool = True):
+        """Frozen encoder → always eval (protect BatchNorm running stats)."""
+        super().train(False)
+        return self
+
+    def forward(
+        self,
+        waveforms: torch.Tensor,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Per-sample forward (the official wrapper does the same — its
+        mean-normalisation over dim 0 is only correct for a batch of 1).
+
+        Returns:
+            (batch, 1, 192), None
+        """
+        dev = waveforms.device
+        wav = waveforms.squeeze(1).float()  # (batch, T)
+
+        embs = []
+        for i in range(wav.shape[0]):
+            feature = _eres2net_fbank(wav[i : i + 1])  # (1, T_f, 80)
+            feature = feature.to(dev)
+            emb = self.model(feature)  # (1, 192)
+            embs.append(emb)
+        out = torch.cat(embs, dim=0)  # (batch, 192)
+        return out.unsqueeze(1), None  # (batch, 1, 192)
 
     @property
     def output_dim(self) -> int:
         return self._output_dim
+
+    def freeze(self) -> None:
+        for param in self.model.parameters():
+            param.requires_grad = False
+        self._frozen = True
+
+    def unfreeze(self) -> None:
+        for param in self.model.parameters():
+            param.requires_grad = True
+        self._frozen = False
+        print("  🔓 ERes2NetV2 encoder UNFROZEN.")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -979,24 +1118,22 @@ def create_encoder(config: dict) -> BaseEncoder:
             base_model=enc_cfg.get("base_model", "facebook/hubert-large-ls960-ft"),
             freeze_feature_extractor=enc_cfg.get("freeze_feature_extractor", True),
         )
-    elif encoder_type in ("campp", "eres2net"):
-        model_id = enc_cfg.get("model_id")
-        if not model_id:
-            default_id = (
-                "iic/speech_campplus_sv_en_voxceleb_16k"
-                if encoder_type == "campp"
-                else "iic/speech_eres2netv2_sv_en_voxceleb_16k"
-            )
-            model_id = default_id
-        kwargs = dict(
+    elif encoder_type == "campp":
+        model_id = enc_cfg.get("model_id", "iic/speech_campplus_sv_en_voxceleb_16k")
+        return CAMPlusPlusEncoder(
             model_id=model_id,
             local_path=enc_cfg.get("local_path"),
             allow_hub_download=enc_cfg.get("allow_hub_download", False),
             freeze_encoder=enc_cfg.get("freeze_encoder", True),
+            revision=enc_cfg.get("revision", "v1.0.2"),
         )
-        if encoder_type == "campp":
-            return CAMPlusPlusEncoder(**kwargs)
-        return ERes2NetV2Encoder(**kwargs)
+    elif encoder_type == "eres2net":
+        return ERes2NetV2Encoder(
+            local_path=enc_cfg.get("local_path"),
+            allow_hub_download=enc_cfg.get("allow_hub_download", False),
+            freeze_encoder=enc_cfg.get("freeze_encoder", True),
+            ckpt_name=enc_cfg.get("ckpt_name", "eres2netv2.ckpt"),
+        )
     elif encoder_type == "titanet":
         return TitaNetEncoder(
             local_path=enc_cfg.get("local_path"),

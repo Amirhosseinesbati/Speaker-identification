@@ -113,30 +113,34 @@ def download_campp(force: bool = False) -> Path:
 
 def download_eres2net(force: bool = False) -> Path:
     """
-    ERes2NetV2 speaker verification (ModelScope).
+    ERes2NetV2 speaker verification — official 192-dim VoxCeleb checkpoint.
 
-    Model ID is verified at runtime — the pipeline import check happens inside
-    `src.encoders.ERes2NetV2Encoder`. If the snapshot download succeeds without
-    requiring the standalone `3dspeaker` package, the model is usable on the
-    leaderboard server (which has modelscope but NOT 3dspeaker).
+    The architecture is VENDORED in src/sv_arch.py (torch + torchaudio only),
+    so the model needs NO modelscope / 3dspeaker package. The official
+    release is mirrored on HuggingFace (`bandad/eres2netv2_pretrained`) —
+    verified in Phase 2c: strict state_dict load succeeds (17.86 M params).
+
+    Offline layout: weights/eres2net/eres2netv2.ckpt
     """
     target = WEIGHTS_DIR / "eres2net"
-    marker = target / "configuration.json"
-    if marker.exists() and not force:
+    ckpt = target / "eres2netv2.ckpt"
+    if ckpt.exists() and not force:
         print(_marker("ERes2NetV2"))
         return target
 
-    print("  ⬇️  Downloading ERes2NetV2 (iic/speech_eres2netv2_sv_en_voxceleb_16k)...")
+    print("  ⬇️  Downloading ERes2NetV2 (bandad/eres2netv2_pretrained)...")
     target.mkdir(parents=True, exist_ok=True)
 
-    os.environ["MODELSCOPE_CACHE"] = str(target)
-    from modelscope import snapshot_download
+    from huggingface_hub import hf_hub_download
 
-    snapshot_download(
-        "iic/speech_eres2netv2_sv_en_voxceleb_16k",
-        cache_dir=str(target),
+    src = hf_hub_download(
+        "bandad/eres2netv2_pretrained",
+        "pretrained_eres2netv2.ckpt",
+        local_dir=str(target / ".src"),
     )
-    _done("ERes2NetV2", target)
+    import shutil
+    shutil.copyfile(src, str(ckpt))
+    _done("ERes2NetV2", ckpt)
     return target
 
 
