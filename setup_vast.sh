@@ -185,35 +185,72 @@ case "$GPU_TARGET" in
         ;;
 esac
 
-# ── Apply encoder fine-tune choice from user selection ──
-# FREEZE_ENCODER / UNFREEZE_LAST_N_BLOCKS come from deploy_app.py → deploy.py → env.
-# We edit the YAML with Python (encoder-aware) instead of sed, so the right key
-# is used per encoder: ECAPA → freeze_encoder/unfreeze_last_n_blocks,
-# WavLM → freeze_feature_extractor; ECAPA → freeze_encoder/unfreeze_last_n_blocks;
+# ── Apply encoder selection + fine-tune choice from user ──
+# ENCODER_TYPE / ALLOW_HUB_DOWNLOAD / FREEZE_ENCODER / UNFREEZE_LAST_N_BLOCKS /
+# LOCAL_PATH_<ENC> come from deploy_app.py → deploy.py → env. We edit the YAML
+# with Python so the right key is used per encoder:
+#   ecapa                → freeze_encoder / unfreeze_last_n_blocks
+#   wavlm                → freeze_feature_extractor
+#   campp/eres2net/titanet → freeze_encoder (only — they ignore the other keys)
 FREEZE_ENCODER="${FREEZE_ENCODER:-true}"
 UNFREEZE_BLOCKS="${UNFREEZE_LAST_N_BLOCKS:-0}"
-echo "   Applying encoder fine-tune choice (freeze=${FREEZE_ENCODER}, blocks=${UNFREEZE_BLOCKS})..."
-uv run --no-sync python - <<'PYEOF' || true
+echo "   Applying encoder selection (encoder=${ENCODER_TYPE:-<from config>}, freeze=${FREEZE_ENCODER}, blocks=${UNFREEZE_BLOCKS})..."
+uv run --no-sync python - <<'PYEOF'
 import os, yaml
 p = "configs/default_config.yaml"
 c = yaml.safe_load(open(p, encoding="utf-8"))
 mc = c.setdefault("model", {})
-enc_type = mc.get("encoder_type", "ecapa")
+
+# Encoder selection from deploy.py env (falls back to the committed config).
+enc_type = os.getenv("ENCODER_TYPE", mc.get("encoder_type", "ecapa")).lower().strip()
+mc["encoder_type"] = enc_type
 enc_cfg = mc.setdefault("encoder_config", {}).setdefault(enc_type, {})
+
+# Offline gate — a fresh training machine may pull weights from the hub once.
+hub = os.getenv("ALLOW_HUB_DOWNLOAD", "false").lower() == "true"
+mc["allow_hub_download"] = hub
+
+# Per-encoder local_path override (defaults to the committed config value).
+lp = os.getenv("LOCAL_PATH_{}".format(enc_type.upper()))
+if lp:
+    enc_cfg["local_path"] = lp
+
 freeze = os.getenv("FREEZE_ENCODER", "true").lower() == "true"
 blocks = int(os.getenv("UNFREEZE_LAST_N_BLOCKS", "0") or 0)
+
 if enc_type == "ecapa":
     enc_cfg["freeze_encoder"] = freeze
     enc_cfg["unfreeze_last_n_blocks"] = blocks if (not freeze and blocks > 0) else 0
-else:
+    enc_cfg.pop("freeze_feature_extractor", None)
+elif enc_type == "wavlm":
     enc_cfg["freeze_feature_extractor"] = freeze
+    enc_cfg.pop("freeze_encoder", None)
+    enc_cfg.pop("unfreeze_last_n_blocks", None)
+else:  # campp / eres2net / titanet
+    enc_cfg["freeze_encoder"] = freeze
+    enc_cfg.pop("freeze_feature_extractor", None)
+    enc_cfg.pop("unfreeze_last_n_blocks", None)
+
 yaml.dump(c, open(p, "w", encoding="utf-8"), default_flow_style=False,
           sort_keys=False, allow_unicode=True)
-print(f"   Config updated: encoder={enc_type} freeze={freeze} unfreeze_blocks={blocks}")
+print(f"   Config updated: encoder={enc_type} freeze={freeze} "
+      f"unfreeze_blocks={blocks} allow_hub_download={hub}")
 PYEOF
 
+# ============================================================================
+#  Phase 4.5: Pull encoder weights (idempotent)
+# ============================================================================
+# weights/ is gitignored and DVC only pulls data/raw, so a fresh instance has
+# no encoder weights and training would crash with FileNotFoundError. Download
+# them now (idempotent — existing markers are skipped) so training runs
+# offline-first regardless of allow_hub_download.
+echo ""
+echo "⬇️  Ensuring encoder weights are present (idempotent)..."
+uv run --no-sync python scripts/download_all_weights.py
+echo "   ✅ Encoder weights ready."
+
 echo "✅ Environment configured for DagsHub MLflow tracking."
-echo "   GPU: $GPU_TARGET | Freeze: $FREEZE_ENCODER | Blocks: $UNFREEZE_BLOCKS | Pipeline: $TARGET_PIPELINE"
+echo "   GPU: $GPU_TARGET | Encoder: ${ENCODER_TYPE:-<from config>} | Freeze: $FREEZE_ENCODER | Blocks: $UNFREEZE_BLOCKS | Pipeline: $TARGET_PIPELINE"
 
 # ============================================================================
 #  Phase 5: Initialize ZenML
