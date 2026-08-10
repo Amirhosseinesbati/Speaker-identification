@@ -152,6 +152,58 @@ def _enc_unfreeze_blocks() -> int:
     return int(_enc_val("unfreeze_last_n_blocks", 0) or 0)
 
 
+def _encoder_save_config(encoder_type: str, old_enc: dict, ft_mode: str,
+                         unfreeze_n: int) -> dict:
+    """
+    Build the encoder_config dict the Save button writes (pure — testable).
+
+    Args:
+        encoder_type: active encoder key (ecapa/wavlm/campp/eres2net/titanet)
+        old_enc: existing per-encoder config (mutated to drop stale keys)
+        ft_mode: "Frozen" | "Partial (last N)" (ECAPA only) | "Full"
+        unfreeze_n: number of blocks to unfreeze (partial ECAPA only)
+
+    Returns:
+        new_enc dict merged over old_enc by the caller.
+    """
+    if encoder_type == "ecapa":
+        new_enc = {
+            "source": "speechbrain/spkrec-ecapa-voxceleb",
+            "freeze_encoder": ft_mode == "Frozen",
+            "unfreeze_last_n_blocks": int(unfreeze_n) if ft_mode == "Partial (last N)" else 0,
+            "local_path": "weights/ecapa",
+        }
+        old_enc.pop("freeze_feature_extractor", None)  # stale key for ECAPA
+    elif encoder_type == "wavlm":
+        new_enc = {
+            "base_model": "microsoft/wavlm-large",
+            "freeze_feature_extractor": ft_mode == "Frozen",
+            "local_path": "weights/wavlm_large",
+        }
+        old_enc.pop("freeze_encoder", None)
+        old_enc.pop("unfreeze_last_n_blocks", None)
+    elif encoder_type == "campp":
+        new_enc = {
+            "model_id": "iic/speech_campplus_sv_en_voxceleb_16k",
+            "revision": "v1.0.2",
+            "freeze_encoder": ft_mode == "Frozen",
+            "local_path": "weights/campp",
+        }
+    elif encoder_type == "eres2net":
+        new_enc = {
+            "ckpt_name": "eres2netv2.ckpt",
+            "freeze_encoder": ft_mode == "Frozen",
+            "local_path": "weights/eres2net",
+        }
+    else:  # titanet
+        new_enc = {
+            "model_id": "nvidia/speakerverification_en_titanet_large",
+            "freeze_encoder": ft_mode == "Frozen",
+            "local_path": "weights/titanet/titanet_large.nemo",
+        }
+    return new_enc
+
+
 # ═══════════════════════════════════════════════════════════
 #  Log Streaming Engine
 # ═══════════════════════════════════════════════════════════
@@ -213,7 +265,8 @@ with st.sidebar:
     st.header("📋 Active Config")
     mc = config.get("model", {})
     enc = mc.get("encoder_type", "?")
-    pool = mc.get("pooling_type", "?")
+    pool = (mc.get("encoder_config", {}).get(enc, {})
+            .get("pooling_type") or mc.get("pooling_type", "?"))
     freeze = _enc_freeze()
     blocks = _enc_unfreeze_blocks()
     dur = config["audio"]["duration_seconds"]
@@ -280,11 +333,29 @@ with tab_cfg:
         if ft_mode == "Partial (last N)":
             unfreeze_n = st.number_input("Unfreeze last N blocks", 1, 8, int(cur_blocks or 2))
 
-        pool_opts = ["attentive", "identity"]
-        pool_idx = 1 if encoder_type == "ecapa" else 0
+        # Pooling is stored per-encoder (model_factory prefers it over the
+        # global default). WavLM emits frame-level features → statistical
+        # (mean+std); ECAPA/CAM++/ERes2NetV2/TitaNet produce utterance-level
+        # vectors already → identity.
+        _pool_defaults = {"wavlm": "statistical", "ecapa": "identity",
+                          "campp": "identity", "eres2net": "identity",
+                          "titanet": "identity"}
+        pool_opts = ["identity", "statistical", "attentive"]
+        cur_pool = (config["model"].get("encoder_config", {})
+                    .get(encoder_type, {}).get("pooling_type"))
+        cur_pool = cur_pool or config["model"].get(
+            "pooling_type", _pool_defaults.get(encoder_type, "identity"))
+        pool_idx = pool_opts.index(cur_pool) if cur_pool in pool_opts else 0
         if encoder_type == "ecapa":
             st.info("💡 ECAPA has built-in ASP → pooling = identity")
         pooling_type = st.selectbox("Pooling", pool_opts, index=pool_idx)
+
+        hub_download = st.checkbox(
+            "Allow hub downloads (dev only)",
+            value=bool(mc.get("allow_hub_download", False)),
+            help="MUST stay OFF at submission time (offline). ON only on the "
+                 "dev machine / fresh Vast instance to fetch weights once.",
+        )
 
         st.subheader("🎯 ArcFace Head")
         arc_cfg = mc.get("speaker_head_config", {}).get("arcface", {})
@@ -334,44 +405,14 @@ with tab_cfg:
         # ── Encoder config: MERGE with existing keys so partial fine-tune
         #    settings (e.g. unfreeze_last_n_blocks) are never silently dropped.
         old_enc = dict(config["model"].get("encoder_config", {}).get(encoder_type, {}))
-        if encoder_type == "ecapa":
-            new_enc = {
-                "source": "speechbrain/spkrec-ecapa-voxceleb",
-                "freeze_encoder": ft_mode == "Frozen",
-                "unfreeze_last_n_blocks": int(unfreeze_n) if ft_mode == "Partial (last N)" else 0,
-                "local_path": "weights/ecapa",
-            }
-            old_enc.pop("freeze_feature_extractor", None)  # stale key for ECAPA
-        elif encoder_type == "wavlm":
-            new_enc = {
-                "base_model": "microsoft/wavlm-large",
-                "freeze_feature_extractor": ft_mode == "Frozen",
-                "local_path": "weights/wavlm_large",
-            }
-            old_enc.pop("freeze_encoder", None)
-            old_enc.pop("unfreeze_last_n_blocks", None)
-        elif encoder_type == "campp":
-            new_enc = {
-                "model_id": "iic/speech_campplus_sv_en_voxceleb_16k",
-                "revision": "v1.0.2",
-                "freeze_encoder": True,
-                "local_path": "weights/campp",
-            }
-        elif encoder_type == "eres2net":
-            new_enc = {
-                "ckpt_name": "eres2netv2.ckpt",
-                "freeze_encoder": True,
-                "local_path": "weights/eres2net",
-            }
-        else:  # titanet
-            new_enc = {
-                "model_id": "nvidia/speakerverification_en_titanet_large",
-                "freeze_encoder": True,
-                "local_path": "weights/titanet/titanet_large.nemo",
-            }
+        new_enc = _encoder_save_config(encoder_type, old_enc, ft_mode, unfreeze_n)
         config["model"]["encoder_type"] = encoder_type
         config["model"].setdefault("encoder_config", {})[encoder_type] = {**old_enc, **new_enc}
         config["model"]["pooling_type"] = pooling_type
+        # Pooling is stored per-encoder so the ensemble can mix statistical
+        # (WavLM) with identity-pooled encoders without a global conflict.
+        config["model"]["encoder_config"][encoder_type]["pooling_type"] = pooling_type
+        config["model"]["allow_hub_download"] = hub_download
         config["model"]["speaker_head_type"] = "arcface"
         config["model"]["speaker_head_config"]["arcface"] = {
             "embedding_dim": arc_emb, "margin": arc_m, "scale": arc_s}
@@ -436,7 +477,9 @@ with tab_cloud:
                 st.error("❌ .env missing!"); st.stop()
             os.environ["GPU_TARGET"] = gpu
             os.environ["TARGET_PIPELINE"] = stage
-            # Encoder fine-tune choice (ECAPA-aware; setup_vast.sh reads these)
+            # Encoder selection + fine-tune choice (setup_vast.sh reads these)
+            os.environ["ENCODER_TYPE"] = encoder_type
+            os.environ["ALLOW_HUB_DOWNLOAD"] = str(hub_download).lower()
             os.environ["FREEZE_ENCODER"] = str(ft_mode == "Frozen").lower()
             os.environ["UNFREEZE_LAST_N_BLOCKS"] = str(
                 unfreeze_n if ft_mode == "Partial (last N)" else 0)
