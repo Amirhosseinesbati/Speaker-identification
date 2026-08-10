@@ -109,6 +109,7 @@ def _load_waveform(audio_path: Path, sample_rate: int) -> Optional[torch.Tensor]
     import librosa
     import soundfile as sf
 
+    audio_path = Path(audio_path)
     try:
         if audio_path.suffix.lower() == ".wav":
             wav, sr = sf.read(str(audio_path), dtype="float32")
