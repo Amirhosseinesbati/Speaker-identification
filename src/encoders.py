@@ -565,17 +565,51 @@ def _modelscope_load_model(
     return model
 
 
-def _modelscope_forward(model, waveforms: torch.Tensor) -> torch.Tensor:
+def _modelscope_extract_features(model, wav: torch.Tensor) -> torch.Tensor:
     """
-    Run a ModelScope speaker model on a batch of raw 16 kHz waveforms.
+    Per-sample fbank + mean-normalisation for the CAM++ ModelScope model,
+    stacked into (B, T_f, F).
 
-    Both CAM++ and ERes2NetV2 are called PER SAMPLE:
-      - CAM++'s ``__extract_feature`` already loops per row internally.
-      - ERes2NetV2's ``__extract_feature`` mean-normalises over dim 0, which
-        is only correct when the batch dim is 1 → must be called per sample
-        (the official ModelScope pipeline does exactly this).
-      - ``torchaudio.compliance.kaldi.fbank`` drops a batch dim of 1, so a
-        ``(1, T)`` input yields the per-sample fbank the nets expect.
+    ``torchaudio.compliance.kaldi.fbank`` is NOT batch-safe: with a ``(B, T)``
+    input it silently treats dim 0 as channels and averages the batch (a
+    correctness trap), so the fbank must stay per-sample. The fbank is cheap
+    (~ms) — the expensive part is the embedding net, which is batch-native.
+
+    Mirrors ``SpeakerVerificationCAMPPlus.__extract_feature`` but keeps the
+    tensor on device and returns the stacked batch (no detach / cpu).
+    """
+    from torchaudio.compliance import kaldi as Kaldi
+
+    feat_dim = int(getattr(model, "feature_dim", 80))
+    features = []
+    for i in range(wav.shape[0]):
+        feature = Kaldi.fbank(wav[i : i + 1], num_mel_bins=feat_dim)
+        feature = feature - feature.mean(dim=0, keepdim=True)
+        features.append(feature.unsqueeze(0))
+    return torch.cat(features, dim=0)
+
+
+def _modelscope_forward(
+    model,
+    waveforms: torch.Tensor,
+    frozen: bool = False,
+) -> torch.Tensor:
+    """
+    Run the CAM++ ModelScope model on a batch of raw 16 kHz waveforms.
+
+    The ModelScope wrapper's ``forward()`` calls its net PER SAMPLE and returns
+    ``embedding.detach().cpu()`` — which (a) forces a GPU→CPU→GPU round-trip +
+    device sync per sample (the training bottleneck) and (b) silently kills
+    gradient flow (so "full fine-tune" never reached the encoder). We therefore
+    bypass it:
+
+      1. extract the (per-sample) fbank features — cheap (~ms per batch),
+      2. run ``embedding_model`` as ONE batched call on the stacked features —
+         the net is batch-native and stays in eval mode (BatchNorm uses running
+         stats), so this is numerically identical to the per-sample loop
+         (verified by an equivalence test),
+      3. keep the result on device, and run under ``no_grad`` when the encoder
+         is frozen (mirrors ECAPA/TitaNet) so no autograd graph is built.
 
     Device handling: the wrapper stores ``model.device`` at load time, but the
     outer ``nn.Module.to()`` moves parameters via ``_apply`` WITHOUT calling
@@ -599,15 +633,19 @@ def _modelscope_forward(model, waveforms: torch.Tensor) -> torch.Tensor:
 
     wav = waveforms.squeeze(1).float().to(model_dev)  # (batch, T)
 
-    embs = []
-    with torch.autocast(device_type=model_dev.type, enabled=False):
-        for i in range(wav.shape[0]):
-            emb = model.forward(wav[i : i + 1])  # (1, D)
-            embs.append(emb)
-    out = torch.cat(embs, dim=0)  # (batch, D)
+    def _compute() -> torch.Tensor:
+        with torch.autocast(device_type=model_dev.type, enabled=False):
+            features = _modelscope_extract_features(model, wav)  # (B, T_f, F)
+            embs = model.embedding_model(features)               # (B, D)
+        if embs.ndim == 3 and embs.size(1) == 1:
+            embs = embs.squeeze(1)
+        return embs
 
-    if out.ndim == 3 and out.size(1) == 1:
-        out = out.squeeze(1)
+    if frozen:
+        with torch.no_grad():
+            out = _compute()
+    else:
+        out = _compute()
     return out.to(waveforms.device).unsqueeze(1)  # (batch, 1, D)
 
 
@@ -690,7 +728,8 @@ class _ModelScopeEncoderBase(BaseEncoder):
         self,
         waveforms: torch.Tensor,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        emb = _modelscope_forward(self.model, waveforms)
+        # frozen → no_grad (no autograd graph for the frozen encoder).
+        emb = _modelscope_forward(self.model, waveforms, frozen=self._frozen)
         return emb, None  # (batch, 1, D), lengths=None
 
     def freeze(self) -> None:
@@ -866,8 +905,15 @@ class ERes2NetV2Encoder(BaseEncoder):
         waveforms: torch.Tensor,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
-        Per-sample forward (the official wrapper does the same — its
-        mean-normalisation over dim 0 is only correct for a batch of 1).
+        Batched net forward.
+
+        The fbank frontend is per-sample (``Kaldi.fbank`` is not batch-safe),
+        but the ERes2NetV2 net itself is batch-native, so all per-sample fbank
+        features are stacked and ONE batched net call is made. The encoder is
+        always in eval mode (BatchNorm uses running statistics), so this is
+        numerically identical to the old per-sample loop — verified by an
+        equivalence test. Runs under ``no_grad`` when frozen (mirrors
+        ECAPA/TitaNet) so no autograd graph is built for the frozen encoder.
 
         Returns:
             (batch, 1, 192), None
@@ -875,16 +921,22 @@ class ERes2NetV2Encoder(BaseEncoder):
         dev = waveforms.device
         wav = waveforms.squeeze(1).float()  # (batch, T)
 
-        embs = []
-        # fp32 compute (like the ModelScope wrappers): BatchNorm/Conv mixing
-        # breaks under an outer autocast (Float vs Half weights).
-        with torch.autocast(device_type=dev.type, enabled=False):
-            for i in range(wav.shape[0]):
-                feature = _eres2net_fbank(wav[i : i + 1])  # (1, T_f, 80)
-                feature = feature.to(dev)
-                emb = self.model(feature)  # (1, 192)
-                embs.append(emb)
-        out = torch.cat(embs, dim=0)  # (batch, 192)
+        def _compute() -> torch.Tensor:
+            feats = []
+            # fp32 compute (like the ModelScope wrappers): BatchNorm/Conv
+            # mixing breaks under an outer autocast (Float vs Half weights).
+            with torch.autocast(device_type=dev.type, enabled=False):
+                for i in range(wav.shape[0]):
+                    feature = _eres2net_fbank(wav[i : i + 1]).to(dev)  # (1, T_f, 80)
+                    feats.append(feature)
+                features = torch.cat(feats, dim=0)  # (B, T_f, 80)
+                return self.model(features)         # (B, 192)
+
+        if self._frozen:
+            with torch.no_grad():
+                out = _compute()
+        else:
+            out = _compute()
         return out.unsqueeze(1), None  # (batch, 1, 192)
 
     @property
