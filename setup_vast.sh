@@ -80,6 +80,34 @@ echo "📦 Installing Python dependencies with uv..."
 uv sync
 
 # ============================================================================
+#  Phase 2.4: Pre-flight — verify the active encoder's framework imports
+# ============================================================================
+# A stale uv.lock can make `uv sync` silently miss undeclared runtime deps
+# (modelscope's reduced wheel metadata misses e.g. 'addict'). Fail here with a
+# clear message instead of deep inside a ZenML step 5 minutes later.
+echo ""
+echo "🔎 Pre-flight: importing the active encoder's framework..."
+uv run --no-sync python - <<'PYEOF' || { echo "   ❌ Dependency pre-flight failed — see errors above."; exit 1; }
+import importlib, os
+enc = os.getenv("ENCODER_TYPE", "").lower().strip()
+# eres2net uses the vendored src.sv_arch (torch+torchaudio only) — no framework.
+checks = {
+    "ecapa": "speechbrain",
+    "campp": "modelscope.models",
+    "titanet": "nemo.collections.asr.models",
+    "wavlm": "transformers",
+}
+if enc and enc in checks:
+    importlib.import_module(checks[enc])
+    print(f"   ✅ {enc} → {checks[enc]} importable")
+elif enc:
+    print(f"   ✅ {enc} → no framework import needed (vendored/torch-only)")
+else:
+    print("   ⚠ ENCODER_TYPE not set — skipping framework pre-flight")
+PYEOF
+echo "   ✅ Encoder framework pre-flight passed."
+
+# ============================================================================
 #  Phase 2.5: Verify CUDA is available (fail loudly — no auto-install)
 # ============================================================================
 # uv.lock pins torch 2.13.0 from PyPI (a CUDA 13.x build on Linux that needs a
