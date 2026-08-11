@@ -68,9 +68,6 @@ mlops:
     image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel
 model:
   competition_num_known: 446
-  # ⚠️ Global offline gate. At submission time this MUST stay false — every
-  # encoder then loads from its local_path (weights/) with zero hub calls.
-  # On the dev machine (training), flip to true for one-time downloads.
   allow_hub_download: false
   encoder_config:
     ecapa:
@@ -82,25 +79,24 @@ model:
       base_model: microsoft/wavlm-large
       freeze_feature_extractor: true
       local_path: weights/wavlm_large
-      # WavLM emits frame-level features → statistical pooling (mean+std).
       pooling_type: statistical
     campp:
       model_id: iic/speech_campplus_sv_en_voxceleb_16k
       revision: v1.0.2
       freeze_encoder: true
       local_path: weights/campp
+      pooling_type: identity
     eres2net:
-      # Vendored architecture (src/sv_arch.py) + official HF checkpoint.
-      # NO modelscope / 3dspeaker dependency — verified in Phase 2c.
-      # NOTE: official VoxCeleb checkpoint is 192-dim, not 512.
       ckpt_name: eres2netv2.ckpt
       freeze_encoder: true
       local_path: weights/eres2net
+      pooling_type: identity
     titanet:
       model_id: nvidia/speakerverification_en_titanet_large
       freeze_encoder: true
       local_path: weights/titanet/titanet_large.nemo
-  encoder_type: ecapa
+      pooling_type: identity
+  encoder_type: campp
   fusion:
     ensemble_method: none
   ood_head_config:
@@ -117,7 +113,7 @@ model:
 training:
   early_stopping_patience: 15
   encoder_lr: 1.0e-05
-  epochs: 150
+  epochs: 200
   label_smoothing: 0.1
   learning_rate: 0.0001
   max_grad_norm: 5.0
