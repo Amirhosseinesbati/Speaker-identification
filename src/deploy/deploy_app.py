@@ -378,7 +378,8 @@ with tab_cfg:
         ood_ratio = st.slider("OOD batch ratio", 0.1, 0.9,
                               float(config["audio"].get("ood_batch_ratio", 0.5)), 0.05)
         st.subheader("🏋️ Training")
-        epochs = st.number_input("Epochs", 1, 100, config["training"]["epochs"])
+        epochs = st.number_input("Epochs", 1, None, config["training"]["epochs"],
+                                 help="No upper cap — the config default is 150.")
         lr_val = st.number_input("LR (heads)", 1e-6, 1e-2, config["training"]["learning_rate"], format="%.6f")
         encoder_lr = st.number_input("LR (encoder)", 1e-7, 1e-2,
                                      float(config["training"].get("encoder_lr", 1e-5)), format="%.6f",
