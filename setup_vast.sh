@@ -80,32 +80,40 @@ echo "📦 Installing Python dependencies with uv..."
 uv sync
 
 # ============================================================================
-#  Phase 2.4: Pre-flight — verify the active encoder's framework imports
+#  Phase 2.4: Pre-flight — verify ALL encoder frameworks import
 # ============================================================================
 # A stale uv.lock can make `uv sync` silently miss undeclared runtime deps
 # (modelscope's reduced wheel metadata misses e.g. 'addict'). Fail here with a
-# clear message instead of deep inside a ZenML step 5 minutes later.
+# clear message instead of deep inside a ZenML step 5 minutes later. All five
+# frameworks are checked so ANY model (not just the active encoder) can start
+# training on this instance. eres2net needs only the vendored src.sv_arch
+# (torch + torchaudio) — no extra framework.
 echo ""
-echo "🔎 Pre-flight: importing the active encoder's framework..."
+echo "🔎 Pre-flight: importing all encoder frameworks..."
 uv run --no-sync python - <<'PYEOF' || { echo "   ❌ Dependency pre-flight failed — see errors above."; exit 1; }
-import importlib, os
-enc = os.getenv("ENCODER_TYPE", "").lower().strip()
-# eres2net uses the vendored src.sv_arch (torch+torchaudio only) — no framework.
-checks = {
-    "ecapa": "speechbrain",
-    "campp": "modelscope.models",
-    "titanet": "nemo.collections.asr.models",
-    "wavlm": "transformers",
-}
-if enc and enc in checks:
-    importlib.import_module(checks[enc])
-    print(f"   ✅ {enc} → {checks[enc]} importable")
-elif enc:
-    print(f"   ✅ {enc} → no framework import needed (vendored/torch-only)")
-else:
-    print("   ⚠ ENCODER_TYPE not set — skipping framework pre-flight")
+import importlib
+
+# speechbrain registers broken LazyModules (e.g. integrations.k2_fsa → needs the
+# optional `k2` package) that break lazy_loader's inspect.stack inside OTHER
+# framework imports — so it must be imported LAST.
+checks = [
+    ("campp", "modelscope.models"),
+    ("titanet", "nemo.collections.asr.models"),
+    ("wavlm", "transformers"),
+    ("ecapa", "speechbrain"),
+]
+failed = []
+for enc, mod in checks:
+    try:
+        importlib.import_module(mod)
+        print(f"   ✅ {enc} → {mod}")
+    except Exception as e:
+        failed.append(f"{enc} → {mod}: {e}")
+        print(f"   ❌ {enc} → {mod}: {e}")
+if failed:
+    raise SystemExit("dependency pre-flight failed: " + "; ".join(failed))
 PYEOF
-echo "   ✅ Encoder framework pre-flight passed."
+echo "   ✅ All encoder frameworks importable (pre-flight passed)."
 
 # ============================================================================
 #  Phase 2.5: Verify CUDA is available (fail loudly — no auto-install)
