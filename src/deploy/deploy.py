@@ -10,6 +10,10 @@ Usage:
 
     # With overrides (useful when called from deploy_app.py):
     GPU_TARGET=RTX_3090 TARGET_PIPELINE=all python -m src.deploy.deploy
+    # Supported GPU_TARGET values (see configs/default_config.yaml mlops.vast.gpu_options):
+    #   RTX_3090  → vastai      profile (batch 32)
+    #   RTX_3060  → vastai_3060 profile (batch 16)
+    #   RTX_A4000 → vastai_a4000 profile (batch 24)
 """
 
 import json
@@ -51,6 +55,10 @@ def load_environment() -> dict:
     # Runtime overrides (set by deploy_app.py or CLI)
     config["GPU_TARGET"] = os.getenv("GPU_TARGET", "RTX_3090")
     config["TARGET_PIPELINE"] = os.getenv("TARGET_PIPELINE", "all")
+    # Encoder fine-tune choice (ECAPA-aware). FREEZE_FEATURE_EXTRACTOR kept for
+    # backward compatibility with the old WavLM-only naming.
+    config["FREEZE_ENCODER"] = os.getenv("FREEZE_ENCODER", "true")
+    config["UNFREEZE_LAST_N_BLOCKS"] = os.getenv("UNFREEZE_LAST_N_BLOCKS", "0")
     config["FREEZE_FEATURE_EXTRACTOR"] = os.getenv("FREEZE_FEATURE_EXTRACTOR", "true")
 
     # Validate required variables
@@ -62,6 +70,40 @@ def load_environment() -> dict:
         sys.exit(1)
 
     return config
+
+
+# ─────────────────────────────────────────────────────────
+#  Encoder Selection (config → Vast instance)
+# ─────────────────────────────────────────────────────────
+
+def read_model_selection() -> dict:
+    """
+    Read the active encoder selection from configs/default_config.yaml.
+
+    Returns env-style keys for setup_vast.sh to apply on the instance:
+        ENCODER_TYPE, ALLOW_HUB_DOWNLOAD, LOCAL_PATH_<ENC> (per encoder).
+
+    An empty dict is returned if the config cannot be read — deployment then
+    simply falls back to the committed config on the instance.
+    """
+    try:
+        import yaml
+        with open("configs/default_config.yaml", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+    except Exception:
+        return {}
+
+    mc = cfg.get("model", {})
+    result = {}
+    enc_type = mc.get("encoder_type")
+    if enc_type:
+        result["ENCODER_TYPE"] = str(enc_type)
+    result["ALLOW_HUB_DOWNLOAD"] = str(bool(mc.get("allow_hub_download", False))).lower()
+    for enc_name, enc_cfg in mc.get("encoder_config", {}).items():
+        lp = enc_cfg.get("local_path")
+        if lp:
+            result[f"LOCAL_PATH_{str(enc_name).upper()}"] = str(lp)
+    return result
 
 
 # ─────────────────────────────────────────────────────────
@@ -127,6 +169,16 @@ def main():
     config = load_environment()
     print(f"🔍 Searching for cheapest {config['GPU_TARGET']} for pipeline: {config['TARGET_PIPELINE']}...")
 
+    # ── Forward the active encoder selection to the instance ──
+    # setup_vast.sh applies ENCODER_TYPE / ALLOW_HUB_DOWNLOAD / LOCAL_PATH_<ENC>
+    # on the instance. Env overrides (deploy_app.py / CLI) win over the config
+    # file values.
+    for k, v in read_model_selection().items():
+        config[k] = os.getenv(k, v)
+    if config.get("ENCODER_TYPE"):
+        print(f"   Encoder: {config['ENCODER_TYPE']} | "
+              f"allow_hub_download: {config.get('ALLOW_HUB_DOWNLOAD')}")
+
     # ── Authenticate Vast.ai ──
     run_cmd(f"vastai set api-key {config['VAST_API_KEY']}", silent_error=True)
 
@@ -167,7 +219,16 @@ def main():
             "GIT_BRANCH": config["GIT_BRANCH"],
             "GPU_TARGET": config["GPU_TARGET"],
             "TARGET_PIPELINE": config["TARGET_PIPELINE"],
+            "FREEZE_ENCODER": config["FREEZE_ENCODER"],
+            "UNFREEZE_LAST_N_BLOCKS": config["UNFREEZE_LAST_N_BLOCKS"],
             "FREEZE_FEATURE_EXTRACTOR": config["FREEZE_FEATURE_EXTRACTOR"],
+            "ENCODER_TYPE": config.get("ENCODER_TYPE", ""),
+            "ALLOW_HUB_DOWNLOAD": config.get("ALLOW_HUB_DOWNLOAD", ""),
+            "LOCAL_PATH_ECAPA": config.get("LOCAL_PATH_ECAPA", ""),
+            "LOCAL_PATH_CAMPP": config.get("LOCAL_PATH_CAMPP", ""),
+            "LOCAL_PATH_ERES2NET": config.get("LOCAL_PATH_ERES2NET", ""),
+            "LOCAL_PATH_TITANET": config.get("LOCAL_PATH_TITANET", ""),
+            "LOCAL_PATH_WAVLM": config.get("LOCAL_PATH_WAVLM", ""),
             "KAGGLE_USERNAME": config["KAGGLE_USERNAME"],
             "KAGGLE_KEY": config["KAGGLE_KEY"],
         }.items()
@@ -179,12 +240,13 @@ def main():
         import yaml
         with open("configs/default_config.yaml") as f:
             cfg = yaml.safe_load(f)
-        disk_size = cfg.get("mlops", {}).get("vast", {}).get("disk_size", 40)
+        disk_size = int(os.getenv("DISK_SIZE_GB",
+                       cfg.get("mlops", {}).get("vast", {}).get("disk_size", 60)))
         image = cfg.get("mlops", {}).get("vast", {}).get(
             "image", "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel"
         )
     except Exception:
-        disk_size = 40
+        disk_size = int(os.getenv("DISK_SIZE_GB", 60))
         image = "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel"
 
     # ── Create the instance with onstart script ──
@@ -217,6 +279,9 @@ def main():
     print(f"   Image:      {image}")
     print(f"   Disk:       {disk_size}GB")
     print()
+
+    # Print instance ID as last line for caller parsing
+    print(f"INSTANCE_ID={new_instance_id}")
     print("📊 Monitor progress on DagsHub:")
     print(f"   {config['DAGSHUB_TRACKING_URI']}")
     print()

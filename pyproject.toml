@@ -11,11 +11,19 @@ dependencies = [
     "pandas",
     "pyyaml",
     "seaborn",
+    # Metrics / EDA / centroid baseline rely on these (metrics.py, eda_*.py,
+    # centroid_baseline.py) — declared explicitly for fresh Vast.ai installs.
+    "scikit-learn",
+    "scipy",
     "torch",
     "torchaudio",
     "torchcodec",
     "tqdm",
-    "transformers",
+    # Leaderboard server pins: transformers>=4.57,<4.58 + huggingface-hub>=0.30
+    # (see Competition-Guide/leaderbordpakage.txt). The old 4.46.x pin was for
+    # WavLM-Large requires the newer transformers too.
+    "transformers>=4.57,<4.58",
+    "huggingface-hub>=0.30",
     # MLOps & Deployment
     "zenml",
     "mlflow",
@@ -26,6 +34,36 @@ dependencies = [
     # Data Version Control (for DagsHub S3 remote)
     "dvc",
     "dvc-s3",
+    "audiomentations>=0.43.1",
+    "speechbrain>=1.0.3,<2.0.0",
+    "ruamel-yaml<0.18",
+    "faiss-cpu>=1.15.0",
+    "sqlalchemy-utils>=0.42.1",
+    "sqlmodel>=0.0.39",
+    "passlib>=1.7.4",
+    "pymysql>=1.2.0",
+    # ── Encoder stack (new encoders) ──
+    # CAM++ / ERes2NetV2 → ModelScope pipeline (leaderboard has modelscope>=1.38.1)
+    "modelscope>=1.38.1,<2.0.0",
+    # TitaNet-Large → NeMo (leaderboard has nemo-toolkit[asr]>=2.7.3)
+    "nemo-toolkit[asr]>=2.7.3,<3.0.0",
+    # ModelScope / NeMo transitive needs + ONNX export path
+    "sentencepiece>=0.2.2",
+    "datasets>=5.0.0,<6.0.0",
+    "onnxruntime>=1.23.2",
+    "onnx>=1.22",
+    "onnxsim>=0.6.5",
+    # ModelScope 1.39 ships REDUCED wheel metadata (only filelock, requests,
+    # setuptools, tqdm, urllib3 are declared) — its runtime imports are NOT
+    # declared, so a fresh `uv sync` (Vast.ai) misses them and build_model
+    # crashes with ModuleNotFoundError. Declared explicitly, verified against
+    # modelscope's source imports (addict/easydict/simplejson/sortedcontainers
+    # are top-level imports; yapf is used by its config formatter).
+    "addict>=2.4.0,<3.0.0",
+    "easydict>=1.13.0",
+    "simplejson>=3.19.0",
+    "sortedcontainers>=2.4.0",
+    "yapf>=0.40.0",
 ]
 
 [project.optional-dependencies]
@@ -34,3 +72,9 @@ dev = [
     "black>=24.0.0",
     "ruff>=0.5.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+

@@ -1,321 +1,672 @@
 """
-Streamlit UI for Speaker-Identification MLOps Center.
-
-Provides a user-friendly interface to:
-1. Select GPU type and pipeline stage
-2. Choose hardware profile (local or Vast.ai)
-3. Toggle feature extractor freeze
-4. Launch training on Vast.ai or locally
-
-Usage:
-    streamlit run src/deploy/deploy_app.py
+Streamlit UI — Speaker-ID MLOps Center.
+Usage: uv run streamlit run src/deploy/deploy_app.py
 """
 
-import os
-import subprocess
-import sys
+import os, re, subprocess, sys, threading, time
 from pathlib import Path
+from queue import Queue
+from typing import Optional
 
 import streamlit as st
 import yaml
 
-# Page config
-st.set_page_config(
-    page_title="Speaker-ID MLOps Center",
-    page_icon="🎤",
-    layout="centered",
-)
-
-# ─────────────────────────────────────────────────────────
-#  Paths
-# ─────────────────────────────────────────────────────────
+st.set_page_config(page_title="Speaker-ID MLOps", page_icon="🎤", layout="wide")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = PROJECT_ROOT / "configs" / "default_config.yaml"
 DEPLOY_SCRIPT = PROJECT_ROOT / "src" / "deploy" / "deploy.py"
 PIPELINE_SCRIPT = PROJECT_ROOT / "src" / "pipelines" / "run_pipeline.py"
 
+# Vast.ai GPU targets offered in the Cloud tab. Keep in sync with
+# configs/default_config.yaml → mlops.vast.gpu_options and setup_vast.sh.
+GPU_OPTIONS = ["RTX_3090", "RTX_3060", "RTX_A4000"]
 
-# ─────────────────────────────────────────────────────────
-#  Helper: Load Config
-# ─────────────────────────────────────────────────────────
 
 @st.cache_resource
 def load_config():
-    with open(CONFIG_PATH, "r") as f:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-# ─────────────────────────────────────────────────────────
-#  UI
-# ─────────────────────────────────────────────────────────
+def save_config(cfg: dict):
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        yaml.dump(cfg, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    st.cache_resource.clear()
 
-st.title("🎤 Speaker-ID MLOps Center")
-st.markdown("Open-Set Speaker Identification — IAAA 2026 Competition")
+
+class LocalRunner:
+    """
+    Long-running local subprocess with live log streaming + stop support.
+
+    The Popen handle lives in st.session_state (via the runner object) so it
+    survives Streamlit reruns. A daemon thread drains stdout into `lines`; the
+    UI renders them on every rerun and a 🛑 Stop button calls stop().
+    """
+
+    def __init__(self, cmd: list, cwd: str):
+        self.cmd = cmd
+        self.cwd = cwd
+        self.lines: list = []
+        self.finished = False
+        self.returncode: Optional[int] = None
+        self._stop = threading.Event()
+        self.proc: Optional[subprocess.Popen] = None
+
+    def start(self):
+        # PYTHONUNBUFFERED=1 + our entry points' setup_utf8_stdio(line_buffering)
+        # → every print() line is flushed to the pipe immediately (live logs).
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
+               "PYTHONUNBUFFERED": "1"}
+        self.proc = subprocess.Popen(
+            self.cmd,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+            cwd=self.cwd, env=env,
+        )
+        threading.Thread(target=self._reader, daemon=True).start()
+
+    def _reader(self):
+        try:
+            for line in iter(self.proc.stdout.readline, ""):
+                if self._stop.is_set():
+                    break
+                self.lines.append(line.rstrip())
+        except Exception:
+            pass
+        finally:
+            try:
+                self.proc.stdout.close()
+            except Exception:
+                pass
+            try:
+                self.proc.wait()
+            except Exception:
+                pass
+            self.returncode = self.proc.returncode
+            self.finished = True
+
+    def stop(self):
+        """Graceful terminate, then force-kill after a short grace period."""
+        self._stop.set()
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                self.proc.terminate()
+                self.proc.wait(timeout=10)
+            except Exception:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+
+    @property
+    def running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+
+def _render_local_runner(key: str, title: str) -> None:
+    """Live-log + stop panel for a running/finished LocalRunner in session_state."""
+    runner = st.session_state.get(key)
+    if runner is None:
+        return
+
+    if runner.running and not runner.finished:
+        st.warning(f"⏳ `{title}` در حال اجراست — لاگ‌ها به‌صورت زنده به‌روز می‌شوند. "
+                   f"برای توقف دکمه‌ی 🛑 را بزنید.")
+        st.code("\n".join(runner.lines[-500:]), language=None)
+        if st.button("🛑 Stop", key=f"stop_{key}", type="secondary"):
+            runner.stop()
+            st.rerun()
+        time.sleep(0.7)
+        st.rerun()
+    elif runner.finished:
+        if runner.returncode == 0:
+            st.success(f"✅ `{title}` با موفقیت تمام شد (exit=0).")
+        else:
+            st.error(f"❌ `{title}` ناموفق بود (exit={runner.returncode}).")
+        with st.expander("📜 Full log", expanded=True):
+            st.code("\n".join(runner.lines[-800:]), language=None)
+        if st.button("🗑 Clear", key=f"clear_{key}"):
+            st.session_state[key] = None
+            st.rerun()
+
 
 config = load_config()
-mlops_cfg = config.get("mlops", {})
-vast_cfg = mlops_cfg.get("vast", {})
 
-# ── Sidebar: Environment Info ──
-with st.sidebar:
-    st.header("🔧 Environment")
-    st.markdown(f"**Mode:** `{config['hardware']['mode']}`")
-    st.markdown(f"**Python:** {sys.version.split()[0]}")
-    st.markdown(f"**Config:** `{CONFIG_PATH.name}`")
 
-    st.divider()
-    st.markdown("**DagsHub MLflow:**")
-    tracking_uri = mlops_cfg.get("tracking", {}).get("uri", "Not configured")
-    st.markdown(f"[MLflow Dashboard]({tracking_uri})")
+def _enc_val(key, default=None):
+    mc = config.get("model", {})
+    enc = mc.get("encoder_type", "wavlm")
+    if "encoder_config" in mc and enc in mc["encoder_config"]:
+        return mc["encoder_config"][enc].get(key, default)
+    return mc.get(key, default)
 
-    st.divider()
-    st.markdown("**Model:**")
-    st.markdown(f"- Base: `{config['model']['base_model']}`")
-    st.markdown(f"- Classes: 447 (1 unknown + 446 known)")
-    st.markdown(f"- Epochs: {config['training']['epochs']}")
 
-# ── Main Panel ──
-tab1, tab2 = st.tabs(["🚀 Cloud Deploy (Vast.ai)", "💻 Local Run"])
+def _enc_freeze() -> bool:
+    """True if the active encoder's freeze flag is set (ECAPA: freeze_encoder)."""
+    return bool(_enc_val("freeze_feature_extractor", _enc_val("freeze_encoder", True)))
 
-# ═══════════════════════════════════════════
-#  Tab 1: Vast.ai Cloud Deployment
-# ═══════════════════════════════════════════
-with tab1:
-    st.header("☁️ Cloud Training on Vast.ai")
-    st.markdown("Rent a GPU, run the pipeline remotely, and auto-destroy when done.")
 
-    col1, col2 = st.columns(2)
+def _enc_unfreeze_blocks() -> int:
+    """unfreeze_last_n_blocks of the active encoder (0 = not partial)."""
+    return int(_enc_val("unfreeze_last_n_blocks", 0) or 0)
 
-    with col1:
-        gpu_choice = st.selectbox(
-            "🎮 GPU Type",
-            options=["RTX_3090", "RTX_3060"],
-            index=0,  # Default: RTX 3090
-            help="RTX 3090 (24GB) for full fine-tune | RTX 3060 (12GB) for budget training",
-        )
 
-        freeze_fe = st.checkbox(
-            "🔒 Freeze Feature Extractor",
-            value=config["model"].get("freeze_feature_extractor", True),
-            help="Freeze WavLM CNN layers to save VRAM. "
-                 "Uncheck for full fine-tune (requires 24GB+ GPU).",
-        )
+def _encoder_save_config(encoder_type: str, old_enc: dict, ft_mode: str,
+                         unfreeze_n: int) -> dict:
+    """
+    Build the encoder_config dict the Save button writes (pure — testable).
 
-    with col2:
-        pipeline_choice = st.selectbox(
-            "📋 Pipeline Stage",
-            options=["all", "data", "train", "eval"],
-            format_func=lambda x: {
-                "all": "🚀 Full Pipeline (data → train → eval)",
-                "data": "📊 Data Preparation Only",
-                "train": "🏋️ Training Only",
-                "eval": "📈 Evaluation Only",
-            }[x],
-        )
+    Args:
+        encoder_type: active encoder key (ecapa/wavlm/campp/eres2net/titanet)
+        old_enc: existing per-encoder config (mutated to drop stale keys)
+        ft_mode: "Frozen" | "Partial (last N)" (ECAPA only) | "Full"
+        unfreeze_n: number of blocks to unfreeze (partial ECAPA only)
 
-        st.markdown("### 💰 Estimated Cost")
-        gpu_price = {"RTX_3090": 0.35, "RTX_3060": 0.15}
-        hours = {"all": 6, "train": 5, "data": 0.5, "eval": 0.5}
-        est_hours = hours[pipeline_choice]
-        est_cost = gpu_price[gpu_choice] * est_hours
-        st.metric(
-            label="Estimated Cost",
-            value=f"${est_cost:.2f}",
-            delta=f"~{est_hours}h on {gpu_choice}",
-        )
+    Returns:
+        new_enc dict merged over old_enc by the caller.
+    """
+    if encoder_type == "ecapa":
+        new_enc = {
+            "source": "speechbrain/spkrec-ecapa-voxceleb",
+            "freeze_encoder": ft_mode == "Frozen",
+            "unfreeze_last_n_blocks": int(unfreeze_n) if ft_mode == "Partial (last N)" else 0,
+            "local_path": "weights/ecapa",
+        }
+        old_enc.pop("freeze_feature_extractor", None)  # stale key for ECAPA
+    elif encoder_type == "wavlm":
+        new_enc = {
+            "base_model": "microsoft/wavlm-large",
+            "freeze_feature_extractor": ft_mode == "Frozen",
+            "local_path": "weights/wavlm_large",
+        }
+        old_enc.pop("freeze_encoder", None)
+        old_enc.pop("unfreeze_last_n_blocks", None)
+    elif encoder_type == "campp":
+        new_enc = {
+            "model_id": "iic/speech_campplus_sv_en_voxceleb_16k",
+            "revision": "v1.0.2",
+            "freeze_encoder": ft_mode == "Frozen",
+            "local_path": "weights/campp",
+        }
+    elif encoder_type == "eres2net":
+        new_enc = {
+            "ckpt_name": "eres2netv2.ckpt",
+            "freeze_encoder": ft_mode == "Frozen",
+            "local_path": "weights/eres2net",
+        }
+    else:  # titanet
+        new_enc = {
+            "model_id": "nvidia/speakerverification_en_titanet_large",
+            "freeze_encoder": ft_mode == "Frozen",
+            "local_path": "weights/titanet/titanet_large.nemo",
+        }
+    return new_enc
 
-    # ── Pre-flight checks ──
-    env_path = PROJECT_ROOT / ".env"
-    if not env_path.exists():
-        st.warning(
-            "⚠️ **`.env` file not found!**\n\n"
-            "Copy `.env.example` to `.env` and fill in your credentials:\n"
-            "```\nVAST_API_KEY=your_key_here\nDAGSHUB_USER_TOKEN=your_token_here\n"
-            "DAGSHUB_REPO_OWNER=amiresbati52\nDAGSHUB_REPO_NAME=Speaker-identification\n"
-            "GIT_REPO_URL=https://github.com/amiresbati52/Speaker-identification\n```"
-        )
 
-    # Launch button
-    if st.button("🔥 Launch on Vast.ai", type="primary", use_container_width=True):
-        if not env_path.exists():
-            st.error("❌ Cannot launch: `.env` file is missing! Please create it first.")
-            st.stop()
+# ═══════════════════════════════════════════════════════════
+#  Log Streaming Engine
+# ═══════════════════════════════════════════════════════════
 
-        st.info(f"🚀 Connecting to Vast.ai to rent {gpu_choice}...")
+def _stream_logs(instance_id: str, queue: Queue, stop_event: threading.Event):
+    """Background thread: wait for instance to boot, then stream logs via retry loop."""
+    max_retries = 24       # ~2 minutes total
+    retry_delay = 5        # seconds between retries
 
-        # Inject ALL user choices into environment for deploy.py
-        os.environ["GPU_TARGET"] = gpu_choice
-        os.environ["TARGET_PIPELINE"] = pipeline_choice
-        os.environ["FREEZE_FEATURE_EXTRACTOR"] = str(freeze_fe).lower()
+    for attempt in range(max_retries):
+        if stop_event.is_set():
+            queue.put("__STREAM_END__")
+            return
 
-        with st.spinner("Renting GPU instance and starting pipeline (may take 1-2 min)..."):
-            try:
-                # Force UTF-8 encoding for both child process and captured output
-                # (fixes UnicodeEncodeError with emojis on Windows cp1252 terminal)
-                proc_env = os.environ.copy()
-                proc_env["PYTHONIOENCODING"] = "utf-8"
+        try:
+            proc = subprocess.Popen(
+                ["vastai", "logs", instance_id],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+            # Read first line to check for errors (container not ready yet)
+            first_line = proc.stdout.readline()
+            is_retryable = any(x in first_line for x in [
+                "404", "Invalid instance", "No such container",
+            ])
+            if is_retryable:
+                proc.terminate()
+                if attempt == 0:
+                    queue.put(f"⏳ Instance booting... waiting for logs (attempt {attempt+1}/{max_retries})")
+                elif attempt % 3 == 0:
+                    queue.put(f"⏳ Still waiting... (attempt {attempt+1}/{max_retries})")
+                time.sleep(retry_delay)
+                continue
 
-                # Use sys.executable instead of 'uv run python' for reliability
-                # on Windows/Git Bash where 'uv' may be a shell script
-                result = subprocess.run(
-                    [sys.executable, str(DEPLOY_SCRIPT)],
-                    capture_output=True, text=True, encoding="utf-8",
-                    env=proc_env, timeout=180,
-                    cwd=str(PROJECT_ROOT),
-                    check=True,  # ← raise CalledProcessError if exit code != 0
-                )
-                st.success("✅ Server launched successfully!")
+            # Success — stream the rest
+            queue.put(first_line.rstrip())
+            for line in iter(proc.stdout.readline, ""):
+                if stop_event.is_set():
+                    proc.terminate()
+                    break
+                queue.put(line.rstrip())
+            proc.stdout.close()
+            proc.wait()
+            break  # normal exit
 
-                with st.expander("📋 Deployment Log"):
-                    st.code(result.stdout)
+        except Exception as e:
+            queue.put(f"[log error] {e}")
+            time.sleep(retry_delay)
 
-                st.markdown("### 📊 Monitor Training")
-                st.markdown(f"- [DagsHub MLflow]({tracking_uri})")
-                st.warning(
-                    "⚠️ The server will self-destruct automatically after "
-                    "the pipeline completes. No manual cleanup needed."
-                )
-
-            except subprocess.CalledProcessError as e:
-                st.error("❌ Deployment failed!")
-                with st.expander("📋 Error Details (stdout)"):
-                    st.code(e.stdout or "No output")
-                if e.stderr:
-                    with st.expander("📋 Error Details (stderr)"):
-                        st.code(e.stderr)
-                st.info(
-                    "💡 **Possible causes:**\n"
-                    "1. `.env` credentials are incorrect or missing\n"
-                    "2. Vast.ai API key is invalid\n"
-                    "3. No GPU instances available for the selected type\n"
-                    "4. Check your Vast.ai account balance\n\n"
-                    "Run this in terminal to see raw output:\n"
-                    "```\nuv run python src/deploy/deploy.py\n```"
-                )
-            except FileNotFoundError:
-                st.error(
-                    "❌ **`uv` command not found!**\n\n"
-                    "Make sure `uv` is installed and on your system PATH:\n"
-                    "```\ncurl -LsSf https://astral.sh/uv/install.sh | sh\n```"
-                )
-            except subprocess.TimeoutExpired:
-                st.error(
-                    "⏰ **Timed out waiting for Vast.ai response!**\n\n"
-                    "The API might be slow. Try again later or check:\n"
-                    "- Your internet connection\n"
-                    "- Vast.ai service status\n"
-                    "- Try with a different GPU type"
-                )
-
-# ═══════════════════════════════════════════
-#  Tab 2: Local Run
-# ═══════════════════════════════════════════
-with tab2:
-    st.header("💻 Local Training")
-    st.markdown("Run the pipeline on your local machine.")
-
-    # Current hardware info
-    import torch
-    has_cuda = torch.cuda.is_available()
-    if has_cuda:
-        gpu_name = torch.cuda.get_device_name(0)
-        vram = torch.cuda.get_device_properties(0).total_mem / 1e9
-        st.success(f"✅ GPU detected: {gpu_name} ({vram:.1f} GB VRAM)")
     else:
-        st.warning("⚠️ No CUDA GPU detected. Training will run on CPU (very slow!)")
+        queue.put("⚠️ Could not connect to logs after 2min. Instance may still be provisioning.")
+    queue.put("__STREAM_END__")
 
-    local_stage = st.selectbox(
-        "Pipeline Stage",
-        options=["all", "data", "train", "eval"],
-        format_func=lambda x: {
-            "all": "🚀 Full Pipeline",
-            "data": "📊 Data Preparation Only",
-            "train": "🏋️ Training Only",
-            "eval": "📈 Evaluation Only",
-        }[x],
-        key="local_stage",
-    )
 
-    local_freeze = st.checkbox(
-        "🔒 Freeze Feature Extractor",
-        value=True,
-        help="Recommended for GPUs with < 8GB VRAM",
-        key="local_freeze",
-    )
+# ═══════════════════════════════════════════════════════════
+#  Sidebar
+# ═══════════════════════════════════════════════════════════
+with st.sidebar:
+    st.header("📋 Active Config")
+    mc = config.get("model", {})
+    enc = mc.get("encoder_type", "?")
+    pool = (mc.get("encoder_config", {}).get(enc, {})
+            .get("pooling_type") or mc.get("pooling_type", "?"))
+    freeze = _enc_freeze()
+    blocks = _enc_unfreeze_blocks()
+    dur = config["audio"]["duration_seconds"]
+    nwin = config["audio"].get("num_train_windows", "-")
+    ehop = config["audio"].get("eval_hop_ratio", "-")
+    mwin = config["audio"].get("max_eval_windows", "-")
+    oodr = config["audio"].get("ood_batch_ratio", "-")
+    enc_lr = config["training"].get("encoder_lr", "-")
+    arc = mc.get("speaker_head_config", {}).get("arcface", {})
+    ft_label = ("Frozen" if freeze
+                else (f"Partial (last {blocks})" if blocks and blocks > 0 else "Full"))
+    st.markdown(f"""
+    | Param | Value |
+    |-------|-------|
+    | Encoder | `{enc}` |
+    | Pooling | `{pool}` |
+    | Head | ArcFace (m={arc.get('margin',0.4)}, s={arc.get('scale',30)}) |
+    | Fine-tune | `{ft_label}` |
+    | Duration | `{dur}s` |
+    | Windows | train `{nwin}` / eval `{mwin}` (hop `{ehop}`) |
+    | OOD ratio | `{oodr}` |
+    | Epochs | `{config['training']['epochs']}` |
+    | LR (head/enc) | `{config['training']['learning_rate']}` / `{enc_lr}` |
+    """)
+    st.caption(f"Branch: `feature/advanced-speaker-id`")
 
-    with_mlflow = st.checkbox(
-        "📈 Enable MLflow Tracking",
-        value=True,
-        help="Log metrics to DagsHub (requires .env config)",
-        key="local_mlflow",
-    )
 
-    if st.button("▶️ Run Locally", type="primary", use_container_width=True):
-        cmd = [
-            sys.executable, str(PIPELINE_SCRIPT),
-            "--run", local_stage,
-            "--config", str(CONFIG_PATH),
-        ]
-        if not with_mlflow:
-            cmd.append("--no-mlflow")
+# ═══════════════════════════════════════════════════════════
+#  Main
+# ═══════════════════════════════════════════════════════════
+st.title("🎤 Speaker-ID MLOps Center")
+tab_cfg, tab_cloud, tab_local, tab_analysis = st.tabs(
+    ["⚙️ Config", "☁️ Cloud (Vast.ai)", "💻 Local", "🧪 Analysis"])
 
-        # Update config for freeze setting
-        if local_freeze != config["model"].get("freeze_feature_extractor", True):
-            st.info(f"Setting freeze_feature_extractor = {local_freeze}")
-            with open(CONFIG_PATH, "r") as f:
-                cfg_data = yaml.safe_load(f)
-            cfg_data["model"]["freeze_feature_extractor"] = local_freeze
-            with open(CONFIG_PATH, "w") as f:
-                yaml.dump(cfg_data, f, default_flow_style=False)
-            st.cache_resource.clear()
+# ── TAB: Config ──
+with tab_cfg:
+    st.header("⚙️ Model Setup")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("🧠 Encoder")
+        _ENC_OPTS = ["wavlm", "ecapa", "campp", "eres2net", "titanet"]
+        encoder_type = st.selectbox(
+            "Encoder", _ENC_OPTS,
+            index=_ENC_OPTS.index(mc.get("encoder_type", "wavlm")))
 
-        with st.spinner("Running pipeline..."):
-            try:
-                result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=7200,
-                    cwd=str(PROJECT_ROOT),
-                )
+        # Fine-tune mode: Frozen / Partial (last N, ECAPA) / Full
+        cur_freeze = _enc_freeze()
+        cur_blocks = _enc_unfreeze_blocks()
+        ft_options = ["Frozen", "Full"]
+        if encoder_type == "ecapa":
+            ft_options = ["Frozen", "Partial (last N)", "Full"]
+        if cur_freeze:
+            ft_idx = 0
+        elif encoder_type == "ecapa" and cur_blocks > 0:
+            ft_idx = 1
+        else:
+            ft_idx = len(ft_options) - 1
+        ft_mode = st.radio(
+            "Fine-tune mode", ft_options, index=ft_idx, horizontal=True,
+            help="Frozen: encoder weights fixed. Partial (ECAPA): only the last N "
+                 "SE-Res2Blocks are trainable. Full: all encoder parameters trainable.",
+        )
+        unfreeze_n = 2
+        if ft_mode == "Partial (last N)":
+            unfreeze_n = st.number_input("Unfreeze last N blocks", 1, 8, int(cur_blocks or 2))
 
-                if result.returncode == 0:
-                    st.success("✅ Pipeline completed successfully!")
-                else:
-                    st.error("❌ Pipeline failed!")
+        # Pooling is stored per-encoder (model_factory prefers it over the
+        # global default). WavLM emits frame-level features → statistical
+        # (mean+std); ECAPA/CAM++/ERes2NetV2/TitaNet produce utterance-level
+        # vectors already → identity.
+        _pool_defaults = {"wavlm": "statistical", "ecapa": "identity",
+                          "campp": "identity", "eres2net": "identity",
+                          "titanet": "identity"}
+        pool_opts = ["identity", "statistical", "attentive"]
+        cur_pool = (config["model"].get("encoder_config", {})
+                    .get(encoder_type, {}).get("pooling_type"))
+        cur_pool = cur_pool or config["model"].get(
+            "pooling_type", _pool_defaults.get(encoder_type, "identity"))
+        pool_idx = pool_opts.index(cur_pool) if cur_pool in pool_opts else 0
+        if encoder_type == "ecapa":
+            st.info("💡 ECAPA has built-in ASP → pooling = identity")
+        pooling_type = st.selectbox("Pooling", pool_opts, index=pool_idx)
 
-                with st.expander("📋 Pipeline Log", expanded=True):
-                    st.code(result.stdout[-5000:] if len(result.stdout) > 5000 else result.stdout)
-                    if result.stderr:
-                        st.code(result.stderr[-2000:])
+        hub_download = st.checkbox(
+            "Allow hub downloads (dev only)",
+            value=bool(mc.get("allow_hub_download", False)),
+            help="MUST stay OFF at submission time (offline). ON only on the "
+                 "dev machine / fresh Vast instance to fetch weights once.",
+        )
 
-            except subprocess.TimeoutExpired:
-                st.error("⏰ Pipeline timed out (2h limit).")
+        st.subheader("🎯 ArcFace Head")
+        arc_cfg = mc.get("speaker_head_config", {}).get("arcface", {})
+        arc_m = st.slider("Margin", 0.1, 0.5, float(arc_cfg.get("margin", 0.3)), 0.05)
+        arc_s = st.slider("Scale", 5.0, 64.0, float(arc_cfg.get("scale", 15.0)), 1.0)
+        arc_emb = st.selectbox("Embedding dim", [128, 192, 256],
+                               index=[128,192,256].index(arc_cfg.get("embedding_dim",192)))
+    with c2:
+        st.subheader("🎵 Audio")
+        audio_dur = st.slider("Duration (s)", 2.0, 8.0, float(config["audio"]["duration_seconds"]), 0.5)
+        min_dur = st.number_input("Min valid (s)", 0.0, 5.0,
+                                  float(config["audio"].get("min_valid_duration",1.0)), 0.5)
+        num_win = st.number_input("Train windows/file", 1, 8,
+                                  int(config["audio"].get("num_train_windows", 3)),
+                                  help="Random crops per file in training (multi-window TTA).")
+        hop_ratio = st.slider("Eval hop ratio", 0.25, 0.9,
+                              float(config["audio"].get("eval_hop_ratio", 0.5)), 0.05)
+        max_win = st.number_input("Max eval windows", 1, 32,
+                                  int(config["audio"].get("max_eval_windows", 8)))
+        ood_ratio = st.slider("OOD batch ratio", 0.1, 0.9,
+                              float(config["audio"].get("ood_batch_ratio", 0.5)), 0.05)
+        st.subheader("🏋️ Training")
+        epochs = st.number_input("Epochs", 1, None, config["training"]["epochs"],
+                                 help="No upper cap — the config default is 150.")
+        lr_val = st.number_input("LR (heads)", 1e-6, 1e-2, config["training"]["learning_rate"], format="%.6f")
+        encoder_lr = st.number_input("LR (encoder)", 1e-7, 1e-2,
+                                     float(config["training"].get("encoder_lr", 1e-5)), format="%.6f",
+                                     help="LR for unfrozen encoder blocks (fine-tune).")
+        wd = st.number_input("Weight Decay", 0.0, 1e-2, config["training"]["weight_decay"], format="%.6f")
+        grad_norm = st.number_input("Max Grad Norm", 0.1, 50.0, config["training"]["max_grad_norm"])
+        patience = st.number_input("Early stop patience", 1, 50,
+                                   int(config["training"].get("early_stopping_patience", 10)),
+                                   help="Early stopping / checkpoint selection on val Macro-F1.")
+        st.subheader("🎯 Loss")
+        st.caption("Focal Loss always ON (γ=2).")
+        ood_hidden = st.number_input("OOD head hidden dim", 0, 1024,
+                                     mc.get("ood_head_config",{}).get("hidden_dim",256), 64)
+        ood_pos_w = st.number_input("OOD pos_weight", 0.1, 10.0,
+                                    float(config["training"].get("ood_pos_weight", 1.0)), 0.1)
+        ood_w = st.number_input("OOD loss weight", 0.0, 1.0,
+                                float(config["training"].get("ood_loss_weight", 0.3)), 0.05)
+        spk_w = st.number_input("Speaker loss weight", 0.0, 1.0,
+                                float(config["training"].get("speaker_loss_weight", 0.7)), 0.05)
+        sm_val = st.number_input("Label smoothing", 0.0, 0.5,
+                                 float(config["training"].get("label_smoothing", 0.1)), 0.05)
 
-    # Quick actions
-    st.divider()
-    st.subheader("⚡ Quick Actions")
+    if st.button("💾 Save Config", type="primary", use_container_width=True):
+        # ── Encoder config: MERGE with existing keys so partial fine-tune
+        #    settings (e.g. unfreeze_last_n_blocks) are never silently dropped.
+        old_enc = dict(config["model"].get("encoder_config", {}).get(encoder_type, {}))
+        new_enc = _encoder_save_config(encoder_type, old_enc, ft_mode, unfreeze_n)
+        config["model"]["encoder_type"] = encoder_type
+        config["model"].setdefault("encoder_config", {})[encoder_type] = {**old_enc, **new_enc}
+        config["model"]["pooling_type"] = pooling_type
+        # Pooling is stored per-encoder so the ensemble can mix statistical
+        # (WavLM) with identity-pooled encoders without a global conflict.
+        config["model"]["encoder_config"][encoder_type]["pooling_type"] = pooling_type
+        config["model"]["allow_hub_download"] = hub_download
+        config["model"]["speaker_head_type"] = "arcface"
+        config["model"]["speaker_head_config"]["arcface"] = {
+            "embedding_dim": arc_emb, "margin": arc_m, "scale": arc_s}
+        config["model"]["ood_head_config"]["hidden_dim"] = ood_hidden
+        config["audio"]["duration_seconds"] = audio_dur
+        config["audio"]["min_valid_duration"] = min_dur
+        config["audio"]["num_train_windows"] = int(num_win)
+        config["audio"]["eval_hop_ratio"] = float(hop_ratio)
+        config["audio"]["max_eval_windows"] = int(max_win)
+        config["audio"]["ood_batch_ratio"] = float(ood_ratio)
+        config["training"]["epochs"] = epochs
+        config["training"]["learning_rate"] = lr_val
+        config["training"]["encoder_lr"] = float(encoder_lr)
+        config["training"]["weight_decay"] = wd
+        config["training"]["max_grad_norm"] = grad_norm
+        config["training"]["early_stopping_patience"] = int(patience)
+        config["training"]["ood_pos_weight"] = float(ood_pos_w)
+        config["training"]["ood_loss_weight"] = float(ood_w)
+        config["training"]["speaker_loss_weight"] = float(spk_w)
+        config["training"]["label_smoothing"] = float(sm_val)
+        save_config(config)
+        config = load_config()
+        st.success("✅ Saved!")
+        st.rerun()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("📊 View Last Results", use_container_width=True):
-            checkpoint_dir = Path(config["logging"]["checkpoint_dir"])
-            if checkpoint_dir.exists():
-                models = list(checkpoint_dir.glob("*.pt"))
-                if models:
-                    st.write("**Checkpoints found:**")
-                    for m in models:
-                        size_mb = m.stat().st_size / 1e6
-                        st.write(f"- `{m.name}` ({size_mb:.1f} MB)")
-                else:
-                    st.info("No checkpoints yet. Train a model first.")
+
+# ── TAB: Cloud ──
+with tab_cloud:
+    st.header("☁️ Vast.ai — Live Logs")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        gpu = st.selectbox("GPU", GPU_OPTIONS, key="cgpu")
+    with c2:
+        stage = st.selectbox("Stage", ["all","data","train","eval"],
+                             format_func=lambda x: {"all":"🚀 Full","data":"📊 Data","train":"🏋️ Train","eval":"📈 Eval"}[x],
+                             key="cstage")
+    with c3:
+        disk_gb = st.slider("💾 Disk (GB)", 20, 200,
+                            config.get("mlops",{}).get("vast",{}).get("disk_size", 60), 10,
+                            help="More disk for bigger models/datasets.")
+
+    if not (PROJECT_ROOT / ".env").exists():
+        st.warning("⚠️ `.env` missing — copy from `.env.example`")
+
+    # ── Session state for live logs ──
+    if "log_instance_id" not in st.session_state:
+        st.session_state.log_instance_id = None
+    if "log_running" not in st.session_state:
+        st.session_state.log_running = False
+    if "log_queue" not in st.session_state:
+        st.session_state.log_queue = Queue()
+    if "log_stop" not in st.session_state:
+        st.session_state.log_stop = threading.Event()
+
+    col_launch, col_destroy = st.columns([3, 1])
+
+    with col_launch:
+        if st.button("🔥 Launch on Vast.ai", type="primary", use_container_width=True,
+                     disabled=st.session_state.log_running,
+                     key="launch"):
+            if not (PROJECT_ROOT / ".env").exists():
+                st.error("❌ .env missing!"); st.stop()
+            os.environ["GPU_TARGET"] = gpu
+            os.environ["TARGET_PIPELINE"] = stage
+            # Encoder selection + fine-tune choice (setup_vast.sh reads these)
+            os.environ["ENCODER_TYPE"] = encoder_type
+            os.environ["ALLOW_HUB_DOWNLOAD"] = str(hub_download).lower()
+            os.environ["FREEZE_ENCODER"] = str(ft_mode == "Frozen").lower()
+            os.environ["UNFREEZE_LAST_N_BLOCKS"] = str(
+                unfreeze_n if ft_mode == "Partial (last N)" else 0)
+            os.environ["FREEZE_FEATURE_EXTRACTOR"] = str(ft_mode == "Frozen").lower()  # compat
+            os.environ["DISK_SIZE_GB"] = str(disk_gb)
+            with st.spinner("Creating instance..."):
+                try:
+                    env = os.environ.copy(); env["PYTHONIOENCODING"] = "utf-8"
+                    r = subprocess.run([sys.executable, str(DEPLOY_SCRIPT)],
+                                       capture_output=True, text=True, encoding="utf-8",
+                                       env=env, timeout=180, cwd=str(PROJECT_ROOT), check=True)
+                    output = r.stdout
+                    # Extract instance ID
+                    m = re.search(r"INSTANCE_ID=(\d+)", output)
+                    if m:
+                        st.session_state.log_instance_id = m.group(1)
+                        st.session_state.log_running = True
+                        st.session_state.log_stop.clear()
+                        st.session_state.log_queue = Queue()
+                        # Start background log streamer
+                        t = threading.Thread(
+                            target=_stream_logs,
+                            args=(st.session_state.log_instance_id,
+                                  st.session_state.log_queue,
+                                  st.session_state.log_stop),
+                            daemon=True)
+                        t.start()
+                        st.success(f"✅ Instance #{st.session_state.log_instance_id} launched!")
+                    else:
+                        st.warning("⚠️ Launched but could not parse instance ID.")
+                    with st.expander("Deploy output"):
+                        st.code(output)
+                except subprocess.CalledProcessError as e:
+                    st.error("❌ Deploy failed!")
+                    st.code(e.stdout or "")
+
+    with col_destroy:
+        if st.button("🛑 Destroy", type="secondary", use_container_width=True,
+                     disabled=not st.session_state.log_running,
+                     key="destroy"):
+            iid = st.session_state.log_instance_id
+            if iid:
+                with st.spinner(f"Destroying #{iid}..."):
+                    try:
+                        subprocess.run(["vastai", "destroy", "instance", iid, "-y"],
+                                       capture_output=True, text=True, timeout=30)
+                    except Exception:
+                        pass
+                st.session_state.log_stop.set()
+                st.session_state.log_running = False
+                st.session_state.log_instance_id = None
+                st.warning(f"🛑 Instance #{iid} destroyed.")
+                st.rerun()
+
+    # ── Live log display ──
+    if st.session_state.log_running and st.session_state.log_instance_id:
+        st.divider()
+        st.subheader(f"📜 Live Logs — Instance #{st.session_state.log_instance_id}")
+        log_placeholder = st.empty()
+
+        # Drain queue and display
+        lines = []
+        q = st.session_state.log_queue
+        while not q.empty():
+            line = q.get_nowait()
+            if line == "__STREAM_END__":
+                st.session_state.log_running = False
+                st.warning("🏁 Log stream ended (instance finished or destroyed).")
+                break
+            lines.append(line)
+
+        if lines:
+            # Keep last 200 lines max
+            if "log_history" not in st.session_state:
+                st.session_state.log_history = []
+            st.session_state.log_history.extend(lines)
+            st.session_state.log_history = st.session_state.log_history[-200:]
+            log_placeholder.code("\n".join(st.session_state.log_history))
+
+        # Auto-refresh every 1 second
+        time.sleep(1)
+        st.rerun()
+
+
+# ── TAB: Local ──
+with tab_local:
+    st.header("💻 Local Run")
+    st.caption(f"`{encoder_type}` + `{pooling_type}` + ArcFace | {audio_dur}s | {epochs}ep | LR={lr_val}")
+    import torch
+    if torch.cuda.is_available():
+        st.success(f"✅ {torch.cuda.get_device_name(0)} ({torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB)")
+    else:
+        st.warning("⚠️ CPU only — slow.")
+
+    if "local_runner" not in st.session_state:
+        st.session_state.local_runner = None
+    runner = st.session_state.local_runner
+    is_running = runner is not None and runner.running and not runner.finished
+
+    lc1, lc2 = st.columns(2)
+    with lc1:
+        ls = st.selectbox("Stage", ["all","data","train","eval"],
+                          format_func=lambda x: {"all":"🚀 Full","data":"📊 Data","train":"🏋️ Train","eval":"📈 Eval"}[x],
+                          key="lstage")
+    with lc2:
+        mlflow_on = st.checkbox("📈 MLflow", value=True, key="lmlflow")
+
+    if st.button("▶️ Run", type="primary", use_container_width=True, key="lrun",
+                 disabled=is_running):
+        cmd = [sys.executable, str(PIPELINE_SCRIPT), "--run", ls, "--config", str(CONFIG_PATH)]
+        if not mlflow_on: cmd.append("--no-mlflow")
+        runner = LocalRunner(cmd, str(PROJECT_ROOT))
+        runner.start()
+        st.session_state.local_runner = runner
+        st.rerun()
+
+    _render_local_runner("local_runner", "Local pipeline")
+
+
+# ── TAB: Analysis ──
+with tab_analysis:
+    st.header("🧪 Analysis & Tools")
+    st.caption("Run the new pipeline modules locally: unbiased EDA, centroid baseline, "
+               "ensemble calibration, and submission inference.")
+
+    if "analysis_runner" not in st.session_state:
+        st.session_state.analysis_runner = None
+    ar = st.session_state.analysis_runner
+    a_running = ar is not None and ar.running and not ar.finished
+
+    ac1, ac2 = st.columns(2)
+    with ac1:
+        st.subheader("📊 Unbiased EDA")
+        st.caption("Multi-window ECAPA embeddings + LOO centroid + Macro-F1 simulation "
+                   "(GPU, several minutes).")
+        if st.button("▶️ eda_embeddings", key="a_eda", use_container_width=True,
+                     disabled=a_running):
+            r = LocalRunner([sys.executable, "-m", "src.eda_embeddings"], str(PROJECT_ROOT))
+            r.start()
+            st.session_state.analysis_runner = r
+            st.rerun()
+
+        st.subheader("🎯 Centroid baseline")
+        st.caption("Embedding cache (idempotent) + centroid classifier + fusion report.")
+        force_cache = st.checkbox("Rebuild embedding cache", key="a_force")
+        if st.button("▶️ centroid_baseline", key="a_centroid", use_container_width=True,
+                     disabled=a_running):
+            cmd = [sys.executable, "-m", "src.centroid_baseline"]
+            if force_cache:
+                cmd.append("--force-cache")
+            r = LocalRunner(cmd, str(PROJECT_ROOT))
+            r.start()
+            st.session_state.analysis_runner = r
+            st.rerun()
+
+    with ac2:
+        st.subheader("🧩 Ensemble + temperature")
+        st.caption("Per-model & ensemble Macro-F1 + best softmax temperature "
+                   "(needs ≥2 trained checkpoints).")
+        ckpts = st.text_input("Checkpoint paths (space-separated)",
+                              value="checkpoints/best_seed1.pt checkpoints/best_seed2.pt",
+                              key="a_ckpts")
+        if st.button("▶️ ensemble_calibrate", key="a_ens", use_container_width=True,
+                     disabled=a_running):
+            ckpt_list = [c for c in ckpts.split() if c]
+            if len(ckpt_list) < 2:
+                st.warning("⚠️ Provide at least 2 checkpoint paths.")
             else:
-                st.info("Checkpoint directory not found.")
+                cmd = [sys.executable, "-m", "src.ensemble_calibrate",
+                       "--checkpoints"] + ckpt_list
+                r = LocalRunner(cmd, str(PROJECT_ROOT))
+                r.start()
+                st.session_state.analysis_runner = r
+                st.rerun()
 
-    with col2:
-        if st.button("🧹 Clean Checkpoints", use_container_width=True):
-            checkpoint_dir = PROJECT_ROOT / "checkpoints"
-            if checkpoint_dir.exists():
-                for f in checkpoint_dir.glob("*.pt"):
-                    f.unlink()
-                st.success("Checkpoints cleaned!")
-            else:
-                st.info("Nothing to clean.")
+        st.subheader("📤 Submission CSV")
+        st.caption("Run submission.inference on a test folder → 447-column CSV.")
+        s_dir = st.text_input("Test data dir", value="data/processed/audio_wav", key="a_dir")
+        s_out = st.text_input("Output CSV", value="predictions.csv", key="a_out")
+        if st.button("▶️ inference → CSV", key="a_inf", use_container_width=True,
+                     disabled=a_running):
+            cmd = [sys.executable, "-m", "submission.inference",
+                   "--data-dir", s_dir, "--predictions-file-path", s_out]
+            r = LocalRunner(cmd, str(PROJECT_ROOT))
+            r.start()
+            st.session_state.analysis_runner = r
+            st.rerun()
+
+    _render_local_runner("analysis_runner", "Analysis tool")

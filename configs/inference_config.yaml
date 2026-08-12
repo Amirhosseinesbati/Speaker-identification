@@ -1,0 +1,57 @@
+# ─────────────────────────────────────────────────────────────
+#  Inference config — SUBMISSION (fully offline)
+#  Every encoder loads from its local_path (weights/) with
+#  allow_hub_download: false → zero network calls (C1).
+# ─────────────────────────────────────────────────────────────
+
+audio:
+  duration_seconds: 8.0
+  eval_hop_ratio: 0.5
+  max_eval_windows: 8
+  sample_rate: 16000
+
+model:
+  competition_num_known: 446
+  # ⚠️ MUST stay false at submission time.
+  allow_hub_download: false
+  encoder_config:
+    ecapa:
+      source: speechbrain/spkrec-ecapa-voxceleb
+      freeze_encoder: true
+      local_path: weights/ecapa
+    wavlm:
+      base_model: microsoft/wavlm-large
+      freeze_feature_extractor: true
+      local_path: weights/wavlm_large
+      pooling_type: statistical
+    campp:
+      model_id: iic/speech_campplus_sv_en_voxceleb_16k
+      revision: v1.0.2
+      freeze_encoder: true
+      local_path: weights/campp
+    eres2net:
+      ckpt_name: eres2netv2.ckpt
+      freeze_encoder: true
+      local_path: weights/eres2net
+    titanet:
+      model_id: nvidia/speakerverification_en_titanet_large
+      freeze_encoder: true
+      local_path: weights/titanet/titanet_large.nemo
+  encoder_type: ecapa
+  pooling_type: identity
+  speaker_head_type: arcface
+  speaker_head_config:
+    arcface:
+      embedding_dim: 192
+      margin: 0.4
+      scale: 30.0
+  ood_head_config:
+    hidden_dim: 256
+  fusion:
+    ensemble_method: none
+
+data:
+  labels_path: data/processed/audio_wav_labels.csv
+
+logging:
+  checkpoint_dir: checkpoints

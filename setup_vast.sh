@@ -80,6 +80,85 @@ echo "📦 Installing Python dependencies with uv..."
 uv sync
 
 # ============================================================================
+#  Phase 2.4: Pre-flight — verify ALL encoder frameworks import
+# ============================================================================
+# A stale uv.lock can make `uv sync` silently miss undeclared runtime deps
+# (modelscope's reduced wheel metadata misses e.g. 'addict'). Fail here with a
+# clear message instead of deep inside a ZenML step 5 minutes later. All five
+# frameworks are checked so ANY model (not just the active encoder) can start
+# training on this instance. eres2net needs only the vendored src.sv_arch
+# (torch + torchaudio) — no extra framework.
+echo ""
+echo "🔎 Pre-flight: importing all encoder frameworks..."
+uv run --no-sync python - <<'PYEOF' || { echo "   ❌ Dependency pre-flight failed — see errors above."; exit 1; }
+import importlib
+
+# speechbrain registers broken LazyModules (e.g. integrations.k2_fsa → needs the
+# optional `k2` package) that break lazy_loader's inspect.stack inside OTHER
+# framework imports — so it must be imported LAST.
+checks = [
+    ("campp", "modelscope.models"),
+    ("titanet", "nemo.collections.asr.models"),
+    ("wavlm", "transformers"),
+    ("ecapa", "speechbrain"),
+]
+failed = []
+for enc, mod in checks:
+    try:
+        importlib.import_module(mod)
+        print(f"   ✅ {enc} → {mod}")
+    except Exception as e:
+        failed.append(f"{enc} → {mod}: {e}")
+        print(f"   ❌ {enc} → {mod}: {e}")
+if failed:
+    raise SystemExit("dependency pre-flight failed: " + "; ".join(failed))
+PYEOF
+echo "   ✅ All encoder frameworks importable (pre-flight passed)."
+
+# ============================================================================
+#  Phase 2.5: Verify CUDA is available (fail loudly — no auto-install)
+# ============================================================================
+# uv.lock pins torch 2.13.0 from PyPI (a CUDA 13.x build on Linux that needs a
+# recent host driver; CPU-only on Windows). If CUDA cannot initialise, training
+# would silently run on CPU. We stop with a clear message instead; if you need
+# to, install the wheel that matches the host driver yourself, e.g.:
+#   uv pip install torch==2.2.0+cu121 torchaudio==2.2.0+cu121 \
+#       --index-url https://download.pytorch.org/whl/cu121
+echo ""
+echo "🖥️  Verifying CUDA-enabled PyTorch in the venv..."
+if ! uv run --no-sync python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+    echo "   ❌ torch.cuda.is_available()=False (torch $(uv run --no-sync python -c "import torch; print(torch.__version__)" 2>/dev/null))."
+    echo "   → The installed torch wheel needs a newer host driver than this instance has."
+    echo "   → Re-rent with a newer driver, or install a matching wheel yourself (see comment above)."
+    exit 1
+fi
+echo "   ✅ CUDA available: $(uv run --no-sync python -c "import torch; print(torch.__version__, torch.cuda.get_device_name(0))" 2>/dev/null)"
+
+# ============================================================================
+#  Phase 2.6: Pin the venv's bundled libnccl (fixes ncclCommResume on old images)
+# ============================================================================
+# The pytorch/pytorch:2.2.0 base image ships a SYSTEM libnccl < 2.19.3 at
+# /usr/local/nccl2/lib (listed first in the container's LD_LIBRARY_PATH). The
+# pip torch wheel bundles a NEWER libnccl (with ncclCommResume) inside
+# torch/lib, but LD_LIBRARY_PATH is searched before the wheel's RUNPATH, so the
+# old system NCCL shadows the bundled one → `import torch` dies with
+# "libtorch_cuda.so: undefined symbol: ncclCommResume". Fix: put torch/lib
+# first in LD_LIBRARY_PATH and LD_PRELOAD the bundled libnccl so the correct
+# (self-consistent) NCCL is always loaded.
+TORCH_LIB_DIR="$(uv run --no-sync python - <<'PYEOF' 2>/dev/null
+import os, torch
+print(os.path.join(os.path.dirname(torch.__file__), "lib"))
+PYEOF
+)"
+if [ -n "$TORCH_LIB_DIR" ] && [ -f "$TORCH_LIB_DIR/libnccl.so.2" ]; then
+    echo "   🔧 Pinning bundled NCCL: $TORCH_LIB_DIR/libnccl.so.2"
+    export LD_LIBRARY_PATH="$TORCH_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LD_PRELOAD="$TORCH_LIB_DIR/libnccl.so.2${LD_PRELOAD:+:$LD_PRELOAD}"
+else
+    echo "   ⚠ torch/lib/libnccl.so.2 not found — skipping NCCL pin (${TORCH_LIB_DIR:-torch not importable})"
+fi
+
+# ============================================================================
 #  Phase 3: DVC — Pull Raw Data from DagsHub
 # ============================================================================
 echo ""
@@ -93,22 +172,22 @@ uv run dvc remote modify origin endpointurl "https://dagshub.com/${DAGSHUB_USERN
 uv run dvc remote modify origin --local access_key_id "${DAGSHUB_TOKEN}"
 uv run dvc remote modify origin --local secret_access_key "${DAGSHUB_TOKEN}"
 
-echo "   Pulling data from DagsHub..."
-uv run dvc pull -r origin
+	echo "   Pulling data from DagsHub..."
+	uv run dvc pull -r origin
 
-if [ -d "data/raw" ]; then
-    echo "✅ Raw data successfully pulled!"
-    echo "   Files: $(ls data/raw/*.mp3 2>/dev/null | wc -l) MP3 files"
-else
-    echo "❌ ERROR: data/raw not found after DVC pull!"
-    exit 1
-fi
+	if [ -d "data/raw" ]; then
+	    echo "✅ Raw data successfully pulled!"
+	    echo "   Files: $(ls data/raw/*.mp3 2>/dev/null | wc -l) MP3 files"
+	else
+	    echo "❌ ERROR: data/raw not found after DVC pull!"
+	    exit 1
+	fi
 
-# ============================================================================
-#  Phase 4: ZenML & MLflow Configuration
-# ============================================================================
-echo ""
-echo "🔗 Configuring ZenML stack with MLflow (DagsHub)..."
+	# ============================================================================
+	#  Phase 4: ZenML & MLflow Configuration
+	# ============================================================================
+	echo ""
+	echo "🔗 Configuring ZenML stack with MLflow (DagsHub)..."
 
 # Set DagsHub credentials for MLflow
 export MLFLOW_TRACKING_URI="${DAGSHUB_TRACKING_URI}"
@@ -123,13 +202,18 @@ export AWS_DEFAULT_REGION="us-east-1"
 export MLFLOW_S3_ENDPOINT_URL="https://dagshub.com/${DAGSHUB_USERNAME}/${DAGSHUB_REPO_NAME}.s3"
 
 # ── Select hardware profile based on GPU target ──
-# RTX 3090/4090/A5000 → vastai (batch_size=32)
-# RTX 3060           → vastai_3060 (batch_size=16)
+# RTX 3090/4090/A5000 → vastai      (batch_size=32)
+# RTX 3060           → vastai_3060  (batch_size=16)
+# RTX A4000 (16GB)   → vastai_a4000 (batch_size=24)
 GPU_TARGET="${GPU_TARGET:-RTX_3090}"
 case "$GPU_TARGET" in
     RTX_3060)
         echo "   Switching config to 'vastai_3060' profile (batch_size=16)..."
         sed -i 's/mode: local/mode: vastai_3060/' configs/default_config.yaml
+        ;;
+    RTX_A4000)
+        echo "   Switching config to 'vastai_a4000' profile (batch_size=24)..."
+        sed -i 's/mode: local/mode: vastai_a4000/' configs/default_config.yaml
         ;;
     *)
         echo "   Switching config to 'vastai' profile (batch_size=32)..."
@@ -137,20 +221,72 @@ case "$GPU_TARGET" in
         ;;
 esac
 
-# ── Apply freeze choice from user selection ──
-# FREEZE_FEATURE_EXTRACTOR comes from deploy_app.py → deploy.py → env var
-FREEZE_FE="${FREEZE_FEATURE_EXTRACTOR:-true}"
-if [ "$FREEZE_FE" = "true" ]; then
-    echo "   Keeping feature extractor FROZEN (as selected by user)..."
-    # Ensure it's set to true in config
-    sed -i 's/freeze_feature_extractor: false/freeze_feature_extractor: true/' configs/default_config.yaml 2>/dev/null || true
-else
-    echo "   Unfreezing feature extractor for full fine-tune (as selected by user)..."
-    sed -i 's/freeze_feature_extractor: true/freeze_feature_extractor: false/' configs/default_config.yaml
-fi
+# ── Apply encoder selection + fine-tune choice from user ──
+# ENCODER_TYPE / ALLOW_HUB_DOWNLOAD / FREEZE_ENCODER / UNFREEZE_LAST_N_BLOCKS /
+# LOCAL_PATH_<ENC> come from deploy_app.py → deploy.py → env. We edit the YAML
+# with Python so the right key is used per encoder:
+#   ecapa                → freeze_encoder / unfreeze_last_n_blocks
+#   wavlm                → freeze_feature_extractor
+#   campp/eres2net/titanet → freeze_encoder (only — they ignore the other keys)
+FREEZE_ENCODER="${FREEZE_ENCODER:-true}"
+UNFREEZE_BLOCKS="${UNFREEZE_LAST_N_BLOCKS:-0}"
+echo "   Applying encoder selection (encoder=${ENCODER_TYPE:-<from config>}, freeze=${FREEZE_ENCODER}, blocks=${UNFREEZE_BLOCKS})..."
+uv run --no-sync python - <<'PYEOF'
+import os, yaml
+p = "configs/default_config.yaml"
+c = yaml.safe_load(open(p, encoding="utf-8"))
+mc = c.setdefault("model", {})
+
+# Encoder selection from deploy.py env (falls back to the committed config).
+enc_type = os.getenv("ENCODER_TYPE", mc.get("encoder_type", "ecapa")).lower().strip()
+mc["encoder_type"] = enc_type
+enc_cfg = mc.setdefault("encoder_config", {}).setdefault(enc_type, {})
+
+# Offline gate — a fresh training machine may pull weights from the hub once.
+hub = os.getenv("ALLOW_HUB_DOWNLOAD", "false").lower() == "true"
+mc["allow_hub_download"] = hub
+
+# Per-encoder local_path override (defaults to the committed config value).
+lp = os.getenv("LOCAL_PATH_{}".format(enc_type.upper()))
+if lp:
+    enc_cfg["local_path"] = lp
+
+freeze = os.getenv("FREEZE_ENCODER", "true").lower() == "true"
+blocks = int(os.getenv("UNFREEZE_LAST_N_BLOCKS", "0") or 0)
+
+if enc_type == "ecapa":
+    enc_cfg["freeze_encoder"] = freeze
+    enc_cfg["unfreeze_last_n_blocks"] = blocks if (not freeze and blocks > 0) else 0
+    enc_cfg.pop("freeze_feature_extractor", None)
+elif enc_type == "wavlm":
+    enc_cfg["freeze_feature_extractor"] = freeze
+    enc_cfg.pop("freeze_encoder", None)
+    enc_cfg.pop("unfreeze_last_n_blocks", None)
+else:  # campp / eres2net / titanet
+    enc_cfg["freeze_encoder"] = freeze
+    enc_cfg.pop("freeze_feature_extractor", None)
+    enc_cfg.pop("unfreeze_last_n_blocks", None)
+
+yaml.dump(c, open(p, "w", encoding="utf-8"), default_flow_style=False,
+          sort_keys=False, allow_unicode=True)
+print(f"   Config updated: encoder={enc_type} freeze={freeze} "
+      f"unfreeze_blocks={blocks} allow_hub_download={hub}")
+PYEOF
+
+# ============================================================================
+#  Phase 4.5: Pull encoder weights (idempotent)
+# ============================================================================
+# weights/ is gitignored and DVC only pulls data/raw, so a fresh instance has
+# no encoder weights and training would crash with FileNotFoundError. Download
+# them now (idempotent — existing markers are skipped) so training runs
+# offline-first regardless of allow_hub_download.
+echo ""
+echo "⬇️  Ensuring encoder weights are present (idempotent)..."
+uv run --no-sync python scripts/download_all_weights.py
+echo "   ✅ Encoder weights ready."
 
 echo "✅ Environment configured for DagsHub MLflow tracking."
-echo "   GPU: $GPU_TARGET | Freeze: $FREEZE_FE | Pipeline: $TARGET_PIPELINE"
+echo "   GPU: $GPU_TARGET | Encoder: ${ENCODER_TYPE:-<from config>} | Freeze: $FREEZE_ENCODER | Blocks: $UNFREEZE_BLOCKS | Pipeline: $TARGET_PIPELINE"
 
 # ============================================================================
 #  Phase 5: Initialize ZenML
@@ -168,7 +304,7 @@ echo "🔥 Starting Pipeline: $TARGET_PIPELINE"
 echo "   Running: python -m src.pipelines.run_pipeline --run $TARGET_PIPELINE"
 echo ""
 
-uv run python -m src.pipelines.run_pipeline --run "$TARGET_PIPELINE"
+uv run --no-sync python -m src.pipelines.run_pipeline --run "$TARGET_PIPELINE"
 
 # ============================================================================
 #  Phase 7: Complete

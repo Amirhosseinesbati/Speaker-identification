@@ -6,15 +6,14 @@ Handles stratified 5-shot split, augmentation, and weighted sampling.
 import os
 import warnings
 from pathlib import Path
-from typing import Optional, Tuple, Dict
+from typing import Dict, List, Optional, Set, Tuple
 
 import librosa
 import numpy as np
 import pandas as pd
 import torch
-import torchaudio.functional as F
 import yaml
-from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
+from torch.utils.data import Dataset, DataLoader
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -56,38 +55,151 @@ def create_class_mapping(labels_df: pd.DataFrame) -> Dict[str, int]:
     return mapping
 
 
+def find_duplicate_groups(
+    labels_df: pd.DataFrame,
+    audio_dir: str,
+) -> Dict[str, List[str]]:
+    """
+    Group audio files with identical byte content (streaming MD5, 1 MB chunks).
+
+    Only MD5 digests shared by more than one file are returned — these are the
+    near-certain duplicate recordings that can leak across a random split.
+
+    Args:
+        labels_df: DataFrame with an `audio_file` column.
+        audio_dir: Directory containing the (converted) audio files.
+
+    Returns:
+        dict: md5 hex digest -> sorted list of audio_file names sharing it.
+    """
+    import hashlib
+
+    audio_dir = Path(audio_dir)
+    md5_to_files: Dict[str, List[str]] = {}
+
+    for fname in sorted(labels_df["audio_file"].unique()):
+        fpath = audio_dir / fname
+        hasher = hashlib.md5()
+        try:
+            with open(fpath, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    hasher.update(chunk)
+        except OSError:
+            continue  # missing/unreadable — handled by find_corrupted_files
+        md5_to_files.setdefault(hasher.hexdigest(), []).append(fname)
+
+    return {md5: fnames for md5, fnames in md5_to_files.items() if len(fnames) > 1}
+
+
+def scan_durations(labels_df: pd.DataFrame, audio_dir: str) -> Dict[str, float]:
+    """
+    Header-only duration scan (soundfile.info) for every labelled file.
+
+    Returns {audio_file: duration_seconds}; unreadable/missing files get 0.0
+    (they are reported as corrupted by find_corrupted_files).
+    """
+    import soundfile as sf
+
+    audio_dir = Path(audio_dir)
+    durations: Dict[str, float] = {}
+    for fname in labels_df["audio_file"].unique():
+        fpath = audio_dir / fname
+        try:
+            durations[fname] = sf.info(str(fpath)).duration
+        except Exception:
+            durations[fname] = 0.0
+    return durations
+
+
+def find_corrupted_files(
+    labels_df: pd.DataFrame,
+    audio_dir: str,
+    min_valid_duration: float = 1.0,
+) -> List[str]:
+    """
+    Return the list of audio_files that are missing, unreadable, or shorter
+    than `min_valid_duration` seconds (header-only soundfile.info check).
+    """
+    import soundfile as sf
+
+    audio_dir = Path(audio_dir)
+    corrupted: List[str] = []
+    for fname in labels_df["audio_file"].unique():
+        fpath = audio_dir / fname
+        if not fpath.exists():
+            corrupted.append(fname)
+            continue
+        try:
+            if sf.info(str(fpath)).duration < min_valid_duration:
+                corrupted.append(fname)
+        except Exception:
+            corrupted.append(fname)
+    return corrupted
+
+
 def stratified_split(
     labels_df: pd.DataFrame,
     val_per_known: int = 1,
     unknown_val_ratio: float = 0.2,
     random_seed: int = 42,
+    duplicate_groups: Optional[Dict[str, List[str]]] = None,
+    corrupted_files: Optional[Set[str]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Strict stratified split:
-    - For known speakers: assign exactly `val_per_known` samples to val, rest to train.
-    - For 'unknown' class: split by `unknown_val_ratio`.
+    Leakage-aware stratified split.
+
+    - Corrupted files (via `corrupted_files`) are dropped entirely.
+    - Files that belong to an MD5-duplicate group are **never** put in val, so
+      byte-identical recordings cannot straddle the train/val boundary.
+      A known speaker whose files are all duplicated is excluded from val
+      (with a warning) to keep val strictly duplicate-free.
+    - Known speakers: exactly `val_per_known` non-duplicate files → val, rest → train.
+    - 'unknown' class: `unknown_val_ratio` (of non-duplicate files) → val.
     """
     rng = np.random.default_rng(random_seed)
+    df = labels_df.copy()
+    if corrupted_files:
+        df = df[~df["audio_file"].isin(corrupted_files)].reset_index(drop=True)
+
+    # Files that are byte-identical duplicates must never appear in val
+    dup_files: Set[str] = set()
+    if duplicate_groups:
+        for fnames in duplicate_groups.values():
+            dup_files.update(fnames)
+
     train_rows, val_rows = [], []
 
-    df_known = labels_df[labels_df["speaker_id"] != "unknown"]
-    df_unknown = labels_df[labels_df["speaker_id"] == "unknown"]
+    df_known = df[df["speaker_id"] != "unknown"]
+    df_unknown = df[df["speaker_id"] == "unknown"]
 
-    # Known speakers: 1 val, rest train
+    # Known speakers: val from NON-duplicate files only
     for speaker_id, group in df_known.groupby("speaker_id"):
         group = group.reset_index(drop=True)
         n = len(group)
+        dup_mask = group["audio_file"].isin(dup_files).values
+        non_dup_idx = np.where(~dup_mask)[0]
         n_val = min(val_per_known, n - 1)  # ensure at least 1 train
-        val_indices = rng.choice(n, size=n_val, replace=False)
-        val_mask = np.zeros(n, dtype=bool)
-        val_mask[val_indices] = True
+
+        if len(non_dup_idx) >= n_val:
+            chosen = rng.choice(non_dup_idx, size=n_val, replace=False)
+            val_mask = np.zeros(n, dtype=bool)
+            val_mask[chosen] = True
+        else:
+            # Speaker's files are (mostly) duplicated → keep val duplicate-free:
+            # the whole speaker goes to train.
+            print(f"  ⚠ Speaker {speaker_id[:8]}… has {int(dup_mask.sum())}/{n} "
+                  f"duplicated files — excluded from val (val kept duplicate-free)")
+            val_mask = np.zeros(n, dtype=bool)
+
         val_rows.append(group[val_mask])
         train_rows.append(group[~val_mask])
 
-    # Unknown class: 80/20 split
+    # Unknown class: ratio split, but duplicate files stay in train
     n_unknown = len(df_unknown)
-    n_val_unknown = int(n_unknown * unknown_val_ratio)
-    val_idx = rng.choice(n_unknown, size=n_val_unknown, replace=False)
+    cand_idx = np.where(~df_unknown["audio_file"].isin(dup_files).values)[0]
+    n_val_unknown = min(int(n_unknown * unknown_val_ratio), len(cand_idx))
+    val_idx = (rng.choice(cand_idx, size=n_val_unknown, replace=False)
+               if n_val_unknown > 0 else np.array([], dtype=int))
     val_mask = np.zeros(n_unknown, dtype=bool)
     val_mask[val_idx] = True
     val_rows.append(df_unknown[val_mask])
@@ -103,16 +215,190 @@ def stratified_split(
     return train_df, val_df
 
 
+def _write_split_report(
+    labels_df: pd.DataFrame,
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    duplicate_groups: Dict[str, List[str]],
+    corrupted: List[str],
+    durations: Dict[str, float],
+    output_path: str,
+) -> None:
+    """
+    Write data/processed/split_report.json: corrupted files (known/unknown),
+    MD5-duplicate groups (incl. conflicting-label groups), and per-known-speaker
+    train/val counts + usable seconds.
+    """
+    import json
+
+    corrupted_known = int(labels_df[
+        labels_df["audio_file"].isin(corrupted) & (labels_df["speaker_id"] != "unknown")
+    ].shape[0])
+    corrupted_unknown = int(labels_df[
+        labels_df["audio_file"].isin(corrupted) & (labels_df["speaker_id"] == "unknown")
+    ].shape[0])
+
+    groups_info = []
+    n_conflicting = 0
+    for md5, fnames in duplicate_groups.items():
+        lbls = sorted(set(labels_df.loc[labels_df["audio_file"].isin(fnames), "speaker_id"]))
+        conflicting = len(lbls) > 1
+        if conflicting:
+            n_conflicting += 1
+        groups_info.append({
+            "md5": md5,
+            "n_files": len(fnames),
+            "files": fnames,
+            "labels": lbls,
+            "conflicting_labels": conflicting,
+        })
+
+    train_files = set(train_df["audio_file"])
+    per_speaker = {}
+    for sid, group in labels_df[labels_df["speaker_id"] != "unknown"].groupby("speaker_id"):
+        good = group[~group["audio_file"].isin(corrupted)]
+        per_speaker[sid] = {
+            "train_files": int(group[group["audio_file"].isin(train_files)].shape[0]),
+            "val_files": int(group[~group["audio_file"].isin(train_files)].shape[0]),
+            "usable_seconds": round(float(sum(durations.get(f, 0.0) for f in good["audio_file"])), 2),
+        }
+
+    report = {
+        "corrupted_files": {
+            "total": len(corrupted),
+            "known": corrupted_known,
+            "unknown": corrupted_unknown,
+            "files": corrupted,
+        },
+        "duplicate_groups": {
+            "total_groups": len(duplicate_groups),
+            "total_files": sum(len(v) for v in duplicate_groups.values()),
+            "conflicting_label_groups": n_conflicting,
+            "groups": groups_info,
+        },
+        "per_known_speaker": per_speaker,
+        "split_summary": {
+            "train_samples": int(len(train_df)),
+            "val_samples": int(len(val_df)),
+            "train_known": int((train_df["label"] != 0).sum()),
+            "val_known": int((val_df["label"] != 0).sum()),
+            "train_unknown": int((train_df["label"] == 0).sum()),
+            "val_unknown": int((val_df["label"] == 0).sum()),
+        },
+    }
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+    print(f"  ✓ Split report saved to {output_path}")
+
+
+def prepare_clean_split(
+    labels_path: str,
+    audio_dir: str,
+    processed_labels: str,
+    val_per_known: int = 1,
+    unknown_val_ratio: float = 0.2,
+    min_valid_duration: float = 1.0,
+    random_seed: int = 42,
+    split_report_path: str = "data/processed/split_report.json",
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
+    """
+    Load, clean and leak-free split labels; write data/processed/split_report.json.
+
+    Pipeline:
+      1. Load & clean labels (drops exact CSV duplicate rows / NaN).
+      2. Scan durations (header-only) for every labelled file.
+      3. Detect corrupted (< min_valid_duration) / missing files.
+      4. Detect MD5-duplicate groups (incl. conflicting-label groups).
+      5. Leak-free stratified_split (duplicates/corrupted never in val).
+      6. Save cleaned labels and split_report.json.
+
+    Returns:
+        train_df, val_df, class_map
+    """
+    df = pd.read_csv(labels_path)
+    df.columns = df.columns.str.strip()
+
+    # Basic cleaning
+    df = df.drop_duplicates().reset_index(drop=True)
+    df = df.dropna(subset=["speaker_id", "audio_file"]).reset_index(drop=True)
+
+    # Create class mapping
+    class_map = create_class_mapping(df)
+    df["label"] = df["speaker_id"].map(class_map)
+
+    # ── Leak-aware scans ──
+    print(f"  Scanning durations ({len(df):,} files)...")
+    durations = scan_durations(df, audio_dir)
+    print("  Detecting corrupted files...")
+    corrupted = find_corrupted_files(df, audio_dir, min_valid_duration)
+    if corrupted:
+        print(f"  ⚠ {len(corrupted)} corrupted/short files (< {min_valid_duration}s)")
+    print("  Detecting MD5-duplicate groups...")
+    dup_groups = find_duplicate_groups(df, audio_dir)
+    if dup_groups:
+        print(f"  ⚠ {len(dup_groups)} duplicate groups "
+              f"({sum(len(v) for v in dup_groups.values())} files)")
+
+    # ── Leak-free split ──
+    train_df, val_df = stratified_split(
+        df,
+        val_per_known=val_per_known,
+        unknown_val_ratio=unknown_val_ratio,
+        random_seed=random_seed,
+        duplicate_groups=dup_groups,
+        corrupted_files=set(corrupted),
+    )
+
+    # ── Save cleaned labels ──
+    os.makedirs(os.path.dirname(processed_labels), exist_ok=True)
+    df.to_csv(processed_labels, index=False)
+    print(f"  ✓ Saved cleaned labels ({len(df)} rows) to {processed_labels}")
+
+    # ── Split report ──
+    _write_split_report(
+        df, train_df, val_df, dup_groups, corrupted, durations, split_report_path,
+    )
+
+    print(f"  ✓ Train samples: {len(train_df)} | Val samples: {len(val_df)}")
+    print(
+        f"    Train known: {(train_df['label'] != 0).sum()} | "
+        f"Train unknown: {(train_df['label'] == 0).sum()}"
+    )
+    print(
+        f"    Val known: {(val_df['label'] != 0).sum()} | "
+        f"Val unknown: {(val_df['label'] == 0).sum()}"
+    )
+
+    return train_df, val_df, class_map
+
+
 def prepare_labels(
     labels_path: str,
     output_path: str,
     val_per_known: int = 1,
     unknown_val_ratio: float = 0.2,
+    audio_dir: Optional[str] = None,
+    min_valid_duration: float = 1.0,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
     """
     Load, clean, split labels and create class mapping.
     Saves cleaned labels to output_path.
+
+    If `audio_dir` is given, the leak-free pipeline (corrupted/duplicate
+    detection + split_report.json) is used; otherwise a plain stratified split.
     """
+    if audio_dir is not None:
+        return prepare_clean_split(
+            labels_path=labels_path,
+            audio_dir=audio_dir,
+            processed_labels=output_path,
+            val_per_known=val_per_known,
+            unknown_val_ratio=unknown_val_ratio,
+            min_valid_duration=min_valid_duration,
+        )
+
     df = pd.read_csv(labels_path)
     df.columns = df.columns.str.strip()
 
@@ -148,37 +434,50 @@ def prepare_labels(
 #  Audio Augmentation Pipeline
 # ─────────────────────────────────────────────────────────
 
-class AudioAugmentation(torch.nn.Module):
+class AudioAugmentation:
     """
-    Training-time augmentation pipeline for waveforms.
-    Applies pitch shift, time masking, and frequency masking.
+    Training-time augmentation pipeline using audiomentations.
+
+    Applies a diverse set of waveform-level augmentations:
+    - Gaussian noise injection
+    - Pitch shifting (±1 semitone — gentle, frozen encoders can't adapt to more)
+    - Time stretching (0.8× – 1.25×)
+    - Gain variation (±6 dB)
+    - Polarity inversion
+    - Time shifting (±10%)
+
+    All augmentations preserve the waveform length.
     """
 
-    def __init__(self, sample_rate: int = 16000, n_mels: int = 80):
-        super().__init__()
+    def __init__(self, sample_rate: int = 16000):
+        import audiomentations as AA
         self.sample_rate = sample_rate
-        self.n_mels = n_mels
+        self.pipeline = AA.Compose([
+            AA.AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.5),
+            # Gentle pitch shift only — a frozen encoder can't adapt to ±4
+            # semitones (it caused the inverted train/val gap in the last run).
+            AA.PitchShift(min_semitones=-1, max_semitones=1, p=0.3),
+            AA.TimeStretch(min_rate=0.8, max_rate=1.25, p=0.2),
+            AA.Gain(min_gain_db=-6, max_gain_db=6, p=0.3),
+            AA.PolarityInversion(p=0.5),
+            AA.Shift(min_shift=-0.1, max_shift=0.1, shift_unit="fraction",
+                     rollover=True, fade_duration=0.005, p=0.3),
+        ])
 
-    def forward(self, waveform: torch.Tensor) -> torch.Tensor:
-        """waveform: (1, T) — single channel audio."""
-        # 1. Random Pitch Shift (±2 semitones, 50% chance)
-        if torch.rand(1).item() < 0.5:
-            n_steps = int(torch.randint(-2, 3, (1,)).item())
-            if n_steps != 0:
-                try:
-                    waveform = F.pitch_shift(
-                        waveform, self.sample_rate, n_steps
-                    )
-                except Exception:
-                    pass  # fallback if pitch shift fails
+    def __call__(self, waveform: torch.Tensor) -> torch.Tensor:
+        """
+        Apply augmentation pipeline to a waveform.
 
-        # 2. Random Time Masking (SpecAugment-style on waveform)
-        if torch.rand(1).item() < 0.3:
-            mask_len = int(torch.randint(2000, 8000, (1,)).item())
-            t_start = int(torch.randint(0, max(1, waveform.size(-1) - mask_len), (1,)).item())
-            waveform[..., t_start : t_start + mask_len] = 0.0
+        Args:
+            waveform: (1, T) — single-channel audio tensor
 
-        return waveform
+        Returns:
+            Augmented waveform of same shape (1, T)
+        """
+        # audiomentations expects (samples,) numpy array
+        audio_np = waveform.squeeze(0).numpy()
+        augmented = self.pipeline(samples=audio_np, sample_rate=self.sample_rate)
+        return torch.from_numpy(augmented).unsqueeze(0).float()
 
 
 # ─────────────────────────────────────────────────────────
@@ -188,7 +487,15 @@ class AudioAugmentation(torch.nn.Module):
 class SpeakerDataset(Dataset):
     """
     Dataset for Open-Set Speaker Identification.
-    Loads MP3/WAV, resamples to 16kHz, pads/truncates to fixed length.
+
+    Loads the FULL audio file (MP3/WAV → 16 kHz mono) and returns a stack of
+    fixed-length windows so the whole signal is usable:
+      - train: `num_train_windows` random crops (each augmented independently)
+      - eval/inference: sliding windows with `eval_hop_ratio` overlap over the
+        full file, capped at `max_eval_windows` (evenly spread), with the last
+        window repeated to a constant count so DataLoader batching stays simple.
+
+    `__getitem__` returns (windows, label) with windows shape (W, 1, T).
     """
 
     def __init__(
@@ -196,17 +503,27 @@ class SpeakerDataset(Dataset):
         df: pd.DataFrame,
         audio_dir: str,
         sample_rate: int = 16000,
-        duration_seconds: float = 3.0,
+        duration_seconds: float = 8.0,
         augment: bool = False,
+        min_valid_duration: float = 1.0,
+        mixup_alpha: float = 0.0,
+        num_train_windows: int = 1,
+        eval_hop_ratio: float = 0.5,
+        max_eval_windows: int = 8,
     ):
         self.df = df.reset_index(drop=True)
         self.audio_dir = Path(audio_dir)
         self.target_sr = sample_rate
         self.target_length = int(sample_rate * duration_seconds)
         self.augment = augment
+        self.min_valid_duration = min_valid_duration
+        self.mixup_alpha = mixup_alpha
+        self.num_train_windows = max(1, num_train_windows)
+        self.eval_hop_ratio = eval_hop_ratio
+        self.max_eval_windows = max(1, max_eval_windows)
 
         if self.augment:
-            self.augmentor = AudioAugmentation(sample_rate, n_mels=80)
+            self.augmentor = AudioAugmentation(sample_rate)
 
     def __len__(self) -> int:
         return len(self.df)
@@ -216,37 +533,104 @@ class SpeakerDataset(Dataset):
         audio_path = self.audio_dir / row["audio_file"]
         label = torch.tensor(row["label"], dtype=torch.long)
 
-        # Load audio
+        # Load FULL audio (no crop — windowing happens below)
         waveform = self._load_audio(audio_path)
 
-        # Augmentation (train only)
-        if self.augment:
-            waveform = self.augmentor(waveform)
+        # MixUp: mix with another random sample (OOD regularization)
+        if self.mixup_alpha > 0 and self.augment and torch.rand(1).item() < 0.5:
+            other_idx = torch.randint(0, len(self.df), (1,)).item()
+            other_row = self.df.iloc[other_idx]
+            other_path = self.audio_dir / other_row["audio_file"]
+            other_waveform = self._load_audio(other_path)
 
-        return waveform, label
+            n = max(waveform.size(-1), other_waveform.size(-1))
+            if waveform.size(-1) < n:
+                waveform = torch.nn.functional.pad(waveform, (0, n - waveform.size(-1)))
+            if other_waveform.size(-1) < n:
+                other_waveform = torch.nn.functional.pad(other_waveform, (0, n - other_waveform.size(-1)))
+
+            # Mix: λ ~ Beta(α, α); keep original label (ambiguous mixed audio)
+            lam = float(torch.distributions.Beta(self.mixup_alpha, self.mixup_alpha).sample())
+            waveform = lam * waveform + (1 - lam) * other_waveform
+
+        # Windowing: train → random crops; eval → sliding windows
+        if self.augment:
+            windows = self._train_windows(waveform)
+        else:
+            windows = self._eval_windows(waveform)
+
+        return windows, label
+
+    def _train_windows(self, waveform: torch.Tensor) -> torch.Tensor:
+        """Return (num_train_windows, 1, T) — random crops, each augmented."""
+        T = self.target_length
+        windows = []
+        for _ in range(self.num_train_windows):
+            w = waveform
+            n = w.size(-1)
+            if n > T:
+                max_start = n - T
+                start = torch.randint(0, max_start + 1, (1,)).item()
+                w = w[..., start : start + T]
+            elif n < T:
+                w = torch.nn.functional.pad(w, (0, T - n))
+            if self.augment:
+                w = self.augmentor(w)
+            windows.append(w)
+        return torch.stack(windows)
+
+    def _eval_windows(self, waveform: torch.Tensor) -> torch.Tensor:
+        """
+        Return (max_eval_windows, 1, T) sliding windows.
+
+        Windows start every `eval_hop_ratio * T` samples over the full file.
+        If there are more windows than `max_eval_windows`, they are evenly
+        spread across the file; if fewer, the last window is repeated to keep
+        a constant count (so DataLoader batching stays simple).
+        """
+        T = self.target_length
+        n = waveform.size(-1)
+        if n <= T:
+            w = torch.nn.functional.pad(waveform, (0, T - n))
+            return torch.stack([w] * self.max_eval_windows)
+
+        hop = max(1, int(T * self.eval_hop_ratio))
+        starts = list(range(0, n - T + 1, hop))
+        if len(starts) > self.max_eval_windows:
+            # Evenly spread across the whole file (use the full signal)
+            starts = np.unique(np.linspace(0, n - T, self.max_eval_windows).astype(int)).tolist()
+        windows = [waveform[..., s : s + T] for s in starts]
+        while len(windows) < self.max_eval_windows:
+            windows.append(windows[-1])  # repeat last window → constant count
+        return torch.stack(windows)
 
     def _load_audio(self, path: Path) -> torch.Tensor:
-        """Load and preprocess audio file using librosa (handles MP3 on Windows)."""
+        """
+        Load and resample the FULL audio file (no crop).
+
+        WAV files: uses soundfile backend (fast, no mpg123 dependency)
+        Other formats: falls back to librosa
+        """
+        suffix = path.suffix.lower()
         try:
-            waveform, sr = librosa.load(str(path), sr=self.target_sr, mono=True)
-            waveform = torch.from_numpy(waveform).unsqueeze(0).float()  # (1, T)
+            if suffix in (".wav",):
+                # Use soundfile for WAV — no mpg123, fast, reliable
+                import soundfile as sf
+                waveform, sr = sf.read(str(path), dtype="float32")
+                if waveform.ndim > 1:
+                    waveform = waveform.mean(axis=1)  # stereo → mono
+                if sr != self.target_sr:
+                    import librosa
+                    waveform = librosa.resample(waveform, orig_sr=sr, target_sr=self.target_sr)
+                waveform = torch.from_numpy(waveform).unsqueeze(0).float()  # (1, N)
+            else:
+                # librosa for MP3 and other formats
+                waveform, sr = librosa.load(str(path), sr=self.target_sr, mono=True)
+                waveform = torch.from_numpy(waveform).unsqueeze(0).float()  # (1, N)
         except Exception as e:
             # Return silence for corrupted files
             print(f"  ⚠ Warning: Could not load {path.name}: {e}")
             return torch.zeros(1, self.target_length)
-
-        # Pad or truncate to target length
-        if waveform.size(-1) < self.target_length:
-            # Pad with zeros
-            pad_size = self.target_length - waveform.size(-1)
-            waveform = torch.nn.functional.pad(waveform, (0, pad_size))
-        elif waveform.size(-1) > self.target_length:
-            # Truncate (random crop for training, center crop for val)
-            if self.augment:
-                start = torch.randint(0, waveform.size(-1) - self.target_length + 1, (1,)).item()
-            else:
-                start = (waveform.size(-1) - self.target_length) // 2
-            waveform = waveform[..., start : start + self.target_length]
 
         return waveform
 
@@ -255,12 +639,63 @@ class SpeakerDataset(Dataset):
 #  DataLoader Factory
 # ─────────────────────────────────────────────────────────
 
+def make_balanced_batch_sampler(
+    train_labels: np.ndarray,
+    batch_size: int,
+    ood_ratio: float = 0.5,
+    seed: int = 42,
+) -> List[int]:
+    """
+    Build a flat index list so that every batch contains ~`ood_ratio` samples
+    from the unknown class (label == 0) and the rest from known speakers.
+
+    Without this, a per-class WeightedRandomSampler gives the unknown class
+    (a single 2275-sample super-class) a total probability mass of ~1/447,
+    i.e. ~0.2% of every batch — which starves the OOD head and makes it
+    collapse to "always known" (the failure from the last run).
+
+    Args:
+        train_labels: (N,) global class ids (0 = unknown, 1..446 = known).
+        batch_size:   desired batch size (the last partial batch is dropped).
+        ood_ratio:    target fraction of unknown samples per batch (0.5 matches
+                      the ~50/50 eval mix).
+        seed:         RNG seed for reproducibility.
+
+    Returns:
+        List of sample indices (length ≈ num_batches * batch_size) to be used
+        with torch.utils.data.SubsetRandomSampler.
+    """
+    rng = np.random.RandomState(seed)
+    ood_indices = np.where(train_labels == 0)[0]
+    known_indices = np.where(train_labels != 0)[0]
+
+    n_ood = max(1, int(round(batch_size * ood_ratio)))
+    n_known = batch_size - n_ood
+    if n_known <= 0:  # guard: ood_ratio too high
+        n_known = max(1, batch_size // 2)
+        n_ood = batch_size - n_known
+
+    num_batches = max(1, len(train_labels) // batch_size)
+    indices = []
+    for _ in range(num_batches):
+        batch_ood = rng.choice(ood_indices, size=n_ood, replace=True)
+        if len(known_indices) >= n_known:
+            batch_known = rng.choice(known_indices, size=n_known, replace=False)
+        else:
+            batch_known = rng.choice(known_indices, size=n_known, replace=True)
+        batch = np.concatenate([batch_ood, batch_known])
+        rng.shuffle(batch)
+        indices.extend(batch.tolist())
+    return indices
+
+
 def get_dataloaders(
     config: Optional[dict] = None,
     config_path: str = "configs/default_config.yaml",
 ) -> Tuple[DataLoader, DataLoader, Dict[str, int]]:
     """
-    Create train and validation DataLoaders with WeightedRandomSampler.
+    Create train and validation DataLoaders with a balanced OOD/known batch
+    sampler.
 
     Returns:
         train_loader, val_loader, class_map
@@ -283,44 +718,82 @@ def get_dataloaders(
     print(f"  Sample rate: {audio_cfg['sample_rate']} | "
           f"Duration: {audio_cfg['duration_seconds']}s")
 
-    # Prepare labels and split
+    min_valid_duration = audio_cfg.get("min_valid_duration", 0.0)
+
+    # ── Verify audio directory exists ──
+    audio_dir = data_cfg["audio_dir"]
+    labels_path = data_cfg["labels_path"]
+
+    if not os.path.exists(audio_dir):
+        raise FileNotFoundError(
+            f"Audio directory not found: {audio_dir}\n"
+            f"Run: python scripts/convert_mp3_to_wav.py\n"
+            f"Or update config to point to existing audio files."
+        )
+    if not os.path.exists(labels_path):
+        raise FileNotFoundError(f"Labels file not found: {labels_path}")
+
+    # Count WAV files for info
+    wav_count = len([f for f in os.listdir(audio_dir) if f.endswith('.wav')])
+    mp3_count = len([f for f in os.listdir(audio_dir) if f.endswith('.mp3')])
+    print(f"  Audio dir: {audio_dir}")
+    print(f"  Files: {wav_count} WAV + {mp3_count} MP3")
+
+    # Prepare labels + leak-free split (corrupted/duplicate filtering inside)
     train_df, val_df, class_map = prepare_labels(
-        labels_path=data_cfg["labels_path"],
+        labels_path=labels_path,
         output_path=data_cfg["processed_labels"],
         val_per_known=1,
         unknown_val_ratio=0.2,
+        audio_dir=audio_dir,
+        min_valid_duration=min_valid_duration,
     )
 
     # Create datasets
     train_dataset = SpeakerDataset(
         df=train_df,
-        audio_dir=data_cfg["audio_dir"],
+        audio_dir=audio_dir,           # ← resolved path
         sample_rate=audio_cfg["sample_rate"],
         duration_seconds=audio_cfg["duration_seconds"],
         augment=True,
+        min_valid_duration=min_valid_duration,
+        num_train_windows=audio_cfg.get("num_train_windows", 1),
+        eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
+        max_eval_windows=audio_cfg.get("max_eval_windows", 8),
     )
 
     val_dataset = SpeakerDataset(
         df=val_df,
-        audio_dir=data_cfg["audio_dir"],
+        audio_dir=audio_dir,           # ← resolved path
         sample_rate=audio_cfg["sample_rate"],
         duration_seconds=audio_cfg["duration_seconds"],
         augment=False,
+        min_valid_duration=min_valid_duration,
+        num_train_windows=audio_cfg.get("num_train_windows", 1),
+        eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
+        max_eval_windows=audio_cfg.get("max_eval_windows", 8),
     )
 
-    # WeightedRandomSampler: balance unknown (class 0) vs known (classes 1-446)
+    # ── Balanced Batch Sampler ──
+    # Enforces a target OOD/known ratio in every batch so the OOD head always
+    # sees enough positive (unknown) samples (a per-class WeightedRandomSampler
+    # would give the unknown super-class ~1/447 of every batch → OOD collapse).
     train_labels = train_df["label"].values
-    class_counts = np.bincount(train_labels, minlength=len(class_map))
-
-    # Weight = 1.0 / count for each class
-    weights = 1.0 / (class_counts + 1e-8)
-    sample_weights = weights[train_labels]
-    sampler = WeightedRandomSampler(
-        weights=sample_weights,
-        num_samples=len(sample_weights),
-        replacement=True,
+    ood_ratio = audio_cfg.get("ood_batch_ratio", 0.50)
+    balanced_indices = make_balanced_batch_sampler(
+        train_labels, batch_size, ood_ratio=ood_ratio, seed=42,
     )
+    n_ood = max(1, int(round(batch_size * ood_ratio)))
+    print(f"\n  ⚖️  Batch balance: {n_ood} OOD + {batch_size - n_ood} known "
+          f"({ood_ratio:.0%} / {1 - ood_ratio:.0%})")
+    print(f"     OOD pool: {(train_labels == 0).sum():,} samples | "
+          f"Known pool: {(train_labels != 0).sum():,} samples "
+          f"across {len(class_map) - 1} speakers")
 
+    sampler = torch.utils.data.SubsetRandomSampler(
+        np.asarray(balanced_indices, dtype=np.int64)
+    )
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -346,7 +819,7 @@ def get_dataloaders(
     print(f"     Known classes: {len(class_map) - 1}")
     print(f"     Known samples: {known_train}")
     print(f"     Unknown samples: {unknown_train}")
-    print(f"     Sampler: WeightedRandomSampler (balanced per-class)")
+    print(f"     Sampler: balanced batch sampler (OOD/known ratio per batch)")
 
     return train_loader, val_loader, class_map
 

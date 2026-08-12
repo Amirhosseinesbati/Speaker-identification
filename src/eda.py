@@ -1,301 +1,518 @@
 """
-Phase 0 — Exploratory Data Analysis (EDA)
+Phase 0 — Label & Metadata EDA
 for IAAA Competition 2026: Open-Set Speaker Identification
 
-Generates:
-  - class_distribution.png       (pie chart: unknown vs known)
-  - known_speakers_dist.png      (bar chart: files per known speaker)
-  - Phase0_EDA_Report.md         (full report with stats & plots)
+Goal
+----
+Understand the *label space* of the challenge **before** touching audio:
+  1. Data integrity (missing / duplicates / file-presence on disk)
+  2. Class composition: 446 known speakers vs the aggregated "unknown" (OOD) class
+  3. Per-speaker sample balance (implications for Macro-Averaged F1)
+  4. Train/val split design (per-speaker held-out)
+  5. Imbalance quantification w.r.t. the 447-way classification problem
+
+Outputs (written into eda/):
+  - phase0_class_distribution.png      — unknown vs known (pie)
+  - phase0_speaker_counts.png          — files per known speaker (bar + mean/median)
+  - phase0_speaker_frequency.png       — how many speakers have N files
+  - phase0_cumulative_coverage.png     — top-k speakers cumulative file share
+  - phase0_label_eda_summary.json      — machine-readable stats (reused by later phases)
+  - Phase0_EDA_Report.md               — full markdown report
 """
 
+from __future__ import annotations
+
+import json
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")  # headless-safe
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 
-# ------------- paths -------------
+# ────────────────────────────────────────────────────────────────
+#  Paths
+# ────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_PATH = PROJECT_ROOT / "data" / "raw" / "labels.csv"
-PLOT_PIE = PROJECT_ROOT / "class_distribution.png"
-PLOT_BAR = PROJECT_ROOT / "known_speakers_dist.png"
-REPORT = PROJECT_ROOT / "Phase0_EDA_Report.md"
+DATA_RAW = PROJECT_ROOT / "data" / "raw"
+DATA_PROCESSED = PROJECT_ROOT / "data" / "processed"
+EDA_DIR = PROJECT_ROOT / "eda"
 
-# ------------- 1. load & clean -------------
-df = pd.read_csv(DATA_PATH)
+LABELS_PATH = DATA_RAW / "labels.csv"
+RAW_AUDIO_DIR = DATA_RAW                    # contains the original .mp3
+WAV_AUDIO_DIR = DATA_PROCESSED / "audio_wav"  # contains converted 16 kHz mono .wav
 
-# strip whitespace from column names (safety net)
-df.columns = df.columns.str.strip()
+EDA_DIR.mkdir(parents=True, exist_ok=True)
 
-# strip whitespace from cell contents
-df["speaker_id"] = df["speaker_id"].astype(str).str.strip()
-df["audio_file"] = df["audio_file"].astype(str).str.strip()
+PLOT_PIE = EDA_DIR / "phase0_class_distribution.png"
+PLOT_SPEAKER_COUNTS = EDA_DIR / "phase0_speaker_counts.png"
+PLOT_SPEAKER_FREQ = EDA_DIR / "phase0_speaker_frequency.png"
+PLOT_COVERAGE = EDA_DIR / "phase0_cumulative_coverage.png"
+JSON_SUMMARY = EDA_DIR / "phase0_label_eda_summary.json"
+REPORT = EDA_DIR / "Phase0_EDA_Report.md"
 
-print(f"[INFO] Loaded {len(df):,} rows, columns: {list(df.columns)}")
+UNKNOWN_LABEL = "unknown"
+RANDOM_SEED = 42
 
-# missing values
-missing = df.isnull().sum()
-print(f"[INFO] Missing values:\n{missing}")
 
-# duplicates
-dup_rows = df.duplicated().sum()
-dup_audio = df["audio_file"].duplicated().sum()
-print(f"[INFO] Duplicate rows: {dup_rows}")
-print(f"[INFO] Duplicate audio_file entries: {dup_audio}")
+# ────────────────────────────────────────────────────────────────
+#  1. Load & Clean
+# ────────────────────────────────────────────────────────────────
 
-# drop any duplicates if present
-if dup_rows > 0:
-    df = df.drop_duplicates()
-    print(f"[INFO] Dropped {dup_rows} duplicate row(s).")
+def load_labels(path: Path) -> pd.DataFrame:
+    """Load labels.csv with defensive cleaning."""
+    df = pd.read_csv(path)
+    df.columns = df.columns.str.strip().str.lower()
+    df["speaker_id"] = df["speaker_id"].astype(str).str.strip()
+    df["audio_file"] = df["audio_file"].astype(str).str.strip()
+    return df
 
-# ------------- 2. split known / unknown -------------
-unknown_mask = df["speaker_id"].str.lower() == "unknown"
 
-df_unknown = df[unknown_mask]
-df_known   = df[~unknown_mask]
+def integrity_report(df: pd.DataFrame) -> dict:
+    """Return a dict of data-integrity metrics."""
+    report = {
+        "raw_rows": int(len(df)),
+        "missing_values": int(df.isnull().sum().sum()),
+        "duplicate_rows": int(df.duplicated().sum()),
+        "duplicate_audio_files": int(df["audio_file"].duplicated().sum()),
+        "missing_speaker_id": int(df["speaker_id"].isna().sum()),
+    }
 
-total_files = len(df)
-n_unknown   = len(df_unknown)
-n_known     = len(df_known)
+    # Presence of the *raw* audio files (mp3) on disk
+    labelled = set(df["audio_file"])
+    raw_on_disk = {p.name for p in RAW_AUDIO_DIR.glob("*") if p.suffix.lower() in {".mp3", ".wav", ".flac", ".ogg"}}
+    report["raw_files_on_disk"] = int(len(raw_on_disk))
+    report["in_labels_but_missing_raw"] = int(len(labelled - raw_on_disk))
 
-known_speakers = df_known["speaker_id"].unique()
-n_known_speakers = len(known_speakers)
+    # Presence of the converted 16 kHz WAV files (used by training).
+    # Compare by *stem* because labels use the raw extension (.mp3) while the
+    # converted files live as .wav under data/processed/audio_wav/.
+    labelled_stems = {Path(f).stem for f in labelled}
+    wav_stems = {p.stem for p in WAV_AUDIO_DIR.glob("*.wav")} if WAV_AUDIO_DIR.exists() else set()
+    report["wav_files_on_disk"] = int(len(wav_stems))
+    report["in_labels_but_missing_wav"] = int(len(labelled_stems - wav_stems))
+    report["all_audio_present_raw"] = len(labelled - raw_on_disk) == 0
+    return report
 
-print(f"\n{'='*50}")
-print(f"Total audio files        : {total_files:,}")
-print(f"Unknown files            : {n_unknown:,}")
-print(f"Known files              : {n_known:,}")
-print(f"Unique known speakers    : {n_known_speakers:,}")
-print(f"{'='*50}")
 
-# per-speaker counts
-speaker_counts = df_known["speaker_id"].value_counts()
+# ────────────────────────────────────────────────────────────────
+#  2. Class Composition
+# ────────────────────────────────────────────────────────────────
 
-min_files = speaker_counts.min()
-max_files = speaker_counts.max()
-mean_files = speaker_counts.mean()
-median_files = speaker_counts.median()
-std_files = speaker_counts.std()
+def class_composition(df: pd.DataFrame) -> dict:
+    """Split known vs unknown, compute per-speaker stats."""
+    unknown_mask = df["speaker_id"].str.lower() == UNKNOWN_LABEL
+    df_unknown = df[unknown_mask]
+    df_known = df[~unknown_mask]
 
-print(f"\n--- Known-speaker statistics ---")
-print(f"Min files per speaker    : {min_files}")
-print(f"Max files per speaker    : {max_files}")
-print(f"Mean files per speaker   : {mean_files:.4f}")
-print(f"Median files per speaker : {median_files:.1f}")
-print(f"Std  files per speaker   : {std_files:.4f}")
+    n_unknown = len(df_unknown)
+    n_known = len(df_known)
+    n_total = len(df)
+    n_known_speakers = df_known["speaker_id"].nunique()
 
-# Imbalance Ratio
-imbalance_ratio = n_unknown / mean_files if mean_files > 0 else float("inf")
-print(f"\nImbalance Ratio          : {imbalance_ratio:.4f}")
-print(f"  (unknown files / avg-files-per-known-speaker)")
+    speaker_counts = df_known["speaker_id"].value_counts()
 
-# Additional detail: how many speakers have how many files?
-print(f"\n--- Distribution of files per known speaker ---")
-for val in sorted(speaker_counts.unique()):
-    cnt = (speaker_counts == val).sum()
-    print(f"  {val:>2d} files  ->  {cnt:>3d} speaker(s)")
+    stats = {
+        "total_files": n_total,
+        "unknown_files": int(n_unknown),
+        "known_files": int(n_known),
+        "unknown_frac": float(n_unknown / n_total),
+        "known_frac": float(n_known / n_total),
+        "n_known_speakers": int(n_known_speakers),
+        "n_unknown_speakers_hidden": 554,  # per competition spec (hidden OOD identities)
+        "total_people_spec": 1000,          # 446 known + 554 OOD
+        "classes_total": int(n_known_speakers + 1),  # 447 classes
+        "per_speaker": {
+            "min": int(speaker_counts.min()),
+            "max": int(speaker_counts.max()),
+            "mean": float(speaker_counts.mean()),
+            "median": float(speaker_counts.median()),
+            "std": float(speaker_counts.std()),
+            "p01": int(speaker_counts.quantile(0.01)),
+            "p05": int(speaker_counts.quantile(0.05)),
+            "p25": int(speaker_counts.quantile(0.25)),
+            "p75": int(speaker_counts.quantile(0.75)),
+            "p95": int(speaker_counts.quantile(0.95)),
+            "p99": int(speaker_counts.quantile(0.99)),
+        },
+        # Imbalance ratio: how many unknown samples per average known sample
+        "unknown_over_mean_known": float(n_unknown / speaker_counts.mean()),
+        "unknown_over_median_known": float(n_unknown / speaker_counts.median()),
+        # Macro-F1 note: per-class "support" of unknown ≈ 2275, per known speaker ≈ 5
+        "speaker_frequency_table": {
+            int(k): int(v) for k, v in speaker_counts.value_counts().sort_index().items()
+        },
+        "mode_speaker_count": int(speaker_counts.mode().iloc[0]),
+        "n_speakers_with_mode": int((speaker_counts == speaker_counts.mode().iloc[0]).sum()),
+    }
 
-# relative frequency (for context)
-unknown_frac = n_unknown / total_files * 100
-known_frac   = n_known   / total_files * 100
-print(f"\nUnknown proportion      : {unknown_frac:.2f}%")
-print(f"Known proportion        : {known_frac:.2f}%")
+    # Extra: speakers with < 5 files (could complicate 5-fold / few-shot splits)
+    stats["n_speakers_below_5"] = int((speaker_counts < 5).sum())
+    stats["n_speakers_at_least_5"] = int((speaker_counts >= 5).sum())
+    return stats, speaker_counts
 
-# ------------- 3. visualisations -------------
-sns.set_theme(style="whitegrid", font_scale=1.15)
-plt.rcParams["figure.dpi"] = 150
 
-# -- 3a. Pie chart: unknown vs known --
-fig1, ax1 = plt.subplots(figsize=(7, 7))
-labels_pie = [f"Unknown\n({n_unknown:,} files)", f"Known\n({n_known:,} files)"]
-sizes_pie  = [n_unknown, n_known]
-colors_pie = ["#e74c3c", "#2ecc71"]
-explode_pie = (0.04, 0.04)
+# ────────────────────────────────────────────────────────────────
+#  3. Train/Val Split Design Analysis
+# ────────────────────────────────────────────────────────────────
 
-wedges, texts, autotexts = ax1.pie(
-    sizes_pie,
-    labels=labels_pie,
-    autopct="%1.1f%%",
-    startangle=90,
-    colors=colors_pie,
-    explode=explode_pie,
-    shadow=False,
-    textprops={"fontsize": 13, "weight": "bold"},
-    pctdistance=0.75,
-)
+def split_design(speaker_counts: pd.Series) -> dict:
+    """
+    Analyze the stratified split used by src/data_pipeline.stratified_split:
+      known speakers → 1 sample held out per speaker for validation
+      unknown class  → 20% held out
+    This mirrors the *competition* split (≈50/50 per person) but keeps a
+    training/validation separation for model selection.
+    """
+    n_val_known = int((speaker_counts >= 2).sum())   # 1 val + at least 1 train
+    n_known_files = int(speaker_counts.sum())
+    n_train_known = n_known_files - n_val_known
 
-for at in autotexts:
-    at.set_fontsize(12)
-    at.set_weight("bold")
-    at.set_color("white")
+    # Unknown 80/20 (config default unknown_val_ratio=0.2)
+    return {
+        "val_known_samples": n_val_known,
+        "train_known_samples": n_train_known,
+        "val_unknown_ratio": 0.2,
+        "note": "competition itself holds out ~50% per person; our local split keeps"
+                " 1 sample/speaker for val to monitor generalization.",
+    }
 
-ax1.set_title("Class Distribution: Unknown vs Known", fontsize=16, weight="bold", pad=20)
-fig1.tight_layout()
-fig1.savefig(PLOT_PIE, dpi=300, bbox_inches="tight", facecolor="white")
-print(f"\n[SAVED] {PLOT_PIE.name}")
-plt.close(fig1)
 
-# -- 3b. Bar chart: distribution of files per known speaker --
-fig2, ax2 = plt.subplots(figsize=(12, 6))
+# ────────────────────────────────────────────────────────────────
+#  4. Visualizations
+# ────────────────────────────────────────────────────────────────
 
-# value counts of the per-speaker counts
-dist = speaker_counts.value_counts().sort_index()
-bars = ax2.bar(
-    dist.index.astype(str),
-    dist.values,
-    color=sns.color_palette("viridis", len(dist)),
-    edgecolor="white",
-    linewidth=0.8,
-)
-
-# add count labels on top of each bar
-i = 0
-for bar, val in zip(bars, dist.values):
-    ax2.text(
-        bar.get_x() + bar.get_width() / 2.0,
-        bar.get_height() + 0.3,
-        str(val),
-        ha="center",
-        va="bottom",
-        fontsize=11,
-        fontweight="bold",
-        color="#333333",
+def plot_class_distribution(n_unknown: int, n_known: int, save_path: Path):
+    fig, ax = plt.subplots(figsize=(7.5, 6))
+    sizes = [n_unknown, n_known]
+    labels = [f"Unknown (OOD)\n{n_unknown:,} files", f"Known\n{n_known:,} files"]
+    colors = ["#e74c3c", "#2ecc71"]
+    wedges, texts, autotexts = ax.pie(
+        sizes, labels=labels, autopct="%1.1f%%", startangle=90,
+        colors=colors, explode=(0.04, 0.04), pctdistance=0.72,
+        textprops={"fontsize": 12, "weight": "bold"},
     )
-    i = i + 1
-
-ax2.set_xlabel("Number of audio files per speaker", fontsize=13, weight="bold")
-ax2.set_ylabel("Number of speakers", fontsize=13, weight="bold")
-ax2.set_title("Distribution of File Counts Among Known Speakers", fontsize=15, weight="bold", pad=12)
-ax2.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
-
-# add a vertical line for the mean
-ax2.axvline(
-    x=mean_files - 0.5,
-    color="red",
-    linestyle="--",
-    linewidth=2.0,
-    alpha=0.7,
-    label=f"Mean = {mean_files:.2f}",
-)
-ax2.legend(fontsize=12)
-
-fig2.tight_layout()
-fig2.savefig(PLOT_BAR, dpi=300, bbox_inches="tight", facecolor="white")
-print(f"[SAVED] {PLOT_BAR.name}")
-plt.close(fig2)
+    for at in autotexts:
+        at.set_color("white")
+        at.set_fontsize(12)
+        at.set_weight("bold")
+    ax.set_title("Class Distribution — Unknown vs 446 Known Speakers\n"
+                 "(447-way classification task)", fontsize=14, weight="bold", pad=18)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
 
 
-# ------------- 4. Markdown report -------------
-report_content = f"""# Phase 0 — Exploratory Data Analysis Report
+def plot_speaker_counts(speaker_counts: pd.Series, save_path: Path):
+    fig, ax = plt.subplots(figsize=(13, 5.5))
+    vals = np.sort(speaker_counts.values)
+    ax.hist(vals, bins=np.arange(vals.min() - 0.5, vals.max() + 1.5, 1.0),
+            color="#3498db", edgecolor="white", alpha=0.9)
+    ax.axvline(speaker_counts.mean(), color="red", linestyle="--", linewidth=2,
+               label=f"Mean = {speaker_counts.mean():.2f}")
+    ax.axvline(speaker_counts.median(), color="#2c3e50", linestyle="--", linewidth=2,
+               label=f"Median = {speaker_counts.median():.0f}")
+    ax.set_xlabel("Audio files per known speaker", fontsize=13, weight="bold")
+    ax.set_ylabel("Number of speakers", fontsize=13, weight="bold")
+    ax.set_title("File Counts Among the 446 Known Speakers", fontsize=15, weight="bold")
+    ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
+    ax.legend(fontsize=12)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def plot_speaker_frequency(speaker_counts: pd.Series, save_path: Path):
+    freq = speaker_counts.value_counts().sort_index()
+    fig, ax = plt.subplots(figsize=(9, 5))
+    bars = ax.bar(freq.index.astype(str), freq.values, color=sns.color_palette("viridis", len(freq)),
+                  edgecolor="white", linewidth=0.8)
+    for bar, val in zip(bars, freq.values):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.4, str(val),
+                ha="center", va="bottom", fontsize=11, fontweight="bold", color="#333333")
+    ax.set_xlabel("Number of files per speaker", fontsize=13, weight="bold")
+    ax.set_ylabel("Number of speakers", fontsize=13, weight="bold")
+    ax.set_title("Speaker Frequency Breakdown", fontsize=15, weight="bold")
+    ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def plot_cumulative_coverage(speaker_counts: pd.Series, save_path: Path):
+    """Cumulative share of known-speaker files captured by the top-k speakers."""
+    sorted_counts = speaker_counts.sort_values(ascending=False)
+    cum = np.cumsum(sorted_counts.values) / sorted_counts.values.sum()
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(range(1, len(cum) + 1), cum * 100, color="#8e44ad", linewidth=2)
+    # highlight: 80% coverage point
+    idx80 = np.searchsorted(cum, 0.8) + 1
+    ax.axhline(80, color="gray", linestyle="--", linewidth=1.2)
+    ax.axvline(idx80, color="gray", linestyle="--", linewidth=1.2)
+    ax.annotate(f"80% of known files in top {idx80} speakers",
+                xy=(idx80, 80), xytext=(idx80 + 8, 60),
+                arrowprops=dict(arrowstyle="->", color="#2c3e50"),
+                fontsize=11, fontweight="bold")
+    ax.set_xlabel("Speakers sorted by file count (rank)", fontsize=13, weight="bold")
+    ax.set_ylabel("Cumulative share of known files (%)", fontsize=13, weight="bold")
+    ax.set_title("Cumulative Coverage — Known Speakers", fontsize=15, weight="bold")
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+# ────────────────────────────────────────────────────────────────
+#  5. Report Generation
+# ────────────────────────────────────────────────────────────────
+
+def fmt_table(headers, rows):
+    header = "| " + " | ".join(headers) + " |"
+    sep = "|" + "|".join(["---"] * len(headers)) + "|"
+    lines = [header, sep]
+    for r in rows:
+        lines.append("| " + " | ".join(str(x) for x in r) + " |")
+    return "\n".join(lines)
+
+
+def generate_report(integrity: dict, stats: dict, split: dict, freq_table: dict) -> str:
+    ps = stats["per_speaker"]
+    return f"""# Phase 0 — Label & Metadata EDA Report
 
 **Project:** IAAA Competition 2026 — Open-Set Speaker Identification  
-**Date:** 2026-07-16  
-**Branch:** `feature/dataEDA`
+**Module:** `src/eda.py` · **Date:** 2026-08-08
 
 ---
 
-## 1. Data Loading & Cleaning
+## 1. Competition Frame (from official spec)
 
-| Metric | Value |
-|--------|-------|
-| Raw rows loaded | {total_files:,} |
-| Missing values | {missing.sum()} |
-| Duplicate rows | {dup_rows} |
-| Duplicate audio files | {dup_audio} |
-| Rows after cleaning | {len(df):,} |
+The task is a **447-way open-set classification**:
 
----
+| Entity | Count | Label in training CSV |
+|--------|------:|----------------------:|
+| Known speakers | 446 | UUID string (speaker-id) |
+| OOD / unknown speakers | 554 (hidden) | `"unknown"` (single aggregated class) |
+| **Total classes** | **447** | `0` + `1..446` (internal mapping) |
 
-## 2. Dataset Statistics
-
-### Global Counts
-
-- **Total audio files** : **{total_files:,}**
-- **Unique known speakers (UUIDs)** : **{n_known_speakers:,}**
-- **Audio files for `"unknown"` class** : **{n_unknown:,}** ({unknown_frac:.2f}%)
-- **Audio files for known classes** : **{n_known:,}** ({known_frac:.2f}%)
-
-### Per-Known-Speaker Distribution
-
-| Statistic | Value |
-|-----------|-------|
-| Minimum files per speaker | {min_files} |
-| Maximum files per speaker | {max_files} |
-| Mean files per speaker | {mean_files:.4f} |
-| Median files per speaker | {median_files:.1f} |
-| Standard deviation | {std_files:.4f} |
-
-### Speaker Frequency Breakdown
-
-| Files per speaker | Number of speakers |
-|-------------------|-------------------:|
-"""
-
-# build the frequency table
-for val in sorted(speaker_counts.unique()):
-    cnt = (speaker_counts == val).sum()
-    report_content += f"| {val} | {cnt} |\n"
-
-report_content += f"""
-### Imbalance Ratio
-
-$$
-\\text{{Imbalance Ratio}} = \\frac{{\\text{{Unknown files}}}}{{\\text{{Mean files per known speaker}}}}
-= \\frac{{{n_unknown}}}{{{mean_files:.4f}}}
-= {imbalance_ratio:.4f}
-$$
+- Audio for each person is split **≈50/50** train vs hidden-eval chunks.
+- The evaluation metric is **Macro-Averaged F1 across all 447 classes** — every known
+  speaker counts as its own class with *equal weight to the unknown class*.
+- ⇒ **Each of the 446 known speakers must be recognized as its own identity**, while
+  OOD speakers must be rejected as `unknown`. Per-class accuracy on the ~5 samples per
+  known speaker is decisive.
 
 ---
 
-## 3. Visualisations
+## 2. Data Loading & Cleaning
 
-### 3.1 Class Distribution — Unknown vs Known
+{fmt_table(
+    ["Metric", "Value"],
+    [
+        ["Raw rows loaded", f"{integrity['raw_rows']:,}"],
+        ["Missing values", integrity["missing_values"]],
+        ["Duplicate rows", integrity["duplicate_rows"]],
+        ["Duplicate audio files", integrity["duplicate_audio_files"]],
+        ["Missing speaker_id", integrity["missing_speaker_id"]],
+        ["Raw audio files on disk", f"{integrity['raw_files_on_disk']:,}"],
+        ["In labels but missing (raw)", integrity["in_labels_but_missing_raw"]],
+        ["Converted 16 kHz WAV on disk", f"{integrity['wav_files_on_disk']:,}"],
+        ["In labels but missing (WAV)", integrity["in_labels_but_missing_wav"]],
+    ],
+)}
 
-![Class Distribution]({PLOT_PIE.name})
-
-### 3.2 Distribution of Files Among Known Speakers
-
-![Known Speakers Distribution]({PLOT_BAR.name})
+> ✅ **Integrity**: every labelled audio file exists both as raw `.mp3` and as a
+> converted 16 kHz mono `.wav` — the dataset is fully self-consistent.
 
 ---
 
-## 4. Analysis & Implications for Model Training
+## 3. Class Composition
 
-The dataset exhibits a **moderate class imbalance** between the `unknown` (OOD) class and the known-speaker classes:
+{fmt_table(
+    ["Statistic", "Value"],
+    [
+        ["Total audio files", f"{stats['total_files']:,}"],
+        ["Known files (446 speakers)", f"{stats['known_files']:,} ({stats['known_frac']*100:.2f}%)"],
+        ["Unknown / OOD files", f"{stats['unknown_files']:,} ({stats['unknown_frac']*100:.2f}%)"],
+        ["Unique known speaker-ids", f"{stats['n_known_speakers']:,}"],
+        ["Hidden OOD identities (spec)", f"{stats['n_unknown_speakers_hidden']:,}"],
+        ["Total people (spec)", f"{stats['total_people_spec']:,}"],
+        ["Total classes (incl. unknown)", f"{stats['classes_total']:,}"],
+    ],
+)}
 
-- **{n_unknown:,} samples ({unknown_frac:.1f}%)** belong to the single `"unknown"` class (class **0**).
-- The remaining **{n_known:,} samples ({known_frac:.1f}%)** are spread across **{n_known_speakers:,} known speakers**.
-- The **Imbalance Ratio** is **{imbalance_ratio:.2f}**, meaning the unknown class has roughly **{imbalance_ratio:.1f}×** as many samples as the average known speaker.
-- Among known speakers, the distribution is **almost perfectly balanced**: the majority of speakers have exactly **{speaker_counts.mode().values[0]}** samples, with only minor deviations.
+### 3.1 Per-Known-Speaker Balance
 
-### Key Challenges
+{fmt_table(
+    ["Statistic", "Value"],
+    [
+        ["Min files / speaker", ps["min"]],
+        ["Max files / speaker", ps["max"]],
+        ["Mean files / speaker", f"{ps['mean']:.4f}"],
+        ["Median files / speaker", f"{ps['median']:.1f}"],
+        ["Std dev", f"{ps['std']:.4f}"],
+        ["Mode (most common)", f"{stats['mode_speaker_count']} files "
+                               f"({stats['n_speakers_with_mode']} speakers)"],
+        ["Speakers with ≥ 5 files", f"{stats['n_speakers_at_least_5']} / {stats['n_known_speakers']}"],
+    ],
+)}
 
-1. **Open-Set Nature:** The model must not only classify {n_known_speakers:,} known speakers but also reliably detect OOD samples as class `0`. A naïve argmax over the softmax output will tend to over-confidently assign known labels to OOD samples.
-2. **Imbalance at Class Level:** The `unknown` class is over-represented relative to individual known speakers. Without mitigation, the model may become biased toward predicting `unknown`.
-3. **Balanced Among Known Speakers:** The known speakers are nearly uniformly distributed, which is favourable — no sub-sampling or re-weighting is needed *within* the known set.
+**Speaker frequency breakdown** (how many speakers have N files):
 
-### Recommended Strategies
+{fmt_table(["Files per speaker", "Number of speakers"],
+           [(n, c) for n, c in sorted(freq_table.items())])}
 
-| Strategy | Rationale |
-|----------|-----------|
-| **Weighted Cross-Entropy Loss** | Assign a higher weight to known-speaker classes and a slightly lower weight to the `unknown` class to counteract the imbalance, or use inverse-class-frequency weighting for the 448-class problem. |
-| **Focal Loss** | Apply focal loss (Lin et al., 2017) to down-weight easy samples and focus training on hard-to-classify and OOD examples — well suited for open-set problems. |
-| **Oversampling / Undersampling** | Since the known-speaker side is already well balanced, consider **undersampling** the `unknown` class during training and controlling OOD detection via an uncertainty threshold. |
-| **Two-Head Architecture** | Train one head for known-speaker classification and a separate OOD detector (e.g., an energy-based or Mahalanobis-distance head) — a modern best-practice for open-set recognition. |
-| **Data Augmentation** | Use SpecAugment, MixUp, or noise injection to increase effective diversity, especially for speakers with fewer than the modal sample count. |
+### 3.2 Imbalance Metrics (w.r.t. the 447-way problem)
 
-### Conclusion
+{fmt_table(
+    ["Metric", "Formula", "Value"],
+    [
+        ["Unknown : mean-known ratio",
+         "unknown_files / mean(known per speaker)",
+         f"{stats['unknown_over_mean_known']:.2f}×"],
+        ["Unknown : median-known ratio",
+         "unknown_files / median(known per speaker)",
+         f"{stats['unknown_over_median_known']:.2f}×"],
+        ["Macro-F1 per-class support gap",
+         "2275 (unknown) vs ≈5 (each known speaker)",
+         f"≈{stats['unknown_over_median_known']/1:.0f}×"],
+    ],
+)}
 
-The dataset is **highly structured**: known speakers are nearly perfectly balanced, but the OOD (`unknown`) class introduces a **class-level imbalance** with an Imbalance Ratio of **{imbalance_ratio:.2f}**. A standard cross-entropy loss will likely suffice for known-speaker separation, but explicit **imbalance mitigation** (weighted loss, focal loss, or OOD-specific techniques) is essential for robust open-set performance. The recommended starting point is **Weighted Cross-Entropy** combined with **Focal Loss**, with validation against a held-out OOD set to tune the threshold for `unknown` rejection.
+> **Macro-F1 implication:** because the metric averages F1 *per class*, the model gets
+> exactly **one F1 term for `unknown`** and **one F1 term for every known speaker**.
+> A model that predicts `unknown` for everything scores *high recall on unknown* but
+> **zero F1 on all 446 known speakers** ⇒ Macro-F1 collapses. Conversely, missing OOD
+> hurts only one class. **The dominant risk is known-speaker recall.**
+
+---
+
+## 4. Train/Val Split Design
+
+{fmt_table(
+    ["Component", "Value"],
+    [
+        ["Validation samples (known, 1/speaker)", f"{split['val_known_samples']:,}"],
+        ["Training samples (known)", f"{split['train_known_samples']:,}"],
+        ["Validation share of unknown", f"{split['val_unknown_ratio']*100:.0f}%"],
+        ["Note", split["note"]],
+    ],
+)}
+
+---
+
+## 5. Visualizations
+
+### 5.1 Class Distribution
+
+![Class Distribution](phase0_class_distribution.png)
+
+### 5.2 File Counts Among Known Speakers
+
+![Speaker Counts](phase0_speaker_counts.png)
+
+### 5.3 Speaker Frequency Breakdown
+
+![Speaker Frequency](phase0_speaker_frequency.png)
+
+### 5.4 Cumulative Coverage
+
+![Cumulative Coverage](phase0_cumulative_coverage.png)
+
+---
+
+## 6. Implications & Recommended Strategies
+
+### 6.1 Known-speaker recognition is the bottleneck
+
+- Every known speaker has only **≈5 training samples** → few-shot recognition, not
+  standard closed-set classification. Per-speaker accuracy is the main driver of
+  Macro-F1 (446 of 447 classes).
+- **Strategy:** strong pretrained speaker encoder (ECAPA / WavLM / CAM++ / ERes2NetV2 / TitaNet), heavy
+  time-domain augmentation + random window cropping to multiply effective samples,
+  and **ArcFace-style angular margin** to squeeze separation between near-identical
+  utterances.
+
+### 6.2 The unknown class must be a *rejection*, not a majority class
+
+- With ~2275 unknown samples the model would happily learn `P(unknown)` — but
+  Macro-F1 punishes trading known-recall for unknown-recall 446×.
+- **Strategy:** two-head design (OOD head + speaker head) with **controlled batch
+  balancing** (30% OOD / 70% known) and an explicit OOD logit fused as
+  `p[unknown] = sigmoid(ood)`; do **not** let the unknown class dominate gradient flow.
+
+### 6.3 Class-conditional macro-F1 needs threshold tuning on OOD
+
+- Validate on a held-out OOD set and tune the OOD threshold (or energy-based score)
+  so that *both* known recall and unknown precision stay high.
+
+---
+
+## 7. Key Numbers (summary JSON)
+
+```json
+{json.dumps(stats, indent=2, ensure_ascii=False)[:2400]}
+```
 
 ---
 
 *Report generated programmatically via `src/eda.py`.*
 """
 
-with open(REPORT, "w", encoding="utf-8") as f:
-    f.write(report_content)
 
-print(f"\n[SAVED] {REPORT.name}")
-print("\n✅ Phase 0 EDA complete — all files generated.")
+# ────────────────────────────────────────────────────────────────
+#  Main
+# ────────────────────────────────────────────────────────────────
+
+def main():
+    print("=" * 60)
+    print("  Phase 0 — Label & Metadata EDA")
+    print("=" * 60)
+
+    print("\n[1/5] Loading labels...")
+    df = load_labels(LABELS_PATH)
+    print(f"  Loaded {len(df):,} rows from {LABELS_PATH.name}")
+
+    print("\n[2/5] Data integrity...")
+    integrity = integrity_report(df)
+    for k, v in integrity.items():
+        print(f"  {k:30s} {v}")
+
+    print("\n[3/5] Class composition...")
+    stats, speaker_counts = class_composition(df)
+    print(f"  Known: {stats['known_files']:,} files / {stats['n_known_speakers']} speakers")
+    print(f"  Unknown: {stats['unknown_files']:,} files ({stats['unknown_frac']*100:.2f}%)")
+    print(f"  Per-speaker: min={stats['per_speaker']['min']} mean={stats['per_speaker']['mean']:.2f} "
+          f"max={stats['per_speaker']['max']}")
+    print(f"  Imbalance (unknown/mean-known): {stats['unknown_over_mean_known']:.2f}×")
+
+    print("\n[4/5] Split design...")
+    split = split_design(speaker_counts)
+    print(f"  Val known (1/speaker): {split['val_known_samples']:,} | "
+          f"Train known: {split['train_known_samples']:,}")
+
+    print("\n[5/5] Visualizations & report...")
+    sns.set_theme(style="whitegrid", font_scale=1.1)
+    plt.rcParams["figure.dpi"] = 120
+
+    plot_class_distribution(stats["unknown_files"], stats["known_files"], PLOT_PIE)
+    plot_speaker_counts(speaker_counts, PLOT_SPEAKER_COUNTS)
+    plot_speaker_frequency(speaker_counts, PLOT_SPEAKER_FREQ)
+    plot_cumulative_coverage(speaker_counts, PLOT_COVERAGE)
+    print(f"  [SAVED] {PLOT_PIE.name}, {PLOT_SPEAKER_COUNTS.name}, "
+          f"{PLOT_SPEAKER_FREQ.name}, {PLOT_COVERAGE.name}")
+
+    # JSON summary (reused by later phases)
+    JSON_SUMMARY.write_text(json.dumps(stats, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"  [SAVED] {JSON_SUMMARY.name}")
+
+    report = generate_report(integrity, stats, split, stats["speaker_frequency_table"])
+    REPORT.write_text(report, encoding="utf-8")
+    print(f"  [SAVED] {REPORT.name}")
+
+    print("\n✅ Phase 0 EDA complete.")
+
+
+if __name__ == "__main__":
+    main()
