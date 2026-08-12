@@ -75,6 +75,7 @@ model:
       source: speechbrain/spkrec-ecapa-voxceleb
       unfreeze_last_n_blocks: 2
       local_path: weights/ecapa
+      pooling_type: identity
     wavlm:
       base_model: microsoft/wavlm-large
       freeze_feature_extractor: true
