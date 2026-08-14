@@ -13,7 +13,7 @@ weights/
 # Submission package build outputs (rebuilt via scripts/build_submission.py).
 submission/src/
 submission/configs/
-submission/README.md
+submission/vendor/
 data/processed/*
 !data/processed/.gitkeep
 Competition-Guide
@@ -45,3 +45,6 @@ Thumbs.db
 
 
 eda
+# Leaderboard submission zip (built artifact — never commit)
+submission_leaderboard.zip
+*.zip

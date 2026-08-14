@@ -14,16 +14,25 @@ This module:
      metric — not binary F1).
   4. Reports Macro-F1 of: centroid-only, trained-model-only (if a checkpoint
      exists), and their weighted fusion.
+  5. (NEW) Multi-encoder centroid ensemble: build centroids from multiple frozen
+     encoders and fuse their predictions with the same 6 fusion methods.
 
 Run:
+    # Single encoder
     uv run --no-sync python -m src.centroid_baseline
+
+    # Multi-encoder centroid ensemble
+    uv run --no-sync python -m src.centroid_baseline \\
+        --encoders ecapa campp eres2net titanet
 """
 
 from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -304,10 +313,195 @@ def evaluate_fusion(
 
 
 # ────────────────────────────────────────────────────────────────
+#  Multi-encoder centroid ensemble
+# ────────────────────────────────────────────────────────────────
+
+def multi_encoder_centroid_ensemble(
+    encoders: List[str],
+    force_cache: bool = False,
+) -> dict:
+    """Build centroid classifiers from multiple frozen encoders and fuse them.
+
+    For each encoder:
+      1. Build embedding cache (idempotent, keyed by encoder name)
+      2. Fit per-speaker centroids on train
+      3. Evaluate centroid-only Macro-F1 on val
+
+    Then fuse all centroid probability vectors using the 6 fusion methods
+    from src.ensemble and report the best.
+
+    Returns:
+        dict with per-encoder results and fusion comparison.
+    """
+    from src.metrics import macro_f1_score
+    from src.data_pipeline import load_config, prepare_clean_split
+    from src.ensemble import (
+        weighted_average_fusion,
+        geometric_mean_fusion,
+        rank_average_fusion,
+        max_prob_fusion,
+        grid_search_weights,
+    )
+
+    config = load_config(str(CONFIG_PATH))
+    data_cfg = config["data"]
+
+    print("=" * 60)
+    print("  Multi-Encoder Centroid Ensemble")
+    print("=" * 60)
+    print(f"  Encoders: {encoders}")
+
+    # Reusable split (same for all encoders)
+    train_df, val_df, class_map = prepare_clean_split(
+        labels_path=data_cfg["labels_path"],
+        audio_dir=data_cfg["audio_dir"],
+        processed_labels=data_cfg["processed_labels"],
+        val_per_known=1,
+        unknown_val_ratio=0.2,
+        min_valid_duration=config["audio"].get("min_valid_duration", MIN_VALID_DURATION),
+    )
+    num_classes = len(class_map)
+    val_labels = val_df["label"].values.astype(np.int64)
+
+    # ── Per-encoder: cache → centroids → evaluate ──
+    per_encoder = {}
+    all_centroid_probs: List[np.ndarray] = []
+
+    for enc in encoders:
+        print(f"\n  [{enc}] Building embedding cache...")
+        cache = build_embedding_cache(force=force_cache, encoder_type=enc)
+        train_embs, val_embs = cache["train_embs"], cache["val_embs"]
+        train_labels = cache["train_labels"]
+
+        print(f"  [{enc}] Fitting centroids ({train_embs.shape[1]}-d)...")
+        centroids, speakers = fit_centroids(train_embs, train_labels)
+        print(f"  [{enc}] {len(speakers)} centroids")
+
+        print(f"  [{enc}] Evaluating on val...")
+        cent = evaluate_centroid(val_embs, val_labels, centroids, speakers, num_classes)
+
+        centroid_probs = centroid_probs_global(
+            cent["sims"], cent["ood_scores"], speakers, num_classes=num_classes,
+        )
+        all_centroid_probs.append(centroid_probs)
+        per_encoder[enc] = {
+            "macro_f1": float(cent["best_macro_f1"]),
+            "pure_argmax_macro_f1": float(cent["pure_argmax_macro_f1"]),
+            "best_threshold": float(cent["best_threshold"]),
+            "n_centroids": int(len(speakers)),
+            "dim": int(train_embs.shape[1]),
+        }
+        print(f"  [{enc}] Centroid Macro-F1: {cent['best_macro_f1']:.4f} "
+              f"(pure argmax: {cent['pure_argmax_macro_f1']:.4f}, "
+              f"thr={cent['best_threshold']:.3f})")
+
+    # ── Fuse centroid probs ──
+    print(f"\n{'─' * 60}")
+    print("  Centroid Ensemble — Fusion Comparison")
+    print(f"{'─' * 60}")
+
+    fusion_results = {}
+
+    # Average
+    t0 = time.time()
+    avg_probs = weighted_average_fusion(all_centroid_probs, weights=None)
+    avg_mf1 = macro_f1_score(val_labels, avg_probs.argmax(axis=1), num_classes)
+    fusion_results["average"] = {"method": "average", "macro_f1": float(avg_mf1),
+                                  "time_s": round(time.time() - t0, 2)}
+    print(f"  📊 average (equal weights):         Macro-F1 = {avg_mf1:.4f}")
+
+    # Weighted average (grid search)
+    t0 = time.time()
+    gs = grid_search_weights(all_centroid_probs, val_labels, num_classes, step=0.05)
+    fusion_results["weighted_average"] = {
+        "method": "weighted_average (grid search)",
+        "macro_f1": float(gs["best_macro_f1"]),
+        "weights": gs["best_weights"],
+        "time_s": round(time.time() - t0, 2),
+    }
+    print(f"  📊 weighted_average (grid search):  Macro-F1 = {gs['best_macro_f1']:.4f}  "
+          f"weights={gs['best_weights']}")
+
+    # Geometric mean
+    t0 = time.time()
+    geo_probs = geometric_mean_fusion(all_centroid_probs)
+    geo_mf1 = macro_f1_score(val_labels, geo_probs.argmax(axis=1), num_classes)
+    fusion_results["geometric_mean"] = {"method": "geometric_mean",
+                                         "macro_f1": float(geo_mf1),
+                                         "time_s": round(time.time() - t0, 2)}
+    print(f"  📊 geometric_mean:                  Macro-F1 = {geo_mf1:.4f}")
+
+    # Rank average
+    t0 = time.time()
+    rank_probs = rank_average_fusion(all_centroid_probs)
+    rank_mf1 = macro_f1_score(val_labels, rank_probs.argmax(axis=1), num_classes)
+    fusion_results["rank_average"] = {"method": "rank_average",
+                                       "macro_f1": float(rank_mf1),
+                                       "time_s": round(time.time() - t0, 2)}
+    print(f"  📊 rank_average:                    Macro-F1 = {rank_mf1:.4f}")
+
+    # Max prob
+    t0 = time.time()
+    max_probs = max_prob_fusion(all_centroid_probs)
+    max_mf1 = macro_f1_score(val_labels, max_probs.argmax(axis=1), num_classes)
+    fusion_results["max_prob"] = {"method": "max_prob",
+                                   "macro_f1": float(max_mf1),
+                                   "time_s": round(time.time() - t0, 2)}
+    print(f"  📊 max_prob:                        Macro-F1 = {max_mf1:.4f}")
+
+    # ── Summary ──
+    print(f"\n{'=' * 60}")
+    print("  🏆 Centroid Ensemble Summary")
+    print(f"{'=' * 60}")
+
+    sorted_methods = sorted(
+        fusion_results.items(),
+        key=lambda x: x[1]["macro_f1"],
+        reverse=True,
+    )
+    for rank, (method, result) in enumerate(sorted_methods, 1):
+        marker = "👑" if rank == 1 else "  "
+        extra = ""
+        if method == "weighted_average":
+            extra = f" weights={result.get('weights', '?')}"
+        print(f"  {marker} #{rank}: {result['method']:<35s} "
+              f"Macro-F1 = {result['macro_f1']:.4f}{extra}")
+
+    output = {
+        "encoders": encoders,
+        "num_classes": num_classes,
+        "per_encoder": per_encoder,
+        "fusion_results": fusion_results,
+        "best_method": sorted_methods[0][0],
+        "best_macro_f1": sorted_methods[0][1]["macro_f1"],
+    }
+
+    results_path = DATA_PROCESSED / "centroid_ensemble_results.json"
+    results_path.write_text(
+        json.dumps(output, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+    print(f"\n  ✓ Results saved to {results_path}")
+
+    return output
+
+
+# ────────────────────────────────────────────────────────────────
 #  Main
 # ────────────────────────────────────────────────────────────────
 
-def main(force_cache: bool = False, encoder_type: Optional[str] = None):
+def main(force_cache: bool = False, encoder_type: Optional[str] = None,
+         encoders: Optional[List[str]] = None):
+    """Run centroid baseline (single or multi-encoder).
+
+    If `encoders` is given (e.g. ["ecapa", "campp", "eres2net", "titanet"]),
+    run the multi-encoder centroid ensemble pipeline. Otherwise, run the
+    original single-encoder pipeline.
+    """
+    if encoders and len(encoders) >= 2:
+        multi_encoder_centroid_ensemble(encoders, force_cache=force_cache)
+        return
+
     print("=" * 60)
     print("  Centroid Baseline + Fusion")
     print("=" * 60)
@@ -381,12 +575,18 @@ def main(force_cache: bool = False, encoder_type: Optional[str] = None):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Centroid baseline + fusion")
+    parser = argparse.ArgumentParser(
+        description="Centroid baseline + fusion (single or multi-encoder)")
     parser.add_argument("--force-cache", action="store_true",
                         help="Recompute the embedding cache even if it exists")
     parser.add_argument("--encoder-type", default=None,
                         choices=["ecapa", "wavlm", "campp", "eres2net", "titanet"],
-                        help="Override the active encoder (default: config's encoder_type)")
+                        help="Override the active encoder (single-encoder mode)")
+    parser.add_argument("--encoders", nargs="+", default=None,
+                        choices=["ecapa", "wavlm", "campp", "eres2net", "titanet"],
+                        help="Multi-encoder centroid ensemble "
+                             "(e.g. --encoders ecapa campp eres2net titanet)")
     args = parser.parse_args()
-    main(force_cache=args.force_cache, encoder_type=args.encoder_type)
+    main(force_cache=args.force_cache, encoder_type=args.encoder_type,
+         encoders=args.encoders)
 

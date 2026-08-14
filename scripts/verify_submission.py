@@ -1,0 +1,142 @@
+"""One-shot verification of submission_leaderboard.zip.
+
+Replays the exact flow the leaderboard runs:
+    1. extract the zip into a fresh dir
+    2. copy a few real audio samples into a test data dir
+    3. run `submission.py` from a DIFFERENT cwd (NOT the package dir)
+    4. assert the run is silent (0 bytes stdout/stderr) so a real server
+       error would be the first thing shown
+    5. validate the CSV (audio_file,speaker_id with valid UUIDs / unknown)
+
+Usage (cmd.exe):
+    D:\\Projects\\My projects\\IAAA_Compet\\leaderbordvenv\\.venv\\Scripts\\python.exe
+        D:\\Projects\\My projects\\IAAA_Compet\\Speaker-identification\\scripts\\verify_submission.py
+"""
+
+import csv
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import zipfile
+from pathlib import Path
+
+ROOT = Path(r"D:\Projects\My projects\IAAA_Compet\Speaker-identification")
+ZIP = ROOT / "submission_leaderboard.zip"
+RAW = ROOT / "data" / "raw"
+PYTHON = Path(
+    r"D:\Projects\My projects\IAAA_Compet\leaderbordvenv\.venv\Scripts\python.exe"
+)
+N_SAMPLES = 8
+UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+SUFFIXES = {".mp3", ".wav", ".flac", ".ogg", ".m4a"}
+
+
+def main() -> int:
+    print("=" * 70)
+    print("  Verification of submission_leaderboard.zip")
+    print("=" * 70)
+
+    if not ZIP.exists():
+        print(f"  ZIP missing: {ZIP}")
+        return 1
+    if not PYTHON.exists():
+        print(f"  python missing: {PYTHON}")
+        return 1
+
+    work = Path(tempfile.mkdtemp(prefix="verify_sub_"))
+    extract, cwd, data = work / "extract", work / "cwd", work / "data"
+    extract.mkdir()
+    cwd.mkdir()
+    data.mkdir()
+
+    # ── 1. extract ──
+    print("\n[1/5] Extracting zip ...")
+    with zipfile.ZipFile(ZIP) as z:
+        z.extractall(extract)
+    entry = extract / "submission.py"
+    if not entry.exists():
+        print(f"  FAIL: submission.py missing after extract -> {extract}")
+        return 1
+    n_files = sum(1 for f in extract.rglob("*") if f.is_file())
+    print(f"      OK ({n_files} files extracted)")
+
+    # ── 2. sample audio ──
+    print("[2/5] Copying sample audio ...")
+    mp3s = sorted(RAW.glob("*.mp3"))[:N_SAMPLES]
+    if not mp3s:
+        print(f"  FAIL: no audio files in {RAW}")
+        return 1
+    for m in mp3s:
+        shutil.copy2(m, data / m.name)
+    print(f"      OK ({len(mp3s)} files -> {data})")
+
+    # ── 3. run from a different cwd (like the leaderboard) ──
+    print(f"[3/5] Running submission.py from cwd = {cwd}")
+    print("      (deliberately NOT the package dir)")
+    out_csv = cwd / "out.csv"
+    try:
+        proc = subprocess.run(
+            [str(PYTHON), str(entry), "--data-dir", str(data),
+             "--predictions-file-path", str(out_csv)],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=3600,
+        )
+    except subprocess.TimeoutExpired:
+        print("  FAIL: run exceeded 1h timeout")
+        return 1
+
+    print(f"      exit code: {proc.returncode}")
+    print(f"      stdout: {len(proc.stdout)} bytes | stderr: {len(proc.stderr)} bytes")
+    if proc.returncode != 0:
+        print("      --- stderr (first 40 lines) ---")
+        print("\n".join(proc.stderr.splitlines()[:40]))
+        print("  FAIL: submission crashed")
+        return 1
+
+    # ── 4. silence check ──
+    print("[4/5] Silence check (0 bytes stdout + stderr) ...")
+    if proc.stdout or proc.stderr:
+        print("  FAIL: expected 0 bytes on both streams")
+        print("  stdout:", proc.stdout[:500])
+        print("  stderr:", proc.stderr[:500])
+        return 1
+    print("      OK (completely silent)")
+
+    # ── 5. CSV validation ──
+    print("[5/5] Validating CSV ...")
+    with open(out_csv, encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    if rows[0] != ["audio_file", "speaker_id"]:
+        print(f"  FAIL: bad header {rows[0]}")
+        return 1
+    bad = [
+        r for r in rows[1:]
+        if len(r) != 2
+        or not r[0].lower().endswith(tuple(SUFFIXES))
+        or (r[1] != "unknown" and not UUID_RE.match(r[1]))
+    ]
+    ok = len(rows) == N_SAMPLES + 1 and not bad
+    print(f"      rows={len(rows)-1} bad={len(bad)} header={rows[0]}")
+    for r in rows[1:min(4, len(rows))]:
+        print("        ", r)
+    if not ok:
+        print("  FAIL: CSV invalid")
+        return 1
+    print("      OK")
+
+    print("\n" + "=" * 70)
+    print("  ALL CHECKS PASSED ✅  zip is ready to submit.")
+    print("=" * 70)
+
+    shutil.rmtree(work, ignore_errors=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

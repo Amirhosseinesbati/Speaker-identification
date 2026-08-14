@@ -17,12 +17,42 @@ happen only on the dev machine when ``allow_hub_download=True``.
 """
 
 import os
+import sys
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 from transformers import WavLMModel
+
+
+# ═══════════════════════════════════════════════════════════
+#  Vendored deps for the leaderboard env
+# ═══════════════════════════════════════════════════════════
+# ModelScope 1.39+ ships REDUCED wheel metadata and does NOT declare its
+# runtime imports (addict, easydict, simplejson, yapf) — and those are NOT in
+# the leaderboard's package list either. The submission vendors them under
+# <root>/vendor/ so importing modelscope works in the evaluation env.
+_VENDOR_DIR = Path(__file__).resolve().parent.parent / "vendor"
+if _VENDOR_DIR.is_dir() and str(_VENDOR_DIR) not in sys.path:
+    sys.path.insert(0, str(_VENDOR_DIR))
+
+# Package root (zip root / submission/ dir). All weight local_paths in the
+# checkpoints are RELATIVE ("weights/ecapa", ...) and MUST resolve against this
+# dir, not the process CWD — the leaderboard may run submission.py from any
+# directory.
+_PKG_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _resolve_local_path(local_path: Optional[str]) -> Optional[str]:
+    """Resolve a possibly-relative weight path against the package root."""
+    if local_path is None:
+        return None
+    p = Path(local_path)
+    if not p.is_absolute():
+        p = _PKG_ROOT / p
+    return str(p)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -145,16 +175,13 @@ class WavLMEncoder(BaseEncoder):
             self.wavlm = WavLMModel.from_pretrained(
                 local_path, local_files_only=True,
             )
-            print(f"  ⬇️  WavLM: loaded from local {local_path}")
         elif allow_hub_download:
             if local_path is not None:
                 # Fresh machine (Vast.ai): local_path configured but missing —
                 # fall back to the hub once (dev/training mode only).
-                print(f"  ⬇️  WavLM: local {local_path} missing — "
-                      f"falling back to hub {base_model}")
+                self.wavlm = WavLMModel.from_pretrained(base_model)
             else:
-                print(f"  ⬇️  WavLM: downloaded from hub {base_model}")
-            self.wavlm = WavLMModel.from_pretrained(base_model)
+                self.wavlm = WavLMModel.from_pretrained(base_model)
         else:
             raise RuntimeError(
                 f"WavLM '{base_model}': local weights missing and "
@@ -165,9 +192,8 @@ class WavLMEncoder(BaseEncoder):
 
         if freeze_feature_extractor:
             self.freeze()
-            print(f"  🔒 WavLM feature extractor: FROZEN")
         else:
-            print(f"  🔓 WavLM feature extractor: UNFROZEN (full fine-tune)")
+            self.unfreeze()
 
     def forward(
         self,
@@ -213,12 +239,44 @@ class WavLMEncoder(BaseEncoder):
         if hasattr(self.wavlm, "feature_extractor"):
             for param in self.wavlm.feature_extractor.parameters():
                 param.requires_grad = True
-        print("  🔓 WavLM feature extractor UNFROZEN.")
 
 
 # ═══════════════════════════════════════════════════════════
 #  ECAPA-TDNN Encoder (SpeechBrain)
 # ═══════════════════════════════════════════════════════════
+
+def _patch_ruamel_max_depth():
+    """
+    hyperpyyaml (<2.0) calls ``yaml.load(stream, Loader=ruamel.yaml.Loader)``,
+    which breaks on ruamel.yaml >=0.18 (``'Loader' object has no attribute
+    'max_depth'``). The leaderboard pins NO ruamel-yaml, so pip installs the
+    latest (0.19.x) and speechbrain's ECAPA config load crashes with exactly
+    that AttributeError. Give the Loader a ``max_depth`` attribute (0 = no
+    limit) so the composer's depth check is skipped. No-op on ruamel <0.18.
+    """
+    try:
+        import ruamel.yaml
+        if not hasattr(ruamel.yaml.Loader, "max_depth"):
+            ruamel.yaml.Loader.max_depth = 0
+    except Exception:
+        pass
+
+
+def _patch_torchaudio_list_backends():
+    """
+    speechbrain 1.0.x (which the leaderboard resolves, pin >=1.0.3,<2.0) calls
+    ``torchaudio.list_audio_backends()`` unconditionally, but torchaudio 2.9+
+    removed that function — AttributeError at import of speechbrain.dataio.
+    Provide a stub returning a non-empty backend list so the old check passes.
+    No-op on speechbrain 1.1+ (which guards with hasattr) / torchaudio <2.9.
+    """
+    try:
+        import torchaudio
+        if not hasattr(torchaudio, "list_audio_backends"):
+            torchaudio.list_audio_backends = lambda: ["soundfile", "sox_io"]
+    except Exception:
+        pass
+
 
 def _patch_speechbrain_lazy_modules():
     """
@@ -309,19 +367,38 @@ class ECAPAEncoder(BaseEncoder):
 
         os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
+        # ruamel.yaml >=0.18 breaks hyperpyyaml's yaml.load(Loader=...)
+        # (AttributeError: 'Loader' has no attribute 'max_depth'); the
+        # leaderboard doesn't pin ruamel-yaml so the latest (0.19.x) is
+        # installed there. Patch BEFORE speechbrain/hyperpyyaml import.
+        _patch_ruamel_max_depth()
+
+        # speechbrain 1.0.x calls torchaudio.list_audio_backends() directly,
+        # which torchaudio 2.9+ removed — patch before any speechbrain import.
+        _patch_torchaudio_list_backends()
+
         import speechbrain  # noqa: F401  (registers lazy modules)
         # Neutralise speechbrain's broken lazy modules (k2_fsa etc.) before
         # any further import/load — see _patch_speechbrain_lazy_modules docstring.
         _patch_speechbrain_lazy_modules()
 
-        from speechbrain.inference.speaker import EncoderClassifier
-        from speechbrain.utils.fetching import LocalStrategy
+        # Version-tolerant imports: the leaderboard pins speechbrain>=1.0.3,<2.0
+        # and pip may install a different minor than this dev machine. Both the
+        # EncoderClassifier location and LocalStrategy moved across 1.0/1.1+.
+        try:
+            from speechbrain.inference.speaker import EncoderClassifier
+        except ImportError:
+            from speechbrain.pretrained import EncoderClassifier  # pre-1.0 path
+
+        try:
+            from speechbrain.utils.fetching import LocalStrategy
+        except Exception:
+            LocalStrategy = None  # absent in some speechbrain 1.0.x
 
         # ── Source resolution: local savedir (offline) vs hub (dev) ──
         if local_path is not None and os.path.isdir(local_path):
             src = local_path
             savedir = local_path
-            print(f"  ⬇️  ECAPA-TDNN: loading from local savedir {local_path}")
         elif allow_hub_download:
             src = source
             if local_path is not None:
@@ -329,11 +406,8 @@ class ECAPAEncoder(BaseEncoder):
                 # the hub INTO it so the offline layout gets populated.
                 os.makedirs(local_path, exist_ok=True)
                 savedir = local_path
-                print(f"  ⬇️  ECAPA-TDNN: local savedir {local_path} missing — "
-                      f"downloading from hub {source} into it")
             else:
                 savedir = None
-                print(f"  ⬇️  ECAPA-TDNN: downloading from hub {source}")
         else:
             raise RuntimeError(
                 f"ECAPA '{source}': local savedir missing and "
@@ -343,23 +417,24 @@ class ECAPAEncoder(BaseEncoder):
             )
 
         # Load on CPU first — device will be synced via self.to().
-        # local_strategy=COPY: self-contained savedir (no symlinks), which is
-        # required on Windows and makes the weights dir zip-portable.
-        self.classifier = EncoderClassifier.from_hparams(
-            source=src,
-            savedir=savedir,
-            run_opts={"device": "cpu"},
-            local_strategy=LocalStrategy.COPY,
-        )
+        # local_strategy=COPY is preferred (self-contained savedir, Windows-safe)
+        # but not available in every speechbrain version — fall back gracefully.
+        _load_kwargs = dict(source=src, savedir=savedir, run_opts={"device": "cpu"})
+        if LocalStrategy is not None:
+            try:
+                self.classifier = EncoderClassifier.from_hparams(
+                    **_load_kwargs, local_strategy=LocalStrategy.COPY)
+            except TypeError:
+                self.classifier = EncoderClassifier.from_hparams(**_load_kwargs)
+        else:
+            self.classifier = EncoderClassifier.from_hparams(**_load_kwargs)
 
         if freeze_encoder:
             self.freeze()
-            print(f"  🔒 ECAPA-TDNN encoder: FROZEN")
         elif self._unfreeze_last_n_blocks > 0:
             self.unfreeze_last_n_blocks(self._unfreeze_last_n_blocks)
         else:
             self.unfreeze()
-            print(f"  🔓 ECAPA-TDNN encoder: UNFROZEN (full fine-tune)")
 
         # Put SpeechBrain modules in eval mode. Even when the outer
         # model.train() is called, this encoder stays in eval to prevent
@@ -450,7 +525,6 @@ class ECAPAEncoder(BaseEncoder):
         for param in self.classifier.parameters():
             param.requires_grad = True
         self._frozen = False
-        print("  🔓 ECAPA-TDNN encoder UNFROZEN.")
 
     def unfreeze_last_n_blocks(self, n: int = 2) -> None:
         """
@@ -477,8 +551,6 @@ class ECAPAEncoder(BaseEncoder):
                     p.requires_grad = True
             self._frozen = False
             n_train = sum(p.numel() for p in self.classifier.parameters() if p.requires_grad)
-            print(f"  🔓 ECAPA-TDNN: unfroze last {n}/{n_blocks} block(s) — "
-                  f"{n_train:,} trainable encoder params")
             return
 
         # Fallback for unusual ECAPA variants: unfreeze the last n top-level
@@ -492,8 +564,6 @@ class ECAPAEncoder(BaseEncoder):
                     p.requires_grad = True
         self._frozen = False
         n_train = sum(p.numel() for p in self.classifier.parameters() if p.requires_grad)
-        print(f"  🔓 ECAPA-TDNN: unfroze last {n} module(s) — "
-              f"{n_train:,} trainable encoder params")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -534,26 +604,31 @@ def _modelscope_load_model(
         os.environ["MODELSCOPE_CACHE"] = local_cache
         os.environ["MODELSCOPE_HOME"] = local_cache
         # Resolve the snapshot from disk only — zero network calls (C1).
-        model_dir = snapshot_download(
-            model_id, revision=revision,
-            cache_dir=local_cache, local_files_only=True,
-        )
-        model = Model.from_pretrained(model_dir, device="cpu")
+        # `local_files_only` was added in later modelscope versions; if absent,
+        # fall back to plain snapshot_download (cache is populated already).
+        try:
+            model_dir = snapshot_download(
+                model_id, revision=revision,
+                cache_dir=local_cache, local_files_only=True,
+            )
+        except TypeError:
+            model_dir = snapshot_download(
+                model_id, revision=revision, cache_dir=local_cache,
+            )
+        model = _ms_from_pretrained(Model, model_dir)
     elif allow_hub_download and local_cache is not None:
         # Fresh machine (Vast.ai): local cache configured but missing — download
         # INTO it (populating weights/<enc>) instead of the default cache.
         os.makedirs(local_cache, exist_ok=True)
         os.environ["MODELSCOPE_CACHE"] = local_cache
         os.environ["MODELSCOPE_HOME"] = local_cache
-        print(f"  ⬇️  ModelScope: local cache {local_cache} missing — "
-              f"downloading {model_id} into it")
         model_dir = snapshot_download(
             model_id, revision=revision, cache_dir=local_cache,
         )
-        model = Model.from_pretrained(model_dir, device="cpu")
+        model = _ms_from_pretrained(Model, model_dir)
     elif allow_hub_download:
         # Dev machine — download into the default ModelScope cache.
-        model = Model.from_pretrained(model_id, revision=revision, device="cpu")
+        model = _ms_from_pretrained(Model, model_id, revision=revision)
     else:
         raise RuntimeError(
             f"ModelScope '{model_id}': local cache missing and "
@@ -563,6 +638,19 @@ def _modelscope_load_model(
         )
 
     return model
+
+
+def _ms_from_pretrained(Model, source, revision: Optional[str] = None, device: str = "cpu"):
+    """``Model.from_pretrained`` across modelscope versions (device kwarg moved)."""
+    kwargs = {}
+    if revision is not None:
+        kwargs["revision"] = revision
+    try:
+        return Model.from_pretrained(source, device=device, **kwargs)
+    except TypeError:
+        model = Model.from_pretrained(source, **kwargs)
+        model.to(device)
+        return model
 
 
 def _modelscope_extract_features(model, wav: torch.Tensor) -> torch.Tensor:
@@ -683,13 +771,11 @@ class _ModelScopeEncoderBase(BaseEncoder):
             allow_hub_download=allow_hub_download,
             revision=revision,
         )
-        print(f"  ⬇️  {type(self).__name__}: loaded {type(self.model).__name__}")
 
         if freeze_encoder:
             self.freeze()
-            print(f"  🔒 {type(self).__name__}: encoder FROZEN")
         else:
-            print(f"  🔓 {type(self).__name__}: encoder UNFROZEN")
+            self.unfreeze()
 
         # Keep the wrapper in eval mode at all times (BN safety).
         self.model.eval()
@@ -741,7 +827,6 @@ class _ModelScopeEncoderBase(BaseEncoder):
         for param in self.model.parameters():
             param.requires_grad = True
         self._frozen = False
-        print(f"  🔓 {type(self).__name__}: encoder UNFROZEN.")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -840,7 +925,6 @@ class ERes2NetV2Encoder(BaseEncoder):
             os.path.join(local_path, ckpt_name)
         ):
             ckpt_path = os.path.join(local_path, ckpt_name)
-            print(f"  ⬇️  ERes2NetV2: loading checkpoint from {ckpt_path}")
             state = torch.load(ckpt_path, map_location="cpu")
             if isinstance(state, dict) and "state_dict" in state:
                 state = state["state_dict"]
@@ -853,8 +937,6 @@ class ERes2NetV2Encoder(BaseEncoder):
                 # INTO the configured dir so the offline layout is populated.
                 os.makedirs(local_path, exist_ok=True)
                 ckpt_path = os.path.join(local_path, ckpt_name)
-                print(f"  ⬇️  ERes2NetV2: local checkpoint missing — "
-                      f"downloading official release into {ckpt_path}")
                 downloaded = hf_hub_download(
                     "bandad/eres2netv2_pretrained",
                     "pretrained_eres2netv2.ckpt",
@@ -866,7 +948,6 @@ class ERes2NetV2Encoder(BaseEncoder):
                     "bandad/eres2netv2_pretrained",
                     "pretrained_eres2netv2.ckpt",
                 )
-                print(f"  ⬇️  ERes2NetV2: downloading from HF hub → {ckpt_path}")
             state = torch.load(ckpt_path, map_location="cpu")
             if isinstance(state, dict) and "state_dict" in state:
                 state = state["state_dict"]
@@ -884,9 +965,8 @@ class ERes2NetV2Encoder(BaseEncoder):
 
         if freeze_encoder:
             self.freeze()
-            print(f"  🔒 ERes2NetV2: encoder FROZEN")
         else:
-            print(f"  🔓 ERes2NetV2: encoder UNFROZEN")
+            self.unfreeze()
 
     def to(self, *args, **kwargs):
         """Move the internal ERes2NetV2 nn.Module."""
@@ -952,7 +1032,6 @@ class ERes2NetV2Encoder(BaseEncoder):
         for param in self.model.parameters():
             param.requires_grad = True
         self._frozen = False
-        print("  🔓 ERes2NetV2 encoder UNFROZEN.")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -998,25 +1077,23 @@ class TitaNetEncoder(BaseEncoder):
             ) from e
 
         if local_path is not None and os.path.isfile(local_path):
-            print(f"  ⬇️  TitaNet-Large: restoring from {local_path}")
-            self.titanet = EncDecSpeakerLabelModel.restore_from(
-                local_path, map_location="cpu",
-            )
+            try:
+                self.titanet = EncDecSpeakerLabelModel.restore_from(
+                    local_path, map_location="cpu",
+                )
+            except TypeError:  # restore_from signature varies across NeMo 2.x
+                self.titanet = EncDecSpeakerLabelModel.restore_from(local_path)
         elif allow_hub_download:
             if local_path is not None:
                 # Fresh machine (Vast.ai): local .nemo missing — download from
                 # the hub and persist a copy into the configured path.
-                print(f"  ⬇️  TitaNet-Large: local .nemo missing — "
-                      f"downloading from hub {model_id}")
                 model = EncDecSpeakerLabelModel.from_pretrained(
                     model_id, map_location="cpu",
                 )
                 os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
                 model.save_to(str(local_path))
-                print(f"  ⬇️  TitaNet-Large: saved local copy → {local_path}")
                 self.titanet = model
             else:
-                print(f"  ⬇️  TitaNet-Large: downloading from hub {model_id}")
                 self.titanet = EncDecSpeakerLabelModel.from_pretrained(
                     model_id, map_location="cpu",
                 )
@@ -1033,9 +1110,8 @@ class TitaNetEncoder(BaseEncoder):
 
         if freeze_encoder:
             self.freeze()
-            print(f"  🔒 TitaNet-Large: encoder FROZEN")
         else:
-            print(f"  🔓 TitaNet-Large: encoder UNFROZEN")
+            self.unfreeze()
 
     def to(self, *args, **kwargs):
         """Move the internal NeMo model (an nn.Module)."""
@@ -1129,7 +1205,6 @@ class TitaNetEncoder(BaseEncoder):
         for param in self.titanet.parameters():
             param.requires_grad = True
         self._frozen = False
-        print("  🔓 TitaNet-Large encoder UNFROZEN.")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1187,6 +1262,11 @@ def create_encoder(config: dict) -> BaseEncoder:
     # ── Global offline flag: model.allow_hub_download (default False) ──
     enc_cfg.setdefault("allow_hub_download", model_cfg.get("allow_hub_download", False))
 
+    # Weights ship inside the package (weights/<enc>/...). The checkpoints
+    # record RELATIVE local_paths, so resolve them against the package root —
+    # the leaderboard may run submission.py from any CWD.
+    enc_cfg["local_path"] = _resolve_local_path(enc_cfg.get("local_path"))
+
     cls = ENCODER_REGISTRY.get(encoder_type)
     if cls is None:
         raise ValueError(
@@ -1238,28 +1318,3 @@ def create_encoder(config: dict) -> BaseEncoder:
 
 # ═══════════════════════════════════════════════════════════
 #  Smoke Test
-# ═══════════════════════════════════════════════════════════
-
-def _factory_resolve_smoke():
-    """
-    Offline test: the factory resolves every registered encoder_type string
-    without instantiating (no downloads, no GPU). This is the Phase 1
-    acceptance gate for the 4 new encoder keys.
-    """
-    print("=" * 60)
-    print("  Encoder Factory Resolution Smoke Test (offline)")
-    print("=" * 60)
-
-    for name in sorted(ENCODER_REGISTRY):
-        cls = ENCODER_REGISTRY[name]
-        print(f"  ✅ {name:<12} → {cls.__name__}")
-
-    expected = {"ecapa", "wavlm", "campp", "eres2net", "titanet"}
-    assert set(ENCODER_REGISTRY) == expected, (
-        f"Registry mismatch: {sorted(ENCODER_REGISTRY)} vs {sorted(expected)}"
-    )
-    print("\n  ALL REGISTRY KEYS RESOLVE ✅")
-
-
-if __name__ == "__main__":
-    _factory_resolve_smoke()

@@ -60,17 +60,13 @@ def create_model_from_config(
     pooling = create_pooling(pooling_type, encoder.output_dim)
     pooled_dim = encoder.output_dim * pooling.output_multiplier
 
-    print(f"  📊 Encoder: {type(encoder).__name__} ({encoder.output_dim}d)")
-    print(f"     Pooling: {pooling_type} ({pooled_dim}d)")
 
     # ── 3. OOD Head ──
     ood_head = create_ood_head(config, pooled_dim)
-    print(f"     OOD Head: {type(ood_head).__name__} ({pooled_dim} → 1)")
 
     # ── 4. Speaker Head ──
     speaker_head = create_speaker_head(config, pooled_dim, num_known_speakers)
     head_type = model_cfg.get("speaker_head_type", "linear")
-    print(f"     Speaker Head: {type(speaker_head).__name__} ({pooled_dim} → {num_known_speakers})")
 
     # ── 5. Assemble ──
     model = TwoHeadedSpeakerModel(
@@ -82,63 +78,8 @@ def create_model_from_config(
         encoder_name=encoder_name,
     )
 
-    model.print_summary()
     return model
 
 
 # ═══════════════════════════════════════════════════════════
 #  Smoke Test
-# ═══════════════════════════════════════════════════════════
-
-def _smoke_test():
-    import torch
-
-    print("=" * 55)
-    print("  Model Factory Smoke Test")
-    print("=" * 55)
-
-    config = {
-        "hardware": {
-            "mode": "local",
-            "profiles": {
-                "local": {"device": "cpu", "batch_size": 4, "num_workers": 0, "mixed_precision": False}
-            },
-        },
-        "audio": {"sample_rate": 16000, "duration_seconds": 5.0},
-        "model": {
-            "encoder_type": "wavlm",
-            "encoder_config": {
-                "wavlm": {
-                    "base_model": "microsoft/wavlm-base-plus",
-                    "freeze_feature_extractor": True,
-                },
-            },
-            "pooling_type": "attentive",
-            "speaker_head_type": "linear",
-            "speaker_head_config": {
-                "arcface": {"embedding_dim": 192, "margin": 0.3, "scale": 15.0}
-            },
-            "ood_head_config": {"hidden_dim": 256},
-            "fusion": {"ensemble_method": "none"},
-        },
-    }
-
-    num_known = 10
-    model = create_model_from_config(config, num_known_speakers=num_known)
-
-    # Forward pass
-    waveforms = torch.randn(2, 1, 80000)
-    ood, spk = model(waveforms)
-    assert ood.shape == (2, 1)
-    assert spk.shape == (2, num_known)
-
-    # Predict proba
-    probs = model.predict_proba(waveforms)
-    assert probs.shape == (2, num_known + 1)
-    assert torch.allclose(probs.sum(dim=1), torch.ones(2), atol=1e-5)
-
-    print(f"\n  ALL FACTORY TESTS PASSED ✅")
-
-
-if __name__ == "__main__":
-    _smoke_test()

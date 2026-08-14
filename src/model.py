@@ -163,12 +163,6 @@ class TwoHeadedSpeakerModel(nn.Module):
         trainable = self.get_trainable_params()
         frozen = total - trainable
 
-        print(f"\n  📊 Model Summary:")
-        print(f"     Encoder:      {self.encoder_name}")
-        print(f"     Total params: {total:,}")
-        print(f"     Trainable:    {trainable:,}")
-        print(f"     Frozen:       {frozen:,}")
-        print(f"     Output dim:   {1 + self.num_known_speakers} (0=unknown + {self.num_known_speakers} known)")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -251,63 +245,3 @@ class TwoHeadedWavLM(TwoHeadedSpeakerModel):
 
 # ═══════════════════════════════════════════════════════════
 #  Smoke Test
-# ═══════════════════════════════════════════════════════════
-
-def _smoke_test():
-    print("=" * 55)
-    print("  Modular Model Smoke Test")
-    print("=" * 55)
-
-    # Minimal config
-    config = {
-        "hardware": {
-            "mode": "local",
-            "profiles": {
-                "local": {"device": "cpu", "batch_size": 4, "num_workers": 0, "mixed_precision": False}
-            },
-        },
-        "audio": {"sample_rate": 16000, "duration_seconds": 5.0},
-        "model": {
-            "encoder_type": "wavlm",
-            "encoder_config": {
-                "wavlm": {
-                    "base_model": "microsoft/wavlm-base-plus",
-                    "freeze_feature_extractor": True,
-                },
-            },
-            "pooling_type": "attentive",
-            "speaker_head_type": "linear",
-            "speaker_head_config": {
-                "arcface": {"embedding_dim": 192, "margin": 0.3, "scale": 15.0}
-            },
-            "ood_head_config": {"hidden_dim": 256},
-            "fusion": {"ensemble_method": "none"},
-        },
-    }
-
-    print("  Building TwoHeadedWavLM (backward compat)...")
-    model = TwoHeadedWavLM(config, num_known_speakers=10)
-    model.print_summary()
-
-    # Forward pass
-    waveforms = torch.randn(2, 1, 80000)
-    ood, spk = model(waveforms)
-    print(f"\n  Forward pass:")
-    print(f"    OOD logit:      {ood.shape}")
-    print(f"    Speaker logits: {spk.shape}")
-
-    # Predict proba
-    probs = model.predict_proba(waveforms)
-    print(f"    Probs:          {probs.shape}")
-    print(f"    Sum per row:    {probs.sum(dim=1).tolist()}")
-
-    assert ood.shape == (2, 1)
-    assert spk.shape == (2, 10)
-    assert probs.shape == (2, 11)  # 1 unknown + 10 known
-    assert torch.allclose(probs.sum(dim=1), torch.ones(2), atol=1e-5)
-
-    print(f"\n  ALL MODEL TESTS PASSED ✅")
-
-
-if __name__ == "__main__":
-    _smoke_test()
