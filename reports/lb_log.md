@@ -16,7 +16,7 @@
 | تاریخ | commit/config | zip contents | score | نتیجه / یادداشت | [diag] cuda_avail |
 |---|---|---|---|---|---|
 | 2026-08-14 | (baseline قبل از Phase 1) | 3 ckpt (campp/eres2net/titanet), argmax خام، بدون centroid/gate | — | ≥۶ تلاش قبلی همگی crash/timeout — score ثبت نشده | ? |
-|  |  |  |  |  |  |
+| 2026-08-15 | تکمدله campp — `feature/single-model-submission` | campp_best.pt + centroids_campp.npz + decision (α=0.2, κ=24, τ=0, λ=1.05) | **f1_macro 0.9505** (acc 0.9451) | ✅ اولین submission موفق — بدون crash/timeout | ? |
 
 ## TODO برای خواندن لاگ آخرین run
 
