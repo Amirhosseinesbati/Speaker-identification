@@ -75,9 +75,15 @@ def load_environment() -> dict:
     config["UNFREEZE_LAST_N_BLOCKS"] = os.getenv("UNFREEZE_LAST_N_BLOCKS", "0")
     config["FREEZE_FEATURE_EXTRACTOR"] = os.getenv("FREEZE_FEATURE_EXTRACTOR", "true")
 
-    # Validate required variables
-    missing = [k for k, v in config.items()
-               if not v and k not in ("KAGGLE_USERNAME", "KAGGLE_KEY")]
+    # Validate required variables. Optional keys may legitimately be empty:
+    # KAGGLE_* (only needed for Kaggle data pulls) and the run-mode selectors
+    # (EXPERIMENT_PROFILES / HPO_STUDY / HPO_BASE_PROFILE are empty when that
+    # mode isn't selected — "Single" mode needs none of them).
+    _OPTIONAL = frozenset({
+        "KAGGLE_USERNAME", "KAGGLE_KEY",
+        "EXPERIMENT_PROFILES", "HPO_STUDY", "HPO_BASE_PROFILE",
+    })
+    missing = [k for k, v in config.items() if not v and k not in _OPTIONAL]
     if missing:
         print(f"❌ Missing environment variables: {', '.join(missing)}")
         print("   Please check your .env file.")

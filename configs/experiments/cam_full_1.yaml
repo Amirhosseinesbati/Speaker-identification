@@ -1,8 +1,8 @@
 _meta:
   name: cam_full_1
   base: default_config.yaml
-  created: '2026-08-15T23:50:07'
-  base_git: cc2f811
+  created: '2026-08-16T00:59:04'
+  base_git: '9234965'
 model:
   speaker_head_config:
     arcface_subcenter:
