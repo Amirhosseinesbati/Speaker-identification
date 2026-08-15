@@ -141,17 +141,25 @@ def convert_audio(
     print(f"  Config updated: audio_dir → {wav_dir}")
 
     # ── Start MLflow run ──
+    # Reuse an already-active run (run_pipeline.py starts a named
+    # <profile>-<encoder> run before every stage); only start a fresh run when
+    # this step is invoked standalone. The run metadata (code snapshot + config
+    # files + deployment envelope) is logged here — after the config was updated
+    # with the WAV paths — so --run all and standalone calls are fully
+    # auditable, and the metadata is never logged twice for one run.
     tracker = get_tracker(config)
     encoder_type = config.get("model", {}).get("encoder_type", "unknown")
-    run_name = f"{encoder_type}-{datetime.now().strftime('%m%d-%H%M')}"
-    tracker.start_run(run_name=run_name)
+    if not tracker.is_active:
+        run_name = f"{encoder_type}-{datetime.now().strftime('%m%d-%H%M')}"
+        tracker.start_run(run_name=run_name)
+        tracker.log_code_snapshot()
+        tracker.log_experiment_configs(config_path)
+        tracker.log_deployment_envelope(extra={"pipeline_stage": "convert_audio"})
     tracker.log_params({
         "encoder_type": encoder_type,
         "pipeline_stage": "convert_audio",
         "wav_files_converted": stats["converted"],
     })
-    tracker.log_code_snapshot()
-    tracker.log_config_snapshot()
 
     return config
 

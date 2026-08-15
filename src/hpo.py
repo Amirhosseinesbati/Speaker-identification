@@ -116,13 +116,20 @@ def suggest_trial_config(trial: optuna.Trial, base: dict, epochs: int) -> tuple:
     return name, cfg
 
 
-def _run_train(profile_name: str, no_mlflow: bool = False) -> tuple:
+def _run_train(profile_name: str, no_mlflow: bool = False,
+               trial_env: Optional[dict] = None) -> tuple:
     cmd = [sys.executable, str(PIPELINE_SCRIPT), "--experiment", profile_name,
            "--run", "train"]
     if no_mlflow:
         cmd.append("--no-mlflow")
+    # Forward the study context so the trial run's MLflow deployment envelope
+    # records which study/trial it belongs to (visible on DagsHub).
+    env = {**os.environ, "PYTHONUNBUFFERED": "1",
+           "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    if trial_env:
+        env.update(trial_env)
     proc = subprocess.run(
-        cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True,
+        cmd, cwd=str(PROJECT_ROOT), env=env, capture_output=True, text=True,
         encoding="utf-8", errors="replace",
     )
     stdout, stderr = proc.stdout or "", proc.stderr or ""
@@ -140,11 +147,14 @@ def _parse_macro_f1(stdout: str) -> Optional[float]:
     return float(hits[-1]) if hits else None
 
 
-def _make_objective(base: dict, epochs: int, no_mlflow: bool = False):
+def _make_objective(base: dict, epochs: int, no_mlflow: bool = False,
+                    study_name: str = "speaker-hpo"):
     def objective(trial: optuna.Trial) -> float:
         name, cfg = suggest_trial_config(trial, base, epochs)
         save_profile(name, cfg, base=base)
-        stdout, stderr, code = _run_train(name, no_mlflow=no_mlflow)
+        stdout, stderr, code = _run_train(
+            name, no_mlflow=no_mlflow,
+            trial_env={"HPO_STUDY": study_name, "HPO_TRIAL": str(trial.number)})
         mf1 = _parse_macro_f1(stdout)
         if mf1 is None or code != 0:
             tail = "\n".join((stderr or stdout or "").splitlines()[-15:])
@@ -182,7 +192,8 @@ def run_study(n_trials: int = 30, epochs: int = 30,
         sampler=optuna.samplers.TPESampler(seed=42),
         load_if_exists=resume,
     )
-    study.optimize(_make_objective(base, epochs, no_mlflow=no_mlflow),
+    study.optimize(_make_objective(base, epochs, no_mlflow=no_mlflow,
+                                   study_name=study_name),
                    n_trials=n_trials, show_progress_bar=False)
 
     best = study.best_trial

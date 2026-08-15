@@ -267,6 +267,8 @@ def main():
             "GIT_BRANCH": config["GIT_BRANCH"],
             "GPU_TARGET": config["GPU_TARGET"],
             "TARGET_PIPELINE": config["TARGET_PIPELINE"],
+            "MIN_CUDA_VERSION": config["MIN_CUDA_VERSION"],
+            "DISK_SIZE_GB": os.getenv("DISK_SIZE_GB", ""),
             "EXPERIMENT_PROFILES": config.get("EXPERIMENT_PROFILES", ""),
             "HPO_STUDY": config.get("HPO_STUDY", ""),
             "HPO_TRIALS": config.get("HPO_TRIALS", ""),

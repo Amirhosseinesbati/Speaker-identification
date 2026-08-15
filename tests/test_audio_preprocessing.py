@@ -157,6 +157,10 @@ def test_zenml_convert_audio_step_uses_same_code(tmp_path, monkeypatch):
 
     # Stub MLflow tracking so the step runs without a real tracker.
     class StubTracker:
+        @property
+        def is_active(self):
+            return False
+
         def start_run(self, run_name=None):
             pass
 
@@ -173,6 +177,12 @@ def test_zenml_convert_audio_step_uses_same_code(tmp_path, monkeypatch):
             pass
 
         def log_config_snapshot(self):
+            pass
+
+        def log_experiment_configs(self, config_path=None, profile_path=None):
+            pass
+
+        def log_deployment_envelope(self, extra=None):
             pass
 
     monkeypatch.setattr(steps_module, "get_tracker", lambda config: StubTracker())

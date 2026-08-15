@@ -44,7 +44,7 @@ from src.pipelines.steps import (
     build_embeddings, decision_tune, ensemble_select,
 )
 from src.data_pipeline import load_config
-from src.experiment_config import resolve_config_arg, list_profiles
+from src.experiment_config import resolve_config_arg, is_profile
 from src.mlflow_helper import get_tracker
 
 # Windows cp1252 fix: force UTF-8 stdio BEFORE anything prints, otherwise
@@ -359,13 +359,15 @@ def main():
     print()
 
     # Configure MLflow stack (unless disabled)
+    tracker = None
     if not args.no_mlflow:
         config = load_config(config_path)
         ok = ensure_mlflow_stack(config)
         # Start a NAMED MLflow run so partial stages (train/eval/data/decision —
         # used by HPO trials and the queue) actually log per-epoch metrics. The
-        # full pipeline's convert_audio step starts its own run and overrides
-        # this. Degrades gracefully when MLflow is unreachable/unauthenticated.
+        # full pipeline's convert_audio step REUSES this run (it no longer starts
+        # its own) and logs the run metadata there. Degrades gracefully when
+        # MLflow is unreachable/unauthenticated.
         if ok:
             tracker = get_tracker(config)
             if not tracker.is_active:
@@ -375,32 +377,56 @@ def main():
                     tracker.start_run(run_name=f"{profile}-{enc}")
                 except Exception as e:
                     print(f"  ⚠ Could not start MLflow run: {e}")
+            # For stages that skip convert_audio (data/train/eval/decision) this
+            # run is the ONLY one — log the full run metadata now, so every run
+            # carries its config files + deployment params as artifacts. --run all
+            # logs the same metadata inside convert_audio (after it updates the
+            # config with the WAV paths), which avoids logging it twice.
+            if tracker.is_active and args.run != "all":
+                profile_path = None
+                if args.experiment and is_profile(args.experiment):
+                    profile_path = str(Path("configs/experiments")
+                                       / f"{args.experiment}.yaml")
+                tracker.log_code_snapshot()
+                tracker.log_experiment_configs(
+                    config_path, profile_path=profile_path)
+                tracker.log_deployment_envelope(extra={
+                    "run_stage": args.run,
+                    "cli": " ".join(sys.argv[1:]),
+                })
     else:
         print("  MLflow tracking disabled via --no-mlflow")
 
     print()
 
-    # Run the requested stage
-    if args.run == "data":
-        run_data_stage(config_path)
-    elif args.run == "train":
-        run_train_stage(config_path)
-    elif args.run == "eval":
-        run_eval_stage(config_path)
-    elif args.run == "decision":
-        checkpoints = args.checkpoints or sorted(
-            str(p) for p in Path("checkpoints").glob("*_best.pt"))
-        if not checkpoints:
-            print("❌ No checkpoints found for --run decision.")
-            sys.exit(1)
-        print(f"  🎯 Decision stage — {len(checkpoints)} checkpoint(s):")
-        for c in checkpoints:
-            print(f"     - {c}")
-        run_decision_stage(config_path, checkpoints)
-    else:  # "all"
-        # Use the full ZenML pipeline
-        print("  🚀 Executing full ZenML pipeline...\n")
-        speaker_id_pipeline(config_path=config_path)
+    # Run the requested stage. The MLflow run is ended on the way out so partial
+    # stages (HPO trials, queue jobs) get a FINISHED status on DagsHub instead of
+    # staying "running" forever; for --run all evaluate_model already ends it and
+    # end_run() is a no-op then.
+    try:
+        if args.run == "data":
+            run_data_stage(config_path)
+        elif args.run == "train":
+            run_train_stage(config_path)
+        elif args.run == "eval":
+            run_eval_stage(config_path)
+        elif args.run == "decision":
+            checkpoints = args.checkpoints or sorted(
+                str(p) for p in Path("checkpoints").glob("*_best.pt"))
+            if not checkpoints:
+                print("❌ No checkpoints found for --run decision.")
+                sys.exit(1)
+            print(f"  🎯 Decision stage — {len(checkpoints)} checkpoint(s):")
+            for c in checkpoints:
+                print(f"     - {c}")
+            run_decision_stage(config_path, checkpoints)
+        else:  # "all"
+            # Use the full ZenML pipeline
+            print("  🚀 Executing full ZenML pipeline...\n")
+            speaker_id_pipeline(config_path=config_path)
+    finally:
+        if tracker is not None and tracker.is_active:
+            tracker.end_run()
 
     print("\n  ✅ Pipeline finished successfully!")
 

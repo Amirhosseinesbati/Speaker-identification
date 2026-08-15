@@ -117,8 +117,11 @@ def run_queue(
         # Stream the child's output line-by-line to BOTH the log file and our
         # own stdout, so a remote/long run is visible live (the old code wrote
         # only to the file, which made the console look stuck).
+        # Forward the job name so the run's MLflow deployment envelope records
+        # which queue job it belongs to (visible on DagsHub).
         env = {**os.environ, "PYTHONUNBUFFERED": "1",
-               "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+               "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
+               "QUEUE_JOB": job["name"]}
         proc = subprocess.Popen(
             cmd, cwd=str(PROJECT_ROOT),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

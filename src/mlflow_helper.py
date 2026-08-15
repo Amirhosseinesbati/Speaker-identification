@@ -31,6 +31,29 @@ from typing import Optional, Dict, Any
 import mlflow
 import yaml
 
+# Env vars forwarded by the UI (deploy_app.py) and setup_vast.sh to the remote
+# instance via deploy.py. These are the deployment knobs that must be
+# reproducible per run, so the whitelist is captured into every run's
+# "deployment envelope" artifact. Secrets (VAST_API_KEY, DAGSHUB_TOKEN,
+# KAGGLE_KEY, MLFLOW_TRACKING_PASSWORD, ...) are deliberately absent.
+DEPLOYMENT_PARAM_ENV = (
+    "GPU_TARGET", "TARGET_PIPELINE", "MIN_CUDA_VERSION", "DISK_SIZE_GB",
+    "EXPERIMENT_PROFILES", "QUEUE_JOB",
+    "HPO_STUDY", "HPO_TRIAL", "HPO_TRIALS", "HPO_EPOCHS", "HPO_BASE_PROFILE",
+    "ENCODER_TYPE", "ALLOW_HUB_DOWNLOAD", "FREEZE_ENCODER",
+    "UNFREEZE_LAST_N_BLOCKS", "FREEZE_FEATURE_EXTRACTOR",
+    "GIT_REPO_URL", "GIT_BRANCH", "DAGSHUB_REPO_NAME",
+)
+
+
+def capture_deployment_env() -> dict:
+    """Return the deployment params currently present in the environment."""
+    return {
+        k: v for k, v in os.environ.items()
+        if (k in DEPLOYMENT_PARAM_ENV or k.startswith("LOCAL_PATH_"))
+        and v not in (None, "")
+    }
+
 
 class MLflowTracker:
     """
@@ -222,6 +245,95 @@ class MLflowTracker:
         if config_path.exists():
             mlflow.log_artifact(str(config_path), artifact_path="code")
             print(f"  📦 Config snapshot logged")
+
+    def log_experiment_configs(self, config_path: Optional[str] = None,
+                               profile_path: Optional[str] = None):
+        """Log the configs that define this run as artifacts under ``configs/``.
+
+        Logs (deduped by resolved path, so the same file is never uploaded
+        twice under two names):
+          * ``base_default_config.yaml`` — the base config the run inherits from;
+          * ``run_<name>.yaml`` — the full resolved config actually used for the
+            run (the file handed to ``run_pipeline.py``, with every UI checkbox
+            / p-value baked in);
+          * ``profile_<name>.yaml`` — the named experiment profile's minimal
+            diff file, when the run was started via ``--experiment <name>``.
+
+        Files are snapshotted into a temp dir and logged under distinct names
+        so two configs sharing a basename (resolved vs profile diff) can never
+        overwrite each other in the artifact store. Together with the deployment
+        envelope (see ``log_deployment_envelope``) this makes the run
+        reproducible from its own artifacts alone.
+        """
+        if not self.is_active:
+            return
+
+        # When no explicit profile file was given but the run config is a
+        # materialised profile (configs/experiments/_resolved/<name>.yaml),
+        # derive the profile's diff file automatically so the original,
+        # human-diffable experiment definition is logged too.
+        if profile_path is None and config_path:
+            _resolved = Path(config_path)
+            if _resolved.parent.name == "_resolved":
+                candidate = Path("configs/experiments") / _resolved.name
+                if candidate.exists():
+                    profile_path = str(candidate)
+
+        import shutil
+        import tempfile
+
+        cfg_dir = "configs"
+        logged: set = set()
+        tmp_dir = tempfile.mkdtemp(prefix="mlflow_configs_")
+        try:
+            def _log(label: str, path: str, name: str):
+                resolved = os.path.normpath(os.path.abspath(path))
+                if resolved in logged:
+                    return
+                logged.add(resolved)
+                dest = os.path.join(tmp_dir, name)
+                shutil.copyfile(resolved, dest)
+                mlflow.log_artifact(dest, artifact_path=cfg_dir)
+                print(f"  📦 {label} logged: {path}")
+
+            base = Path("configs/default_config.yaml")
+            if base.exists():
+                _log("Base config", str(base), "base_default_config.yaml")
+            if config_path and os.path.exists(config_path):
+                _log("Run config", str(config_path),
+                     f"run_{Path(config_path).name}")
+            if profile_path and os.path.exists(profile_path):
+                _log("Experiment profile", str(profile_path),
+                     f"profile_{Path(profile_path).name}")
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def log_deployment_envelope(self, extra: Optional[dict] = None):
+        """Log the deployment envelope (UI / setup_vast.sh params) as artifact.
+
+        Captures the env vars that ``deploy_app.py`` (UI) and ``setup_vast.sh``
+        forward to the remote instance (GPU target, encoder/freeze choice,
+        experiment queue, HPO study, ...) plus caller-provided extras (CLI args,
+        pipeline stage, ...), and persists them as ``deployment_envelope.json``
+        plus flat MLflow params so a run can be reproduced or filtered from the
+        artifact alone. Secrets are never captured (see ``DEPLOYMENT_PARAM_ENV``).
+        """
+        if not self.is_active:
+            return
+
+        envelope = capture_deployment_env()
+        if extra:
+            for k, v in extra.items():
+                if v not in (None, ""):
+                    envelope[k] = v
+        if not envelope:
+            print("  ⚠ No deployment params in env to log.")
+            return
+
+        mlflow.log_dict(envelope, "deployment_envelope.json")
+        mlflow.log_params({k: str(v) for k, v in envelope.items()})
+        print(f"  📦 Deployment envelope logged "
+              f"({len(envelope)} params → deployment_envelope.json)")
 
     def log_summary(self, summary: dict, metrics: dict):
         """
