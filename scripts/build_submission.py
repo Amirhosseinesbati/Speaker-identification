@@ -183,10 +183,19 @@ def build(skip_weights: bool) -> None:
                       if _encoder_from_checkpoint_name(c.name) in active_encoders]
         for c in skipped:
             print(f"  ⏭  checkpoints/{c.name} skipped (zero fusion weight)")
+    # Rebuild checkpoints/ from scratch: remove stale *.pt from earlier builds
+    # (e.g. eres2net/titanet left over after switching to a single-model
+    # ensemble) so the package never ships dead weight.
+    ckpt_dst = SUB / "checkpoints"
+    ckpt_dst.mkdir(parents=True, exist_ok=True)
+    wanted = {c.name for c in ckpt_files}
+    for stale in list(ckpt_dst.glob("*.pt")):
+        if stale.name not in wanted:
+            stale.unlink(missing_ok=True)
+            print(f"  🧹 checkpoints/{stale.name} removed (stale)")
     if ckpt_files:
-        (SUB / "checkpoints").mkdir(parents=True, exist_ok=True)
         for c in ckpt_files:
-            shutil.copy2(c, SUB / "checkpoints" / c.name)
+            shutil.copy2(c, ckpt_dst / c.name)
             print(f"  ✓ checkpoints/{c.name}")
     else:
         print("  ⚠ no *_best.pt checkpoints found — train the models first")
@@ -239,12 +248,18 @@ def build(skip_weights: bool) -> None:
               "run ensemble_calibrate.py first")
 
     # ── centroids (cosine centroid + OOD-gate decision layer) ──
-    (SUB / "centroids").mkdir(parents=True, exist_ok=True)
+    cent_dst = SUB / "centroids"
+    cent_dst.mkdir(parents=True, exist_ok=True)
+    wanted_npz = {f"centroids_{enc}.npz" for enc in used_encoders}
+    for stale in list(cent_dst.glob("*.npz")):
+        if stale.name not in wanted_npz:
+            stale.unlink(missing_ok=True)
+            print(f"  🧹 centroids/{stale.name} removed (stale)")
     shipped_centroids = 0
     for enc in sorted(used_encoders):
         src = ROOT / "data" / "processed" / f"centroids_{enc}.npz"
         if src.exists():
-            shutil.copy2(src, SUB / "centroids" / src.name)
+            shutil.copy2(src, cent_dst / src.name)
             shipped_centroids += 1
         else:
             print(f"  ⚠ centroids_{enc}.npz missing — run scripts/build_centroids.py "

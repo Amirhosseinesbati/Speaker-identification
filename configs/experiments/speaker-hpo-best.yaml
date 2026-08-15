@@ -1,0 +1,22 @@
+_meta:
+  name: speaker-hpo-best
+  base: default_config.yaml
+  created: '2026-08-15T23:21:10'
+  base_git: abcc926
+audio:
+  ood_batch_ratio: 0.47323522915498706
+model:
+  speaker_head_config:
+    arcface_subcenter:
+      margin: 0.34966462104925916
+      scale: 26.496298247078983
+training:
+  encoder_lr: 7.969454818643937e-05
+  epochs: 40
+  label_smoothing: 0.023399178050430396
+  learning_rate: 0.00011844319751820385
+  loss:
+    ood:
+      weight: 0.1116167224336399
+  ood_loss_weight: 0.1116167224336399
+  weight_decay: 0.000291063591313307

@@ -1,7 +1,7 @@
 _meta:
-  name: cam_full
+  name: cam_full_1
   base: default_config.yaml
-  created: '2026-08-15T23:51:08'
+  created: '2026-08-15T23:50:07'
   base_git: cc2f811
 model:
   speaker_head_config:
