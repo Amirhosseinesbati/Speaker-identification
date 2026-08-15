@@ -1,19 +1,13 @@
 {
   "fusion_method": "weighted_average",
-  "best_macro_f1": 0.9092922648414002,
+  "best_macro_f1": 0.9563,
   "weights": [
-    0.5,
-    0.2,
-    0.3
+    1.0
   ],
   "encoder_names": [
-    "campp",
-    "eres2net",
-    "titanet"
+    "campp"
   ],
   "checkpoints": [
-    "campp_best.pt",
-    "eres2net_best.pt",
-    "titanet_best.pt"
+    "campp_best.pt"
   ]
 }

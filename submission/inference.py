@@ -179,32 +179,6 @@ def predict_file_probs_and_embedding(
 
 
 # ────────────────────────────────────────────────────────────────
-#  GPU diagnostics — printed to server log for debugging timeouts
-# ────────────────────────────────────────────────────────────────
-
-def _print_gpu_diagnostics() -> None:
-    """Emit one-line GPU availability summary to stdout so it appears in the
-    leaderboard log (first ~10 lines). Kept intentionally terse — the server
-    surfaces only the first few log lines, so a server error must still be
-    the first thing shown."""
-    cuda_available = torch.cuda.is_available()
-    device_count = torch.cuda.device_count() if cuda_available else 0
-    gpu_name = ""
-    if device_count > 0:
-        try:
-            gpu_name = torch.cuda.get_device_name(0)
-        except Exception:
-            gpu_name = "?"
-    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
-    torch_cuda_ver = getattr(torch.version, "cuda", "None")
-    print(
-        f"[diag] cuda_avail={cuda_available} devices={device_count} "
-        f"gpu=\"{gpu_name}\" CUDA_VISIBLE_DEVICES={cuda_visible} "
-        f"torch.cuda={torch_cuda_ver}"
-    )
-
-
-# ────────────────────────────────────────────────────────────────
 #  Centroid + OOD-gate decision layer (Q4)
 # ────────────────────────────────────────────────────────────────
 
@@ -310,9 +284,7 @@ def score_ensemble(
     the job log, so we emit nothing ourselves — a server-side error must be
     the first thing shown.
     """
-    # ── GPU diagnostics (printed so they appear in the server log) ──
-    _print_gpu_diagnostics()
-
+    # ── GPU diagnostic is printed by submission.py at import time ──
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True

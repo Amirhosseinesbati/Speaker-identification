@@ -54,6 +54,34 @@ logging.disable(logging.CRITICAL)
 from src.cli_utils import setup_utf8_stdio
 setup_utf8_stdio()
 
+import torch
+
+# ── GPU diagnostic — the ABSOLUTE FIRST line of output ──
+# This is the single most useful signal for diagnosing an EXECUTION TIMEOUT:
+# it tells us whether the eval environment exposed a CUDA GPU to this process.
+# It prints before any heavy import (transformers/modelscope/nemo are all lazy
+# inside the encoders) and before model loading, so it survives even if the run
+# later times out. Keep it terse and on one line.
+def _print_gpu_diagnostics() -> None:
+    cuda_available = torch.cuda.is_available()
+    device_count = torch.cuda.device_count() if cuda_available else 0
+    gpu_name = ""
+    if device_count > 0:
+        try:
+            gpu_name = torch.cuda.get_device_name(0)
+        except Exception:
+            gpu_name = "?"
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
+    torch_cuda_ver = getattr(torch.version, "cuda", "None")
+    print(
+        f"[diag] cuda_avail={cuda_available} devices={device_count} "
+        f"gpu=\"{gpu_name}\" CUDA_VISIBLE_DEVICES={cuda_visible} "
+        f"torch.cuda={torch_cuda_ver}",
+        flush=True,
+    )
+
+_print_gpu_diagnostics()
+
 # Import the shared inference core. `inference.py` sits next to this file both
 # in the repo (submission/) and at the zip root (when the package is shipped).
 try:
