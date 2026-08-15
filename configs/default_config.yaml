@@ -14,7 +14,7 @@ augmentation:
     mp3_codec_roundtrip:
       max_bitrate: 192
       min_bitrate: 64
-      p: 0.3
+      p: 0.0
     musan:
       music_p: 0.0
       noise_p: 0.0
@@ -23,7 +23,7 @@ augmentation:
       - 5.0
       - 20.0
     rirs_reverb:
-      p: 0.4
+      p: 0.0
       path: data/augmentation/rirs
   spec:
     time_mask:
