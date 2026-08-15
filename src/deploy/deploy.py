@@ -63,6 +63,12 @@ def load_environment() -> dict:
     # the instance (Audit §17.2 — one instance, many runs). Empty = legacy
     # single run with the committed config + encoder/freeze env overrides.
     config["EXPERIMENT_PROFILES"] = os.getenv("EXPERIMENT_PROFILES", "")
+    # Optuna HPO (Audit §17.4) — when HPO_STUDY is set, setup_vast.sh runs a
+    # hyperparameter search on the instance instead of a queue/single run.
+    config["HPO_STUDY"] = os.getenv("HPO_STUDY", "")
+    config["HPO_TRIALS"] = os.getenv("HPO_TRIALS", "30")
+    config["HPO_EPOCHS"] = os.getenv("HPO_EPOCHS", "30")
+    config["HPO_BASE_PROFILE"] = os.getenv("HPO_BASE_PROFILE", "")
     # Encoder fine-tune choice (ECAPA-aware). FREEZE_FEATURE_EXTRACTOR kept for
     # backward compatibility with the old WavLM-only naming.
     config["FREEZE_ENCODER"] = os.getenv("FREEZE_ENCODER", "true")
@@ -256,6 +262,10 @@ def main():
             "GPU_TARGET": config["GPU_TARGET"],
             "TARGET_PIPELINE": config["TARGET_PIPELINE"],
             "EXPERIMENT_PROFILES": config.get("EXPERIMENT_PROFILES", ""),
+            "HPO_STUDY": config.get("HPO_STUDY", ""),
+            "HPO_TRIALS": config.get("HPO_TRIALS", ""),
+            "HPO_EPOCHS": config.get("HPO_EPOCHS", ""),
+            "HPO_BASE_PROFILE": config.get("HPO_BASE_PROFILE", ""),
             "FREEZE_ENCODER": config["FREEZE_ENCODER"],
             "UNFREEZE_LAST_N_BLOCKS": config["UNFREEZE_LAST_N_BLOCKS"],
             "FREEZE_FEATURE_EXTRACTOR": config["FREEZE_FEATURE_EXTRACTOR"],

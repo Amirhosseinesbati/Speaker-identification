@@ -159,9 +159,19 @@ def _make_objective(base: dict, epochs: int, no_mlflow: bool = False):
 
 def run_study(n_trials: int = 30, epochs: int = 30,
               study_name: str = "speaker-hpo", resume: bool = True,
-              base: Optional[dict] = None, no_mlflow: bool = False) -> dict:
-    """Run a coarse Optuna study; persist the best params + best profile."""
-    base = base if base is not None else load_base()
+              base: Optional[dict] = None, base_profile: Optional[str] = None,
+              no_mlflow: bool = False) -> dict:
+    """Run a coarse Optuna study; persist the best params + best profile.
+
+    ``base_profile`` lets you tune a NAMED recipe (a config under
+    configs/experiments/) instead of the default base config.
+    """
+    if base is None:
+        if base_profile:
+            from src.experiment_config import load_profile
+            base = load_profile(base_profile)
+        else:
+            base = load_base()
     HPO_DIR.mkdir(parents=True, exist_ok=True)
     storage = f"sqlite:///{HPO_DIR / STUDY_DB_NAME}"
 
@@ -214,11 +224,14 @@ def main() -> int:
                         help="Start a new study (ignore existing sqlite study).")
     parser.add_argument("--no-mlflow", action="store_true",
                         help="Disable MLflow tracking for each trial.")
+    parser.add_argument("--base-profile", default=None,
+                        help="Named experiment profile to tune (default: "
+                             "configs/default_config.yaml).")
     args = parser.parse_args()
 
     run_study(n_trials=args.trials, epochs=args.epochs,
               study_name=args.study, resume=not args.fresh,
-              no_mlflow=args.no_mlflow)
+              base_profile=args.base_profile, no_mlflow=args.no_mlflow)
     return 0
 
 

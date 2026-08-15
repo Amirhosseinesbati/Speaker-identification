@@ -749,19 +749,34 @@ with tab_cloud:
         )
 
     run_mode = st.radio(
-        "Run mode", ["Single (committed config)", "Experiment queue (profiles)"],
+        "Run mode", ["Single (committed config)", "Experiment queue (profiles)",
+                     "HPO study (Optuna)"],
         index=0, horizontal=True, key="crunmode",
         help="Single = one run with the committed config + encoder/freeze overrides. "
              "Queue = run a list of named experiment profiles sequentially on ONE "
-             "instance (cheaper for a multi-run campaign).",
+             "instance. HPO = Optuna hyperparameter search on a committed recipe.",
     )
     queue_profiles = []
+    hpo_study = "speaker-hpo"
+    hpo_trials = 30
+    hpo_epochs = 30
+    hpo_base_profile = ""
     if run_mode.startswith("Experiment"):
         queue_profiles = st.multiselect(
             "Profiles to run", list_profiles(), key="cqueue",
-            help="These are configs/experiments/<name>.yaml — they must be committed "
-                 "and pushed so the instance's `git clone` sees them.",
+            help="configs/experiments/<name>.yaml — must be committed + pushed so the "
+                 "instance's `git clone` sees them.",
         )
+    elif run_mode.startswith("HPO"):
+        hpo_base_profile = st.selectbox(
+            "Recipe to tune", ["(base config)"] + list_profiles(), key="c_hpo_base",
+            help="The named recipe (or base config) whose continuous hyperparameters "
+                 "Optuna will tune. Must be committed + pushed.",
+        )
+        hc1, hc2, hc3 = st.columns(3)
+        hpo_study = hc1.text_input("Study name", value="speaker-hpo", key="c_hpo_study")
+        hpo_trials = hc2.number_input("Trials", 1, 200, 30, key="c_hpo_trials")
+        hpo_epochs = hc3.number_input("Epochs/trial", 1, 200, 30, key="c_hpo_epochs")
 
     if not (PROJECT_ROOT / ".env").exists():
         st.warning("⚠️ `.env` missing — copy from `.env.example`")
@@ -783,6 +798,17 @@ with tab_cloud:
         os.environ["MIN_CUDA_VERSION"] = str(min_cuda)
         os.environ["EXPERIMENT_PROFILES"] = (
             " ".join(queue_profiles) if queue_profiles else "")
+        if run_mode.startswith("HPO"):
+            os.environ["HPO_STUDY"] = hpo_study.strip() or "speaker-hpo"
+            os.environ["HPO_TRIALS"] = str(int(hpo_trials))
+            os.environ["HPO_EPOCHS"] = str(int(hpo_epochs))
+            os.environ["HPO_BASE_PROFILE"] = (
+                "" if hpo_base_profile == "(base config)" else hpo_base_profile)
+        else:
+            os.environ["HPO_STUDY"] = ""
+            os.environ["HPO_TRIALS"] = ""
+            os.environ["HPO_EPOCHS"] = ""
+            os.environ["HPO_BASE_PROFILE"] = ""
         with st.spinner("Creating instance..."):
             try:
                 env = os.environ.copy(); env["PYTHONIOENCODING"] = "utf-8"

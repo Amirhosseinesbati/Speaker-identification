@@ -308,6 +308,19 @@ if [ -n "$EXPERIMENT_PROFILES" ]; then
     echo "   Running: python -m src.experiment_queue --profiles $EXPERIMENT_PROFILES --run $TARGET_PIPELINE"
     echo ""
     uv run --no-sync python -m src.experiment_queue --profiles $EXPERIMENT_PROFILES --run "$TARGET_PIPELINE"
+elif [ -n "$HPO_STUDY" ]; then
+    # Optuna HPO on the instance (Audit §17.4) — tunes the committed recipe and
+    # logs every trial to DagsHub MLflow (creds already exported in Phase 4).
+    echo "🔥 Running Optuna HPO study: $HPO_STUDY (trials=${HPO_TRIALS:-30}, epochs=${HPO_EPOCHS:-30})"
+    echo ""
+    if [ -n "$HPO_BASE_PROFILE" ]; then
+        uv run --no-sync python -m src.hpo --study "$HPO_STUDY" \
+            --trials "${HPO_TRIALS:-30}" --epochs "${HPO_EPOCHS:-30}" \
+            --base-profile "$HPO_BASE_PROFILE"
+    else
+        uv run --no-sync python -m src.hpo --study "$HPO_STUDY" \
+            --trials "${HPO_TRIALS:-30}" --epochs "${HPO_EPOCHS:-30}"
+    fi
 else
     echo "🔥 Starting Pipeline: $TARGET_PIPELINE"
     echo "   Running: python -m src.pipelines.run_pipeline --run $TARGET_PIPELINE"
