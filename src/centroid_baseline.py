@@ -180,6 +180,107 @@ def fit_centroids(train_embs: np.ndarray, train_labels: np.ndarray):
     return centroids, speakers
 
 
+def _encoder_key_from_checkpoint(checkpoint_path: str) -> str:
+    """'checkpoints/campp_best.pt' → 'campp' (matches build_submission naming)."""
+    return Path(checkpoint_path).name.replace("_best.pt", "")
+
+
+def build_checkpoint_centroids(
+    checkpoint_path: str,
+    device: torch.device,
+    batch_size: int = 32,
+    max_eval_windows: Optional[int] = None,
+) -> dict:
+    """Build per-known-speaker centroids from a trained checkpoint's ArcFace
+    embedding space, aligned to global class ids 1..num_known.
+
+    Embeddings are extracted from the leak-free TRAIN split (val_per_known=1 —
+    the same split the checkpoint was trained/validated on) via ``model.embed``
+    (multi-window TTA, mean-then-L2-norm). Val files never contribute to a
+    centroid, so this is a no-leak centroid for inference-time cosine scoring.
+
+    Returns:
+        dict:
+          centroids      — (num_known, D) float32, row i = centroid of class i+1
+          speaker_ids    — (num_known,)  int64  = [1, 2, ..., num_known]
+          embedding_dim  — int
+          encoder        — str
+          n_train_files  — int (known files used)
+    """
+    from torch.utils.data import DataLoader
+    from src.data_pipeline import load_config, prepare_clean_split, SpeakerDataset
+    from src.model_factory import create_model_from_config
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    config = checkpoint.get("config") or load_config(str(CONFIG_PATH))
+    class_map = checkpoint["class_map"]
+    num_known = config.get("model", {}).get("competition_num_known", len(class_map) - 1)
+
+    model = create_model_from_config(config, num_known_speakers=num_known)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.to(device).eval()
+
+    audio_cfg = config["audio"]
+    data_cfg = config["data"]
+
+    train_df, _, _ = prepare_clean_split(
+        labels_path=data_cfg["labels_path"],
+        audio_dir=data_cfg["audio_dir"],
+        processed_labels=data_cfg["processed_labels"],
+        val_per_known=1,
+        unknown_val_ratio=0.2,
+        min_valid_duration=audio_cfg.get("min_valid_duration", MIN_VALID_DURATION),
+    )
+    # Align to the CHECKPOINT's class_map (not the freshly rebuilt one) so the
+    # centroid rows match the global class indices exactly.
+    train_df = train_df.copy()
+    train_df["label"] = train_df["speaker_id"].map(class_map).astype(int)
+
+    ds = SpeakerDataset(
+        train_df, data_cfg["audio_dir"], sample_rate=audio_cfg["sample_rate"],
+        duration_seconds=audio_cfg["duration_seconds"], augment=False,
+        num_train_windows=audio_cfg.get("num_train_windows", 1),
+        eval_hop_ratio=audio_cfg.get("eval_hop_ratio", EVAL_HOP_RATIO),
+        max_eval_windows=max_eval_windows or audio_cfg.get("max_eval_windows", MAX_EVAL_WINDOWS),
+    )
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)
+
+    embs, labels = [], []
+    with torch.no_grad():
+        for windows, lab in tqdm(dl, desc="  Train embeddings", leave=False):
+            emb = model.embed(windows.to(device))
+            embs.append(emb.cpu().numpy())
+            labels.append(lab.numpy())
+
+    embs = np.concatenate(embs, axis=0)
+    labels = np.concatenate(labels, axis=0)
+
+    known_mask = labels > 0
+    known_embs = embs[known_mask]
+    known_ids = labels[known_mask]
+    D = embs.shape[1]
+
+    speakers = np.arange(1, num_known + 1)
+    centroids = np.zeros((num_known, D), dtype=np.float32)
+    for i, sid in enumerate(speakers):
+        m = known_ids == sid
+        if m.sum() == 0:
+            raise RuntimeError(
+                f"No train embeddings for speaker {sid} — check the train split "
+                f"({checkpoint_path})."
+            )
+        centroids[i] = known_embs[m].mean(axis=0)
+    centroids = _l2norm_rows(centroids).astype(np.float32)
+
+    return {
+        "centroids": centroids,
+        "speaker_ids": speakers.astype(np.int64),
+        "embedding_dim": D,
+        "encoder": _encoder_key_from_checkpoint(checkpoint_path),
+        "n_train_files": int(len(known_embs)),
+    }
+
+
 def centroid_scores(test_embs: np.ndarray, centroids: np.ndarray):
     """Cosine similarities (M, S) + argmax speaker index."""
     sims = _l2norm_rows(test_embs) @ centroids.T

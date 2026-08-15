@@ -105,17 +105,50 @@ class TwoHeadedSpeakerModel(nn.Module):
 
         return ood_logit, speaker_logits
 
-    def predict_proba(self, waveforms: torch.Tensor) -> torch.Tensor:
+    def _embed_single(self, waveforms: torch.Tensor) -> torch.Tensor:
+        """Raw (unnormalised) speaker embedding for a (B, 1, T) batch.
+
+        Uses the ArcFace head's ``embedding_proj`` output (the L2-normalisable
+        speaker space, default 192-d) when present; otherwise falls back to the
+        pooled encoder features (linear-head models).
+        """
+        hidden_states, _ = self.encoder(waveforms)
+        pooled = self.pooling(hidden_states)
+        if hasattr(self.head_speaker, "embedding_proj"):
+            return self.head_speaker.embedding_proj(pooled)
+        return pooled
+
+    def embed(self, waveforms: torch.Tensor) -> torch.Tensor:
+        """L2-normalised speaker embedding (centroid / cosine-decision space).
+
+        Multi-window inputs ``(B, W, 1, T)`` are embedded window-by-window and
+        **averaged before normalisation** (``mean_then_l2norm``) so the result
+        matches how centroids are built and how inference scores cosine
+        similarity. Single-window ``(B, 1, T)`` inputs are embedded directly.
+
+        Returns:
+            emb: (batch, D) rows of unit norm (D = embedding_dim, default 192).
+        """
+        if waveforms.dim() == 4:
+            B, W = waveforms.shape[0], waveforms.shape[1]
+            embs = [self._embed_single(waveforms[:, w]) for w in range(W)]
+            emb = torch.stack(embs, dim=0).mean(dim=0)  # (B, D)
+        else:
+            emb = self._embed_single(waveforms)
+        return F.normalize(emb, p=2, dim=1)
+
+    def predict_proba(self, waveforms: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
         """
         Get proper probability vector over all classes (0..num_known).
 
         Formula:
             p[0] = sigmoid(ood_logit)
-            p[i] = (1 - p[0]) * softmax(speaker_logits)[i]
+            p[i] = (1 - p[0]) * softmax(speaker_logits / temperature)[i]
 
         Args:
             waveforms: (batch, 1, T) or (batch, W, 1, T) — multi-window inputs
                        are run window-by-window and the logits averaged.
+            temperature: speaker-softmax temperature (calibration knob, T≥~1e-6).
 
         Returns:
             probs: (batch, 1 + num_known) — sum(dim=1) ≈ 1.0
@@ -137,8 +170,8 @@ class TwoHeadedSpeakerModel(nn.Module):
         # P(unknown) = sigmoid(ood_logit)
         p_unknown = torch.sigmoid(ood_logit)  # (batch, 1)
 
-        # P(known_i) = softmax(speaker_logits)
-        p_known = F.softmax(speaker_logits, dim=1)  # (batch, N)
+        # P(known_i) = softmax(speaker_logits / temperature)
+        p_known = F.softmax(speaker_logits / max(float(temperature), 1e-6), dim=1)  # (batch, N)
 
         # Fusion: p_0 = P_unknown, p_i = (1 - P_unknown) * P_known_i
         p_unknown_expanded = p_unknown.expand(-1, self.num_known_speakers)
@@ -152,6 +185,50 @@ class TwoHeadedSpeakerModel(nn.Module):
         probs = probs / probs.sum(dim=1, keepdim=True)
 
         return probs
+
+    def predict_proba_and_embed(
+        self,
+        waveforms: torch.Tensor,
+        temperature: float = 1.0,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Head probabilities AND the L2-normalised speaker embedding from ONE
+        encoder forward (used by the submission decision layer — avoids a second
+        encoder pass and keeps inference inside the time budget).
+
+        Input ``(W, 1, T)`` is treated as W windows of a single file:
+          - probs: window-averaged 447-way probabilities (probability-averaging,
+            matching ``predict_proba(...).mean(0)`` exactly).
+          - emb:   mean(window embeddings) then L2-normalised (``mean_then_l2norm``),
+            matching ``embed(batch.unsqueeze(0))`` exactly.
+
+        Returns:
+            probs: (1 + num_known,)  rows sum to 1.
+            emb:   (embedding_dim,)  unit norm.
+        """
+        if waveforms.dim() == 4:
+            waveforms = waveforms.reshape(-1, 1, waveforms.size(-1))
+
+        hidden_states, _ = self.encoder(waveforms)
+        pooled = self.pooling(hidden_states)          # (W, pooled_dim)
+        ood_logit = self.head_ood(pooled)             # (W, 1)
+        speaker_logits = self.head_speaker(pooled)    # (W, N)
+        if hasattr(self.head_speaker, "embedding_proj"):
+            raw_emb = self.head_speaker.embedding_proj(pooled)  # (W, D)
+        else:
+            raw_emb = pooled
+
+        # Per-window probabilities → average (prob-averaging, existing TTA path).
+        p_unknown = torch.sigmoid(ood_logit)          # (W, 1)
+        p_known = F.softmax(speaker_logits / max(float(temperature), 1e-6), dim=1)
+        p_known_scaled = (1.0 - p_unknown.expand(-1, self.num_known_speakers)) * p_known
+        probs = torch.cat([p_unknown, p_known_scaled], dim=1)  # (W, 447)
+        probs = torch.clamp(probs, min=1e-7, max=1.0 - 1e-7)
+        probs = probs / probs.sum(dim=1, keepdim=True)
+        probs = probs.mean(dim=0)                     # (447,)
+
+        # mean_then_l2norm embedding over windows.
+        emb = F.normalize(raw_emb.mean(dim=0, keepdim=True), p=2, dim=1)[0]  # (D,)
+        return probs, emb
 
     def get_trainable_params(self) -> int:
         """Count trainable parameters."""

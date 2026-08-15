@@ -68,6 +68,10 @@ shipped because no `wavlm_best.pt` checkpoint was trained.)
   runtime imports: addict/easydict/simplejson/yapf)
 - `weights/` — pretrained encoder weights for the 4 used encoders
 - `checkpoints/` — one trained `TwoHeadedSpeakerModel` per encoder
+- `centroids/` — per-encoder speaker centroids (`centroids_<enc>.npz`, 192-d
+  ArcFace space) for the cosine centroid + OOD-gate decision layer
+- `decision_config.json` — tuned decision params (`alpha`, `kappa`, `tau`,
+  `lambda_unknown`, `temperature`); absent → plain argmax fallback
 - `ensemble_fusion_weights.json` — best fusion config (weights + encoder order)
 - `README.md` — this file
 

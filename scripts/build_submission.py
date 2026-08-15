@@ -238,6 +238,31 @@ def build(skip_weights: bool) -> None:
         print("  ⚠ data/processed/ensemble_fusion_weights.json missing — "
               "run ensemble_calibrate.py first")
 
+    # ── centroids (cosine centroid + OOD-gate decision layer) ──
+    (SUB / "centroids").mkdir(parents=True, exist_ok=True)
+    shipped_centroids = 0
+    for enc in sorted(used_encoders):
+        src = ROOT / "data" / "processed" / f"centroids_{enc}.npz"
+        if src.exists():
+            shutil.copy2(src, SUB / "centroids" / src.name)
+            shipped_centroids += 1
+        else:
+            print(f"  ⚠ centroids_{enc}.npz missing — run scripts/build_centroids.py "
+                  f"(decision layer falls back to plain argmax for {enc})")
+    if shipped_centroids == 0:
+        print("  ⚠ no centroids shipped — decision layer disabled")
+    else:
+        print(f"  ✓ centroids/ ({shipped_centroids} encoder(s))")
+
+    # ── decision config (τ/α/κ/λ/T tuned on val) ──
+    dc_src = ROOT / "data" / "processed" / "decision_config.json"
+    if dc_src.exists():
+        shutil.copy2(dc_src, SUB / "decision_config.json")
+        print("  ✓ decision_config.json")
+    else:
+        print("  ⚠ decision_config.json missing — run scripts/tune_decision.py "
+              "(plain argmax fallback)")
+
     # ── README ──
     readme = SUB / "README.md"
     if readme.exists():
@@ -261,6 +286,10 @@ def build(skip_weights: bool) -> None:
     for w in used_encoders:
         p = SUB / "weights" / w
         print(f"  {'✓' if p.exists() and any(p.iterdir()) else '✗ MISSING'} weights/{w}/")
+    cdir = SUB / "centroids"
+    print(f"  {'✓' if cdir.exists() and any(cdir.iterdir()) else '✗ MISSING'} centroids/")
+    dc = SUB / "decision_config.json"
+    print(f"  {'✓' if dc.exists() else '⚠ absent (plain argmax)'} decision_config.json")
 
 
 def main() -> None:

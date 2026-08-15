@@ -57,9 +57,9 @@ setup_utf8_stdio()
 # Import the shared inference core. `inference.py` sits next to this file both
 # in the repo (submission/) and at the zip root (when the package is shipped).
 try:
-    from inference import score_ensemble  # zip-root layout (leaderboard)
+    from inference import score_ensemble, load_centroids  # zip-root layout (leaderboard)
 except ImportError:                       # repo layout (python -m submission.submission)
-    from submission.inference import score_ensemble
+    from submission.inference import score_ensemble, load_centroids
 
 DEFAULT_FUSION_WEIGHTS = PKG_DIR / "ensemble_fusion_weights.json"
 SUPPORTED_AUDIO_SUFFIXES = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
@@ -119,6 +119,36 @@ def _discover_checkpoints() -> List[str]:
     return checkpoints
 
 
+def _encoder_name(ckpt_path: str) -> str:
+    """'checkpoints/campp_best.pt' → 'campp'."""
+    return Path(ckpt_path).name.replace("_best.pt", "")
+
+
+def _load_centroids(checkpoint_paths: List[str]) -> Optional[dict]:
+    """Load ``centroids/<enc>.npz`` for the checkpoints being run.
+
+    Returns None when no centroids are shipped (plain argmax fallback).
+    """
+    cdir = PKG_DIR / "centroids"
+    if not cdir.exists():
+        return None
+    encoders = [_encoder_name(c) for c in checkpoint_paths]
+    centroids = load_centroids(str(cdir), encoders)
+    return centroids or None
+
+
+def _load_decision_params() -> Optional[dict]:
+    """Load tuned decision-layer params from ``decision_config.json``.
+
+    Returns None when the file is absent (plain argmax fallback).
+    """
+    path = PKG_DIR / "decision_config.json"
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return data.get("decision_params", data)
+
+
 def predict(data_dir: str) -> np.ndarray:
     """Score every file in ``data_dir`` and return the predicted class indices.
 
@@ -127,7 +157,8 @@ def predict(data_dir: str) -> np.ndarray:
     checkpoint class map (0 → ``unknown``, 1..446 → known speaker UUIDs).
 
     Uses the best fusion config in ``ensemble_fusion_weights.json``
-    (weighted_average with optimised per-encoder weights).
+    (weighted_average with optimised per-encoder weights) and, when shipped,
+    the centroid + OOD-gate decision layer in ``decision_config.json``.
     """
     global _LAST_FILES, _LAST_CLASS_MAP
     files = load_data(data_dir)
@@ -142,12 +173,13 @@ def predict(data_dir: str) -> np.ndarray:
         checkpoint_path=checkpoint_path,
         fusion_method="weighted_average",
         fusion_weights=fusion_weights,
+        centroids=_load_centroids(checkpoint_path),
+        decision_params=_load_decision_params(),
     )
 
     _LAST_FILES = result["files"]
     _LAST_CLASS_MAP = result["class_map"]
-    labels = result["probs"].argmax(axis=1)
-    return labels.astype(np.int64)
+    return result["labels"].astype(np.int64)
 
 
 def save_predictions(predictions: np.ndarray, output_path: str) -> None:

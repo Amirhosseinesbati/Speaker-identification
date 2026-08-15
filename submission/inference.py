@@ -131,7 +131,7 @@ def make_windows(
 
 
 @torch.inference_mode()
-def predict_file_probs(
+def predict_file_probs_and_embedding(
     model: torch.nn.Module,
     waveform: torch.Tensor,
     device: torch.device,
@@ -140,9 +140,9 @@ def predict_file_probs(
     eval_hop_ratio: float = 0.5,
     max_eval_windows: int = 8,
     use_amp: bool = True,
-) -> np.ndarray:
-    """Multi-window TTA on an ALREADY-DECODED waveform: stack windows → single
-    batched forward → average.
+    temperature: float = 1.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Multi-window TTA on an ALREADY-DECODED waveform → (probs, embedding).
 
     Decoding is intentionally NOT done here — ``score_ensemble`` decodes each
     file exactly once and passes the waveform so it is reused across every
@@ -151,8 +151,13 @@ def predict_file_probs(
 
     All ``max_eval_windows`` windows are stacked into a (W, 1, T) batch and
     sent to GPU in ONE transfer. The model processes the full batch in one
-    forward pass (as opposed to W individual passes), which is substantially
-    faster — fewer kernel launches, no per-window CPU↔GPU round-trips.
+    forward pass. The returned embedding is the window-averaged (then
+    L2-normalised) ArcFace speaker embedding — the centroid cosine-decision
+    space, matching ``src.centroid_baseline.build_checkpoint_centroids``.
+
+    Returns:
+        probs: (num_classes,) fused head probability vector (rows sum to 1).
+        emb:   (embedding_dim,) unit-norm speaker embedding.
     """
     windows = make_windows(waveform, sample_rate, duration_seconds,
                            eval_hop_ratio, max_eval_windows)
@@ -164,11 +169,13 @@ def predict_file_probs(
         torch.autocast(device_type="cuda", enabled=use_amp and device.type == "cuda")
     )
     with autocast_ctx:
-        probs = model.predict_proba(batch).float().cpu().numpy()  # (W, num_classes)
+        # Single encoder forward returns BOTH probs and embedding (no second pass).
+        probs, emb = model.predict_proba_and_embed(batch, temperature=temperature)
 
-    probs = probs.mean(axis=0)  # average across windows
+    probs = probs.float().cpu().numpy()  # (num_classes,)
     probs = probs / probs.sum()
-    return probs
+    emb = emb.float().cpu().numpy()      # (embedding_dim,)
+    return probs, emb
 
 
 # ────────────────────────────────────────────────────────────────
@@ -198,6 +205,71 @@ def _print_gpu_diagnostics() -> None:
 
 
 # ────────────────────────────────────────────────────────────────
+#  Centroid + OOD-gate decision layer (Q4)
+# ────────────────────────────────────────────────────────────────
+
+def _softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
+    """Numerically stable softmax (no scipy dependency)."""
+    x = x - x.max(axis=axis, keepdims=True)
+    e = np.exp(x)
+    return e / (e.sum(axis=axis, keepdims=True) + 1e-12)
+
+
+def load_centroids(
+    centroids_dir: str,
+    encoder_names: Sequence[str],
+) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """Load ``centroids_<enc>.npz`` for the given encoders.
+
+    Returns:
+        {encoder: (centroids (S, D), speaker_ids (S,))}
+    """
+    centroids: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    cdir = Path(centroids_dir)
+    for enc in encoder_names:
+        path = cdir / f"centroids_{enc}.npz"
+        if not path.exists():
+            continue
+        data = np.load(path)
+        centroids[enc] = (data["centroids"].astype(np.float32),
+                          data["speaker_ids"].astype(np.int64))
+    return centroids
+
+
+def centroid_probs_matrix(
+    embs: np.ndarray,
+    centroids: np.ndarray,
+    speaker_ids: np.ndarray,
+    num_classes: int,
+    kappa: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Cosine centroid probabilities for a matrix of embeddings.
+
+    Args:
+        embs: (N, D) unit-norm speaker embeddings.
+        centroids: (S, D) unit-norm centroids (row j = speaker_ids[j]).
+        speaker_ids: (S,) global class ids (1..num_known).
+        kappa: centroid softmax scale (higher = sharper known distribution).
+
+    Returns:
+        probs: (N, num_classes) — p[0] = 1 − max_cosine (unknown), known masses
+               distributed by softmax(κ·cosine).
+        max_cosine: (N,) — max cosine similarity to any centroid.
+    """
+    cos = embs @ centroids.T  # (N, S)
+    max_cosine = cos.max(axis=1)  # (N,)
+    known = _softmax(kappa * cos, axis=1)  # (N, S)
+    p_unknown = np.clip(1.0 - max_cosine, 0.0, 1.0)  # (N,)
+
+    probs = np.zeros((embs.shape[0], num_classes), dtype=np.float64)
+    probs[:, 0] = p_unknown
+    for j, sid in enumerate(speaker_ids):
+        probs[:, int(sid)] = (1.0 - p_unknown) * known[:, j]
+    probs /= (probs.sum(axis=1, keepdims=True) + 1e-12)
+    return probs, max_cosine
+
+
+# ────────────────────────────────────────────────────────────────
 #  Ensemble scoring
 # ────────────────────────────────────────────────────────────────
 
@@ -208,12 +280,28 @@ def score_ensemble(
     fusion_weights: Optional[Sequence[float]] = None,
     max_eval_windows: Optional[int] = None,
     no_amp: bool = False,
+    centroids: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None,
+    decision_params: Optional[dict] = None,
 ) -> dict:
     """Score every file in ``data_dir`` and fuse the ensemble probabilities.
 
+    If ``centroids`` and ``decision_params`` are both provided, the fused head
+    probabilities are additionally fused with per-encoder cosine-centroid
+    probabilities and passed through the OOD gate:
+
+        fused = alpha * head_ens + (1 - alpha) * centroid_ens
+        fused[0] *= lambda_unknown
+        pred = argmax(fused); forced to 0 (unknown) when max_cosine < tau
+
+    ``decision_params`` keys (all optional): ``alpha``, ``kappa``, ``tau``,
+    ``lambda_unknown``, ``temperature``.
+
     Returns a dict:
       files         — list of scored Paths (in file order)
-      probs         — (N, num_classes) fused probability matrix
+      probs         — (N, num_classes) fused probability matrix (post decision)
+      labels        — (N,) final predicted class ids (post OOD gate)
+      max_cosine    — (N,) per-file ensemble max centroid cosine (None if no
+                      decision layer)
       class_map     — checkpoint class map (label -> index)
       scored        — (N,) bool array (True = decoded successfully)
       total_elapsed — ensemble wall time (seconds)
@@ -256,6 +344,17 @@ def score_ensemble(
     num_classes = len(class_map)
     n_models = len(models)
 
+    encoder_names = [Path(c).name.replace("_best.pt", "") for c in checkpoint_path]
+
+    # ── Decision-layer setup ──
+    do_decision = centroids is not None and decision_params is not None
+    decision_params = decision_params or {}
+    alpha = float(decision_params.get("alpha", 0.5))
+    kappa = float(decision_params.get("kappa", 8.0))
+    tau = float(decision_params.get("tau", 0.0))
+    lambda_unknown = float(decision_params.get("lambda_unknown", 1.0))
+    temperature = float(decision_params.get("temperature", 1.0))
+
     # TTA params come from the first checkpoint's embedded config.
     first_ckpt = torch.load(checkpoint_path[0], map_location="cpu", weights_only=False)
     audio_cfg = first_ckpt.get("config", {}).get("audio", {})
@@ -278,6 +377,14 @@ def score_ensemble(
                        for _ in models]
     scored = np.zeros(n_files, dtype=bool)
 
+    # Per-model embeddings only for models that have a centroid (decision path).
+    all_model_embs: Dict[int, np.ndarray] = {}
+    if do_decision:
+        for mi, enc in enumerate(encoder_names):
+            if enc in centroids:
+                dim = int(centroids[enc][0].shape[1])
+                all_model_embs[mi] = np.zeros((n_files, dim), dtype=np.float32)
+
     # ── File-outer loop: decode each file ONCE, run every model on it ──
     # All models are already resident (loaded above). Looping over files on
     # the outside reuses one decoded waveform across every model instead of
@@ -288,14 +395,19 @@ def score_ensemble(
         if waveform is None:
             for m_idx in range(len(models)):
                 all_model_probs[m_idx][i] = uniform
+            # embeddings stay zero → max_cosine = 0 → gated to unknown
             continue
         scored[i] = True
         for m_idx, (model, cm) in enumerate(models):
-            all_model_probs[m_idx][i] = predict_file_probs(
+            probs, emb = predict_file_probs_and_embedding(
                 model, waveform, device, sample_rate=sample_rate,
                 duration_seconds=duration_seconds, eval_hop_ratio=eval_hop_ratio,
                 max_eval_windows=max_windows, use_amp=not no_amp,
+                temperature=temperature if do_decision else 1.0,
             )
+            all_model_probs[m_idx][i] = probs
+            if m_idx in all_model_embs:
+                all_model_embs[m_idx][i] = emb
         del waveform
     total_elapsed = time.time() - t_total_start
 
@@ -321,10 +433,45 @@ def score_ensemble(
         raise RuntimeError(f"Unknown fusion method: {fusion_method}")
 
     final_probs = fused / fused.sum(axis=1, keepdims=True)
+    labels = final_probs.argmax(axis=1).astype(np.int64)
+    max_cosine: Optional[np.ndarray] = None
+
+    # ── Centroid + OOD-gate decision layer ──
+    if do_decision and all_model_embs:
+        # Ensemble weights for the centroid path (same as head, renormalised
+        # over the models that actually have a centroid).
+        c_weights = np.asarray(
+            [fusion_weights[mi] if fusion_weights is not None
+             else 1.0 / len(models)
+             for mi in all_model_embs],
+            dtype=np.float64,
+        )
+        c_weights = c_weights / (c_weights.sum() + 1e-12)
+
+        c_probs_list, max_cos_list = [], []
+        for mi in all_model_embs:
+            cent, sids = centroids[encoder_names[mi]]
+            cp, mc = centroid_probs_matrix(
+                all_model_embs[mi], cent, sids, num_classes, kappa)
+            c_probs_list.append(cp)
+            max_cos_list.append(mc)
+
+        ens_centroid = np.tensordot(c_weights, np.stack(c_probs_list), axes=(0, 0))
+        ens_max_cosine = np.tensordot(c_weights, np.stack(max_cos_list), axes=(0, 0))
+
+        fused2 = alpha * final_probs + (1.0 - alpha) * ens_centroid
+        fused2[:, 0] *= lambda_unknown
+        fused2 /= (fused2.sum(axis=1, keepdims=True) + 1e-12)
+        labels = fused2.argmax(axis=1).astype(np.int64)
+        labels[ens_max_cosine < tau] = 0  # hard OOD gate
+        final_probs = fused2
+        max_cosine = ens_max_cosine
 
     return {
         "files": files,
         "probs": final_probs,
+        "labels": labels,
+        "max_cosine": max_cosine,
         "class_map": class_map,
         "scored": scored,
         "total_elapsed": total_elapsed,

@@ -14,6 +14,8 @@ weights/
 submission/src/
 submission/configs/
 submission/vendor/
+submission/centroids/
+submission/decision_config.json
 data/processed/*
 !data/processed/.gitkeep
 Competition-Guide

@@ -91,6 +91,68 @@ def find_duplicate_groups(
     return {md5: fnames for md5, fnames in md5_to_files.items() if len(fnames) > 1}
 
 
+def identify_conflicting_duplicates(
+    labels_df: pd.DataFrame,
+    duplicate_groups: Dict[str, List[str]],
+) -> Set[str]:
+    """
+    Return the set of audio_files whose MD5-duplicate group carries MORE than
+    one distinct speaker label (byte-identical audio → contradictory supervision).
+
+    These files are the label-noise hazard described in R7: the same waveform is
+    labelled with 2+ different speaker ids (and/or `unknown`), so training on
+    them teaches the ArcFace and OOD heads mutually exclusive targets.
+    """
+    conflicting: Set[str] = set()
+    for fnames in duplicate_groups.values():
+        lbls = set(labels_df.loc[labels_df["audio_file"].isin(fnames), "speaker_id"])
+        if len(lbls) > 1:
+            conflicting.update(fnames)
+    return conflicting
+
+
+def clean_conflicting_labels(
+    labels_df: pd.DataFrame,
+    audio_dir: str,
+) -> Tuple[pd.DataFrame, dict]:
+    """
+    Remove label noise from MD5-duplicate groups (Q5 quick win).
+
+    - Conflicting-label groups (same bytes, 2+ distinct labels) are **dropped
+      entirely** — their supervision is irreconcilable.
+    - Non-conflicting groups (same bytes, one label) are deduplicated to a
+      **single copy** (the lexicographically first file).
+
+    Args:
+        labels_df: DataFrame with ``audio_file`` + ``speaker_id`` columns.
+        audio_dir: Directory containing the (converted) audio files.
+
+    Returns:
+        cleaned_df, stats  (stats: counts of dropped/deduped files)
+    """
+    dup_groups = find_duplicate_groups(labels_df, audio_dir)
+    conflicting = identify_conflicting_duplicates(labels_df, dup_groups)
+
+    drop: Set[str] = set(conflicting)
+    dedupe_drop: Set[str] = set()
+    for fnames in dup_groups.values():
+        lbls = set(labels_df.loc[labels_df["audio_file"].isin(fnames), "speaker_id"])
+        if len(lbls) == 1:
+            ordered = sorted(fnames)
+            dedupe_drop.update(ordered[1:])  # keep first copy, drop the rest
+
+    drop |= dedupe_drop
+    cleaned = labels_df[~labels_df["audio_file"].isin(drop)].reset_index(drop=True)
+
+    stats = {
+        "n_raw_files": int(len(labels_df)),
+        "n_conflicting_files_dropped": int(len(conflicting)),
+        "n_nonconflicting_duplicates_dropped": int(len(dedupe_drop)),
+        "n_files_after_clean": int(len(cleaned)),
+    }
+    return cleaned, stats
+
+
 def scan_durations(labels_df: pd.DataFrame, audio_dir: str) -> Dict[str, float]:
     """
     Header-only duration scan (soundfile.info) for every labelled file.
