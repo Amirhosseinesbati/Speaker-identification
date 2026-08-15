@@ -41,6 +41,7 @@ PIPELINE_SCRIPT = PROJECT_ROOT / "src" / "pipelines" / "run_pipeline.py"
 HPO_DIR = PROJECT_ROOT / "checkpoints" / "hpo"
 STUDY_DB_NAME = "study.db"
 BEST_JSON = HPO_DIR / "best_params.json"
+LOG_DIR = HPO_DIR / "logs"
 
 _METRIC_RE = re.compile(r"Best val Macro-F1:\s*([0-9.]+)")
 
@@ -115,14 +116,23 @@ def suggest_trial_config(trial: optuna.Trial, base: dict, epochs: int) -> tuple:
     return name, cfg
 
 
-def _run_train(profile_name: str) -> tuple:
+def _run_train(profile_name: str, no_mlflow: bool = False) -> tuple:
     cmd = [sys.executable, str(PIPELINE_SCRIPT), "--experiment", profile_name,
-           "--run", "train", "--no-mlflow"]
+           "--run", "train"]
+    if no_mlflow:
+        cmd.append("--no-mlflow")
     proc = subprocess.run(
         cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True,
         encoding="utf-8", errors="replace",
     )
-    return proc.stdout or "", proc.returncode
+    stdout, stderr = proc.stdout or "", proc.stderr or ""
+    # Persist the FULL trial log so a failure can be inspected after the fact
+    # (the objective only prints a short tail).
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    (LOG_DIR / f"{profile_name}.log").write_text(
+        stdout + "\n\n===== STDERR =====\n" + stderr, encoding="utf-8",
+    )
+    return stdout, stderr, proc.returncode
 
 
 def _parse_macro_f1(stdout: str) -> Optional[float]:
@@ -130,16 +140,17 @@ def _parse_macro_f1(stdout: str) -> Optional[float]:
     return float(hits[-1]) if hits else None
 
 
-def _make_objective(base: dict, epochs: int):
+def _make_objective(base: dict, epochs: int, no_mlflow: bool = False):
     def objective(trial: optuna.Trial) -> float:
         name, cfg = suggest_trial_config(trial, base, epochs)
         save_profile(name, cfg, base=base)
-        stdout, code = _run_train(name)
+        stdout, stderr, code = _run_train(name, no_mlflow=no_mlflow)
         mf1 = _parse_macro_f1(stdout)
         if mf1 is None or code != 0:
-            tail = "\n".join((stdout or "").splitlines()[-8:])
+            tail = "\n".join((stderr or stdout or "").splitlines()[-15:])
             print(f"\n  ❌ Trial {trial.number} failed (exit {code}) — returning 0.0\n"
-                  f"  ── stdout tail ──\n{tail}\n")
+                  f"  ── log tail ──\n{tail}\n"
+                  f"  (full log: {LOG_DIR / (name + '.log')})")
             return 0.0
         print(f"  ✓ Trial {trial.number} → val Macro-F1 = {mf1:.4f}")
         return mf1
@@ -148,7 +159,7 @@ def _make_objective(base: dict, epochs: int):
 
 def run_study(n_trials: int = 30, epochs: int = 30,
               study_name: str = "speaker-hpo", resume: bool = True,
-              base: Optional[dict] = None) -> dict:
+              base: Optional[dict] = None, no_mlflow: bool = False) -> dict:
     """Run a coarse Optuna study; persist the best params + best profile."""
     base = base if base is not None else load_base()
     HPO_DIR.mkdir(parents=True, exist_ok=True)
@@ -161,8 +172,8 @@ def run_study(n_trials: int = 30, epochs: int = 30,
         sampler=optuna.samplers.TPESampler(seed=42),
         load_if_exists=resume,
     )
-    study.optimize(_make_objective(base, epochs), n_trials=n_trials,
-                   show_progress_bar=False)
+    study.optimize(_make_objective(base, epochs, no_mlflow=no_mlflow),
+                   n_trials=n_trials, show_progress_bar=False)
 
     best = study.best_trial
 
@@ -201,10 +212,13 @@ def main() -> int:
                         help="Study name (default speaker-hpo).")
     parser.add_argument("--fresh", action="store_true",
                         help="Start a new study (ignore existing sqlite study).")
+    parser.add_argument("--no-mlflow", action="store_true",
+                        help="Disable MLflow tracking for each trial.")
     args = parser.parse_args()
 
     run_study(n_trials=args.trials, epochs=args.epochs,
-              study_name=args.study, resume=not args.fresh)
+              study_name=args.study, resume=not args.fresh,
+              no_mlflow=args.no_mlflow)
     return 0
 
 

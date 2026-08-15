@@ -45,6 +45,7 @@ from src.pipelines.steps import (
 )
 from src.data_pipeline import load_config
 from src.experiment_config import resolve_config_arg, list_profiles
+from src.mlflow_helper import get_tracker
 
 # Windows cp1252 fix: force UTF-8 stdio BEFORE anything prints, otherwise
 # ZenML's logger re-emitting stdout writes crashes on emoji (⚠, ✅, …).
@@ -360,7 +361,20 @@ def main():
     # Configure MLflow stack (unless disabled)
     if not args.no_mlflow:
         config = load_config(config_path)
-        ensure_mlflow_stack(config)
+        ok = ensure_mlflow_stack(config)
+        # Start a NAMED MLflow run so partial stages (train/eval/data/decision —
+        # used by HPO trials and the queue) actually log per-epoch metrics. The
+        # full pipeline's convert_audio step starts its own run and overrides
+        # this. Degrades gracefully when MLflow is unreachable/unauthenticated.
+        if ok:
+            tracker = get_tracker(config)
+            if not tracker.is_active:
+                try:
+                    enc = config.get("model", {}).get("encoder_type", "model")
+                    profile = args.experiment or "base"
+                    tracker.start_run(run_name=f"{profile}-{enc}")
+                except Exception as e:
+                    print(f"  ⚠ Could not start MLflow run: {e}")
     else:
         print("  MLflow tracking disabled via --no-mlflow")
 
