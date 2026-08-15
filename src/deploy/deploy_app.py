@@ -408,47 +408,83 @@ with tab_cfg:
         dom = (config.get("augmentation", {}).get("domain", {}) or {})
         spec = (config.get("augmentation", {}).get("spec", {}) or {})
 
+        def _on(block, key, default=0.0):
+            return float((block.get(key) or {}).get("p", default) or 0) > 0
+
         with st.expander("🌊 Waveform (gentle)", expanded=False):
-            wa, wb = st.columns(2)
-            with wa:
-                wf_gn_p = st.slider("Gaussian p", 0.0, 1.0, float((wf.get("gaussian_noise") or {}).get("p", 0.4)), 0.05)
-                wf_gain_p = st.slider("Gain p", 0.0, 1.0, float((wf.get("gain") or {}).get("p", 0.3)), 0.05)
+            wf_gn_on = st.checkbox("Gaussian noise", value=_on(wf, "gaussian_noise", 0.4))
+            if wf_gn_on:
+                c1, c2 = st.columns(2)
+                wf_gn_p = c1.slider("Gaussian p", 0.0, 1.0, float((wf.get("gaussian_noise") or {}).get("p", 0.4)), 0.05)
+                amp = (wf.get("gaussian_noise") or {}).get("amp", [0.001, 0.012])
+                wf_gn_min = c2.number_input("amp min", 0.0, 0.1, float(amp[0]), 0.001)
+                wf_gn_max = c2.number_input("amp max", 0.0, 0.1, float(amp[1]), 0.001)
+
+            wf_gain_on = st.checkbox("Gain", value=_on(wf, "gain", 0.3))
+            if wf_gain_on:
+                c1, c2 = st.columns(2)
+                wf_gain_p = c1.slider("Gain p", 0.0, 1.0, float((wf.get("gain") or {}).get("p", 0.3)), 0.05)
+                db = (wf.get("gain") or {}).get("db", [-6, 6])
+                wf_gain_min = c2.number_input("dB min", -24.0, 0.0, float(db[0]), 1.0)
+                wf_gain_max = c2.number_input("dB max", 0.0, 24.0, float(db[1]), 1.0)
+
+            wf_pol_on = st.checkbox("Polarity inversion", value=_on(wf, "polarity_inversion", 0.5))
+            if wf_pol_on:
                 wf_pol_p = st.slider("Polarity p", 0.0, 1.0, float((wf.get("polarity_inversion") or {}).get("p", 0.5)), 0.05)
-                wf_shift_p = st.slider("Shift p", 0.0, 1.0, float((wf.get("shift") or {}).get("p", 0.3)), 0.05)
-                wf_pitch_p = st.slider("Pitch p", 0.0, 1.0, float((wf.get("pitch_shift") or {}).get("p", 0.25)), 0.05)
-                wf_str_p = st.slider("Time-stretch p", 0.0, 1.0, float((wf.get("time_stretch") or {}).get("p", 0.2)), 0.05)
-            with wb:
-                gn_amp = (wf.get("gaussian_noise") or {}).get("amp", [0.001, 0.012])
-                wf_gn_min = st.number_input("Gaussian amp min", 0.0, 0.1, float(gn_amp[0]), 0.001)
-                wf_gn_max = st.number_input("Gaussian amp max", 0.0, 0.1, float(gn_amp[1]), 0.001)
-                gain_db = (wf.get("gain") or {}).get("db", [-6, 6])
-                wf_gain_min = st.number_input("Gain dB min", -24.0, 0.0, float(gain_db[0]), 1.0)
-                wf_gain_max = st.number_input("Gain dB max", 0.0, 24.0, float(gain_db[1]), 1.0)
-                wf_shift_frac = st.slider("Shift frac", 0.0, 0.5, float((wf.get("shift") or {}).get("frac", 0.1)), 0.01)
-                pitch_st = (wf.get("pitch_shift") or {}).get("semitones", [-1, 1])
-                wf_pitch_min = st.number_input("Pitch min (st)", -4.0, 0.0, float(pitch_st[0]), 0.5)
-                wf_pitch_max = st.number_input("Pitch max (st)", 0.0, 4.0, float(pitch_st[1]), 0.5)
+
+            wf_shift_on = st.checkbox("Shift", value=_on(wf, "shift", 0.3))
+            if wf_shift_on:
+                c1, c2 = st.columns(2)
+                wf_shift_p = c1.slider("Shift p", 0.0, 1.0, float((wf.get("shift") or {}).get("p", 0.3)), 0.05)
+                wf_shift_frac = c2.slider("Shift frac", 0.0, 0.5, float((wf.get("shift") or {}).get("frac", 0.1)), 0.01)
+
+            wf_pitch_on = st.checkbox("Pitch shift", value=_on(wf, "pitch_shift", 0.25))
+            if wf_pitch_on:
+                c1, c2 = st.columns(2)
+                wf_pitch_p = c1.slider("Pitch p", 0.0, 1.0, float((wf.get("pitch_shift") or {}).get("p", 0.25)), 0.05)
+                semi = (wf.get("pitch_shift") or {}).get("semitones", [-1, 1])
+                wf_pitch_min = c2.number_input("Pitch min (st)", -4.0, 0.0, float(semi[0]), 0.5)
+                wf_pitch_max = c2.number_input("Pitch max (st)", 0.0, 4.0, float(semi[1]), 0.5)
+
+            wf_str_on = st.checkbox("Time-stretch", value=_on(wf, "time_stretch", 0.2))
+            if wf_str_on:
+                c1, c2 = st.columns(2)
+                wf_str_p = c1.slider("Time-stretch p", 0.0, 1.0, float((wf.get("time_stretch") or {}).get("p", 0.2)), 0.05)
                 rate = (wf.get("time_stretch") or {}).get("rate", [0.85, 1.18])
-                wf_rate_min = st.number_input("Rate min", 0.5, 1.0, float(rate[0]), 0.01)
-                wf_rate_max = st.number_input("Rate max", 1.0, 2.0, float(rate[1]), 0.01)
+                wf_rate_min = c2.number_input("Rate min", 0.5, 1.0, float(rate[0]), 0.01)
+                wf_rate_max = c2.number_input("Rate max", 1.0, 2.0, float(rate[1]), 0.01)
 
         with st.expander("🏠 Domain (RIR / MUSAN / codec)", expanded=True):
-            dom_rir_p = st.slider("RIR reverb p", 0.0, 1.0, float((dom.get("rirs_reverb") or {}).get("p", 0.0)), 0.05)
-            da, db = st.columns(2)
-            with da:
-                dom_musan_noise_p = st.slider("MUSAN noise p", 0.0, 1.0, float((dom.get("musan") or {}).get("noise_p", 0.0)), 0.05)
-                dom_musan_music_p = st.slider("MUSAN music p", 0.0, 1.0, float((dom.get("musan") or {}).get("music_p", 0.0)), 0.05)
-            with db:
+            dom_rir_on = st.checkbox("RIR reverb", value=_on(dom, "rirs_reverb", 0.0))
+            if dom_rir_on:
+                dom_rir_p = st.slider("RIR p", 0.0, 1.0, float((dom.get("rirs_reverb") or {}).get("p", 0.4)), 0.05)
+
+            dom_musan_noise_on = st.checkbox("MUSAN noise", value=float((dom.get("musan") or {}).get("noise_p", 0.0) or 0) > 0)
+            dom_musan_music_on = st.checkbox("MUSAN music", value=float((dom.get("musan") or {}).get("music_p", 0.0) or 0) > 0)
+            if dom_musan_noise_on or dom_musan_music_on:
+                c1, c2 = st.columns(2)
+                if dom_musan_noise_on:
+                    dom_musan_noise_p = c1.slider("MUSAN noise p", 0.0, 1.0, float((dom.get("musan") or {}).get("noise_p", 0.4)), 0.05)
+                if dom_musan_music_on:
+                    dom_musan_music_p = c2.slider("MUSAN music p", 0.0, 1.0, float((dom.get("musan") or {}).get("music_p", 0.2)), 0.05)
                 snr = (dom.get("musan") or {}).get("snr_db", [5, 20])
-                dom_snr_min = st.number_input("MUSAN SNR min", -10.0, 30.0, float(snr[0]), 1.0)
-                dom_snr_max = st.number_input("MUSAN SNR max", -10.0, 30.0, float(snr[1]), 1.0)
-            dom_mp3_p = st.slider("mp3 codec p", 0.0, 1.0, float((dom.get("mp3_codec_roundtrip") or {}).get("p", 0.0)), 0.05)
-            dom_mp3_min = st.number_input("mp3 min bitrate", 32, 320, int((dom.get("mp3_codec_roundtrip") or {}).get("min_bitrate", 64)), 8)
-            dom_mp3_max = st.number_input("mp3 max bitrate", 32, 320, int((dom.get("mp3_codec_roundtrip") or {}).get("max_bitrate", 192)), 8)
+                c1, c2 = st.columns(2)
+                dom_snr_min = c1.number_input("MUSAN SNR min", -10.0, 30.0, float(snr[0]), 1.0)
+                dom_snr_max = c2.number_input("MUSAN SNR max", -10.0, 30.0, float(snr[1]), 1.0)
+
+            dom_mp3_on = st.checkbox("mp3 codec roundtrip", value=_on(dom, "mp3_codec_roundtrip", 0.0))
+            if dom_mp3_on:
+                c1, c2 = st.columns(2)
+                dom_mp3_p = c1.slider("mp3 p", 0.0, 1.0, float((dom.get("mp3_codec_roundtrip") or {}).get("p", 0.3)), 0.05)
+                dom_mp3_min = c2.number_input("mp3 min bitrate", 32, 320, int((dom.get("mp3_codec_roundtrip") or {}).get("min_bitrate", 64)), 8)
+                dom_mp3_max = c2.number_input("mp3 max bitrate", 32, 320, int((dom.get("mp3_codec_roundtrip") or {}).get("max_bitrate", 192)), 8)
 
         with st.expander("🔲 Spec masking", expanded=False):
-            spec_tm_p = st.slider("Time mask p", 0.0, 1.0, float((spec.get("time_mask") or {}).get("p", 0.0)), 0.05)
-            spec_tm_ratio = st.slider("Time mask max ratio", 0.0, 0.5, float((spec.get("time_mask") or {}).get("max_mask_ratio", 0.2)), 0.01)
+            spec_tm_on = st.checkbox("Time mask", value=_on(spec, "time_mask", 0.0))
+            if spec_tm_on:
+                c1, c2 = st.columns(2)
+                spec_tm_p = c1.slider("Time mask p", 0.0, 1.0, float((spec.get("time_mask") or {}).get("p", 0.5)), 0.05)
+                spec_tm_ratio = c2.slider("Time mask max ratio", 0.0, 0.5, float((spec.get("time_mask") or {}).get("max_mask_ratio", 0.2)), 0.01)
 
         st.subheader("🏋️ Training")
         epochs = st.number_input("Epochs", 1, None, config["training"]["epochs"],
@@ -541,31 +577,72 @@ with tab_cfg:
         config["data"]["split"]["folds"] = int(n_folds)
         config["data"]["split"]["fold"] = int(fold_idx)
         config["data"]["split"]["seed"] = int(split_seed)
-        # Augmentation (waveform / domain / spec) — fully config-driven.
+        # Augmentation — on/off toggles + settings (ranges are preserved from
+        # the previous config when an effect is turned off).
         aug = config.setdefault("augmentation", {})
         wf_cfg = aug.setdefault("waveform", {})
-        wf_cfg["gaussian_noise"] = {"p": wf_gn_p, "amp": [wf_gn_min, wf_gn_max]}
-        wf_cfg["gain"] = {"p": wf_gain_p, "db": [wf_gain_min, wf_gain_max]}
-        wf_cfg["polarity_inversion"] = {"p": wf_pol_p}
-        wf_cfg["shift"] = {"p": wf_shift_p, "frac": wf_shift_frac}
-        wf_cfg["pitch_shift"] = {"p": wf_pitch_p, "semitones": [wf_pitch_min, wf_pitch_max]}
-        wf_cfg["time_stretch"] = {"p": wf_str_p, "rate": [wf_rate_min, wf_rate_max]}
+
+        gn = dict(wf_cfg.get("gaussian_noise") or {})
+        gn["p"] = wf_gn_p if wf_gn_on else 0.0
+        if wf_gn_on:
+            gn["amp"] = [wf_gn_min, wf_gn_max]
+        wf_cfg["gaussian_noise"] = gn
+
+        gain = dict(wf_cfg.get("gain") or {})
+        gain["p"] = wf_gain_p if wf_gain_on else 0.0
+        if wf_gain_on:
+            gain["db"] = [wf_gain_min, wf_gain_max]
+        wf_cfg["gain"] = gain
+
+        pol = dict(wf_cfg.get("polarity_inversion") or {})
+        pol["p"] = wf_pol_p if wf_pol_on else 0.0
+        wf_cfg["polarity_inversion"] = pol
+
+        shift = dict(wf_cfg.get("shift") or {})
+        shift["p"] = wf_shift_p if wf_shift_on else 0.0
+        if wf_shift_on:
+            shift["frac"] = wf_shift_frac
+        wf_cfg["shift"] = shift
+
+        pitch = dict(wf_cfg.get("pitch_shift") or {})
+        pitch["p"] = wf_pitch_p if wf_pitch_on else 0.0
+        if wf_pitch_on:
+            pitch["semitones"] = [wf_pitch_min, wf_pitch_max]
+        wf_cfg["pitch_shift"] = pitch
+
+        ts = dict(wf_cfg.get("time_stretch") or {})
+        ts["p"] = wf_str_p if wf_str_on else 0.0
+        if wf_str_on:
+            ts["rate"] = [wf_rate_min, wf_rate_max]
+        wf_cfg["time_stretch"] = ts
+
         dom_cfg = aug.setdefault("domain", {})
-        dom_cfg["rirs_reverb"] = {
-            "p": dom_rir_p,
-            "path": (dom_cfg.get("rirs_reverb") or {}).get("path", "data/augmentation/rirs"),
-        }
-        dom_cfg["musan"] = {
-            "noise_p": dom_musan_noise_p,
-            "music_p": dom_musan_music_p,
-            "snr_db": [dom_snr_min, dom_snr_max],
-            "path": (dom_cfg.get("musan") or {}).get("path", "data/augmentation/musan"),
-        }
-        dom_cfg["mp3_codec_roundtrip"] = {
-            "p": dom_mp3_p, "min_bitrate": dom_mp3_min, "max_bitrate": dom_mp3_max,
-        }
+        rir = dict(dom_cfg.get("rirs_reverb") or {})
+        rir["p"] = dom_rir_p if dom_rir_on else 0.0
+        rir.setdefault("path", "data/augmentation/rirs")
+        dom_cfg["rirs_reverb"] = rir
+
+        musan = dict(dom_cfg.get("musan") or {})
+        musan["noise_p"] = dom_musan_noise_p if dom_musan_noise_on else 0.0
+        musan["music_p"] = dom_musan_music_p if dom_musan_music_on else 0.0
+        if dom_musan_noise_on or dom_musan_music_on:
+            musan["snr_db"] = [dom_snr_min, dom_snr_max]
+        musan.setdefault("path", "data/augmentation/musan")
+        dom_cfg["musan"] = musan
+
+        mp3 = dict(dom_cfg.get("mp3_codec_roundtrip") or {})
+        mp3["p"] = dom_mp3_p if dom_mp3_on else 0.0
+        if dom_mp3_on:
+            mp3["min_bitrate"] = dom_mp3_min
+            mp3["max_bitrate"] = dom_mp3_max
+        dom_cfg["mp3_codec_roundtrip"] = mp3
+
         spec_cfg = aug.setdefault("spec", {})
-        spec_cfg["time_mask"] = {"p": spec_tm_p, "max_mask_ratio": spec_tm_ratio}
+        tm = dict(spec_cfg.get("time_mask") or {})
+        tm["p"] = spec_tm_p if spec_tm_on else 0.0
+        if spec_tm_on:
+            tm["max_mask_ratio"] = spec_tm_ratio
+        spec_cfg["time_mask"] = tm
         config["training"]["epochs"] = epochs
         config["training"]["learning_rate"] = lr_val
         config["training"]["encoder_lr"] = float(encoder_lr)
