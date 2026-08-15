@@ -38,7 +38,6 @@ from src.training_utils import (
     EMA,
     build_amp,
     build_scheduler,
-    flatten_windows,
 )
 
 warnings.filterwarnings("ignore")
@@ -433,9 +432,11 @@ def train_epoch(
     """
     Train for one epoch with AMP.
 
-    **Per-window loss (root cause R2):** a ``(B, W, 1, T)`` batch is flattened
-    to ``(B*W, 1, T)`` and the file label is repeated, so the loss is computed
-    on each window independently instead of averaging the ``W`` logits first.
+    **Per-window loss (root cause R2):** a ``(B, W, 1, T)`` batch is processed
+    one window at a time and gradients are accumulated across the ``W`` windows
+    (peak activation stays at ``(B, 1, T)``), so the loss is computed per window
+    instead of averaging the ``W`` logits first — without the OOM of flattening
+    to a single ``(B*W, 1, T)`` forward.
 
     Returns dict of average metrics.
     """
@@ -456,24 +457,41 @@ def train_epoch(
 
         optimizer.zero_grad()
 
-        # Per-window training: flatten (B, W, 1, T) → (B*W, 1, T) + repeat labels.
-        waveforms, labels = flatten_windows(waveforms, labels)
+        # Per-window training with gradient accumulation (root cause R2).
+        # Each window is a (B, 1, T) forward — peak activation stays at B, not
+        # B*W — and gradients accumulate across the W windows. The old
+        # flatten-to-(B*W,1,T) path OOM'd a 24 GB GPU at 32 files × 4 windows of
+        # 8 s under full fine-tune. Scaling each window's loss by 1/W keeps the
+        # step mathematically identical to the mean-over-windows loss.
+        W = waveforms.shape[1] if waveforms.dim() == 4 else 1
 
-        with autocast_fn():
-            ood_logits, speaker_logits = model(waveforms, labels=labels)
-            loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
+        step_loss = 0.0
+        step_ood_acc = 0.0
+        step_spk_acc = 0.0
+        for w in range(W):
+            wf = waveforms[:, w] if W > 1 else waveforms  # (B, 1, T)
+            with autocast_fn():
+                ood_logits, speaker_logits = model(wf, labels=labels)
+                loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
-        # Fail loudly on NaN/Inf instead of silently training a broken model
-        if not torch.isfinite(loss):
-            raise RuntimeError(
-                f"Loss is NaN/Inf at step {step} of the current epoch. This "
-                "usually means the encoder is fully unfrozen under fp16 AMP "
-                "(try mixed_precision: false, a lower learning_rate/encoder_lr, "
-                "or freeze_encoder: true / a smaller unfreeze_last_n_blocks)."
-            )
+            # Fail loudly on NaN/Inf instead of silently training a broken model
+            if not torch.isfinite(loss):
+                raise RuntimeError(
+                    f"Loss is NaN/Inf at step {step} window {w} of the current "
+                    "epoch. This usually means the encoder is fully unfrozen "
+                    "under fp16 AMP (try mixed_precision: false, a lower "
+                    "learning_rate/encoder_lr, or freeze_encoder: true / a "
+                    "smaller unfreeze_last_n_blocks)."
+                )
 
-        # Backward pass with AMP
-        scaler.scale(loss).backward()
+            # AMP-scaled per-window backward; gradients accumulate over W.
+            scaler.scale(loss / W).backward()
+
+            step_loss += loss_dict["loss_total"]
+            step_ood_acc += compute_ood_accuracy(ood_logits, labels)
+            spk_acc, _ = compute_speaker_accuracy(speaker_logits, labels)
+            step_spk_acc += spk_acc
+
         scaler.unscale_(optimizer)
 
         # Separate gradient clipping: tighter for OOD head
@@ -497,17 +515,16 @@ def train_epoch(
         if ema is not None:
             ema.update(model)
 
-        # Metrics
-        total_loss += loss_dict["loss_total"]
-        total_ood_acc += compute_ood_accuracy(ood_logits, labels)
-        speaker_acc, n_known = compute_speaker_accuracy(speaker_logits, labels)
-        total_speaker_acc += speaker_acc
+        # Metrics (mean over windows)
+        total_loss += step_loss / W
+        total_ood_acc += step_ood_acc / W
+        total_speaker_acc += step_spk_acc / W
 
         # Update progress bar
         progress_bar.set_postfix({
-            "loss": f"{loss_dict['loss_total']:.4f}",
-            "ood": f"{compute_ood_accuracy(ood_logits, labels):.3f}",
-            "spk": f"{speaker_acc:.3f}",
+            "loss": f"{step_loss / W:.4f}",
+            "ood": f"{step_ood_acc / W:.3f}",
+            "spk": f"{step_spk_acc / W:.3f}",
         })
 
     return {
