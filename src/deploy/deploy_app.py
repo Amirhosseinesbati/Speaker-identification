@@ -14,9 +14,13 @@ import yaml
 st.set_page_config(page_title="Speaker-ID MLOps", page_icon="🎤", layout="wide")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 CONFIG_PATH = PROJECT_ROOT / "configs" / "default_config.yaml"
 DEPLOY_SCRIPT = PROJECT_ROOT / "src" / "deploy" / "deploy.py"
 PIPELINE_SCRIPT = PROJECT_ROOT / "src" / "pipelines" / "run_pipeline.py"
+
+from src.experiment_config import list_profiles, load_profile, save_profile
 
 # Vast.ai GPU targets offered in the Cloud tab. Keep in sync with
 # configs/default_config.yaml → mlops.vast.gpu_options and setup_vast.sh.
@@ -131,7 +135,17 @@ def _render_local_runner(key: str, title: str) -> None:
             st.rerun()
 
 
-config = load_config()
+# Active config source: a loaded experiment profile (session_state) wins over
+# the base file. The widgets below read/write this dict; saving branches on the
+# experiment name (see the 💾 Save handler at the bottom of the Config tab).
+if "edit_config" not in st.session_state:
+    st.session_state.edit_config = None
+    st.session_state.loaded_profile_name = "(base)"
+config = (
+    st.session_state.edit_config
+    if st.session_state.edit_config is not None
+    else load_config()
+)
 
 
 def _enc_val(key, default=None):
@@ -316,11 +330,34 @@ with st.sidebar:
 #  Main
 # ═══════════════════════════════════════════════════════════
 st.title("🎤 Speaker-ID MLOps Center")
-tab_cfg, tab_cloud, tab_local, tab_analysis = st.tabs(
-    ["⚙️ Config", "☁️ Cloud (Vast.ai)", "💻 Local", "🧪 Analysis"])
+tab_cfg, tab_cloud, tab_local, tab_matrix, tab_analysis = st.tabs(
+    ["⚙️ Config", "☁️ Cloud (Vast.ai)", "💻 Local", "🧬 Experiment Matrix",
+     "🧪 Analysis"])
 
 # ── TAB: Config ──
 with tab_cfg:
+    st.header("🧬 Experiment Profiles")
+    st.caption("Profiles inherit from `configs/default_config.yaml` and store only "
+               "their overrides (diffable, mergeable). Load one to continue editing; "
+               "save the current setup as a named experiment below.")
+    profiles = list_profiles()
+    prof_c1, prof_c2 = st.columns([3, 1])
+    with prof_c1:
+        profile_sel = st.selectbox(
+            "Load existing", ["(base)"] + profiles, index=0, key="profile_select",
+            help="(base) edits configs/default_config.yaml directly.",
+        )
+    with prof_c2:
+        if st.button("📂 Load", key="load_profile_btn", use_container_width=True):
+            if profile_sel == "(base)":
+                st.session_state.edit_config = None
+                st.session_state.loaded_profile_name = "(base)"
+            else:
+                st.session_state.edit_config = load_profile(profile_sel)
+                st.session_state.loaded_profile_name = profile_sel
+            st.rerun()
+    st.caption(f"Currently editing: **{st.session_state.loaded_profile_name}**")
+
     st.header("⚙️ Model Setup")
     c1, c2 = st.columns(2)
     with c1:
@@ -415,16 +452,59 @@ with tab_cfg:
         )
         n_folds = int(split_cfg.get("folds", 3))
         fold_idx = int(split_cfg.get("fold", 0))
+        split_seed = int(split_cfg.get("seed", 42))
         if split_scheme == "kfold":
             n_folds = st.number_input("Folds (K)", 2, 10, int(split_cfg.get("folds", 3)))
             fold_idx = st.number_input("Fold index", 0, n_folds - 1, int(split_cfg.get("fold", 0)))
-        st.subheader("🎛 Augmentation (domain)")
+        split_seed = st.number_input("Split seed", 0, 2**31 - 1, split_seed,
+                                     help="RNG seed for the val/fold partition (matrix seeds vary this).")
+        st.subheader("🎛 Augmentation")
+        wf = (config.get("augmentation", {}).get("waveform", {}) or {})
         dom = (config.get("augmentation", {}).get("domain", {}) or {})
-        rir_on = st.checkbox("RIR reverb", value=float((dom.get("rirs_reverb", {}) or {}).get("p", 0)) > 0,
-                             help="Needs data/augmentation/rirs (download RIRs first).")
-        musan_on = st.checkbox("MUSAN noise/music", value=float((dom.get("musan", {}) or {}).get("noise_p", 0)) > 0,
-                               help="Needs data/augmentation/musan (download MUSAN first).")
-        mp3_on = st.checkbox("mp3 codec roundtrip", value=float((dom.get("mp3_codec_roundtrip", {}) or {}).get("p", 0)) > 0)
+        spec = (config.get("augmentation", {}).get("spec", {}) or {})
+
+        with st.expander("🌊 Waveform (gentle)", expanded=False):
+            wa, wb = st.columns(2)
+            with wa:
+                wf_gn_p = st.slider("Gaussian p", 0.0, 1.0, float((wf.get("gaussian_noise") or {}).get("p", 0.4)), 0.05)
+                wf_gain_p = st.slider("Gain p", 0.0, 1.0, float((wf.get("gain") or {}).get("p", 0.3)), 0.05)
+                wf_pol_p = st.slider("Polarity p", 0.0, 1.0, float((wf.get("polarity_inversion") or {}).get("p", 0.5)), 0.05)
+                wf_shift_p = st.slider("Shift p", 0.0, 1.0, float((wf.get("shift") or {}).get("p", 0.3)), 0.05)
+                wf_pitch_p = st.slider("Pitch p", 0.0, 1.0, float((wf.get("pitch_shift") or {}).get("p", 0.25)), 0.05)
+                wf_str_p = st.slider("Time-stretch p", 0.0, 1.0, float((wf.get("time_stretch") or {}).get("p", 0.2)), 0.05)
+            with wb:
+                gn_amp = (wf.get("gaussian_noise") or {}).get("amp", [0.001, 0.012])
+                wf_gn_min = st.number_input("Gaussian amp min", 0.0, 0.1, float(gn_amp[0]), 0.001)
+                wf_gn_max = st.number_input("Gaussian amp max", 0.0, 0.1, float(gn_amp[1]), 0.001)
+                gain_db = (wf.get("gain") or {}).get("db", [-6, 6])
+                wf_gain_min = st.number_input("Gain dB min", -24.0, 0.0, float(gain_db[0]), 1.0)
+                wf_gain_max = st.number_input("Gain dB max", 0.0, 24.0, float(gain_db[1]), 1.0)
+                wf_shift_frac = st.slider("Shift frac", 0.0, 0.5, float((wf.get("shift") or {}).get("frac", 0.1)), 0.01)
+                pitch_st = (wf.get("pitch_shift") or {}).get("semitones", [-1, 1])
+                wf_pitch_min = st.number_input("Pitch min (st)", -4.0, 0.0, float(pitch_st[0]), 0.5)
+                wf_pitch_max = st.number_input("Pitch max (st)", 0.0, 4.0, float(pitch_st[1]), 0.5)
+                rate = (wf.get("time_stretch") or {}).get("rate", [0.85, 1.18])
+                wf_rate_min = st.number_input("Rate min", 0.5, 1.0, float(rate[0]), 0.01)
+                wf_rate_max = st.number_input("Rate max", 1.0, 2.0, float(rate[1]), 0.01)
+
+        with st.expander("🏠 Domain (RIR / MUSAN / codec)", expanded=True):
+            dom_rir_p = st.slider("RIR reverb p", 0.0, 1.0, float((dom.get("rirs_reverb") or {}).get("p", 0.0)), 0.05)
+            da, db = st.columns(2)
+            with da:
+                dom_musan_noise_p = st.slider("MUSAN noise p", 0.0, 1.0, float((dom.get("musan") or {}).get("noise_p", 0.0)), 0.05)
+                dom_musan_music_p = st.slider("MUSAN music p", 0.0, 1.0, float((dom.get("musan") or {}).get("music_p", 0.0)), 0.05)
+            with db:
+                snr = (dom.get("musan") or {}).get("snr_db", [5, 20])
+                dom_snr_min = st.number_input("MUSAN SNR min", -10.0, 30.0, float(snr[0]), 1.0)
+                dom_snr_max = st.number_input("MUSAN SNR max", -10.0, 30.0, float(snr[1]), 1.0)
+            dom_mp3_p = st.slider("mp3 codec p", 0.0, 1.0, float((dom.get("mp3_codec_roundtrip") or {}).get("p", 0.0)), 0.05)
+            dom_mp3_min = st.number_input("mp3 min bitrate", 32, 320, int((dom.get("mp3_codec_roundtrip") or {}).get("min_bitrate", 64)), 8)
+            dom_mp3_max = st.number_input("mp3 max bitrate", 32, 320, int((dom.get("mp3_codec_roundtrip") or {}).get("max_bitrate", 192)), 8)
+
+        with st.expander("🔲 Spec masking", expanded=False):
+            spec_tm_p = st.slider("Time mask p", 0.0, 1.0, float((spec.get("time_mask") or {}).get("p", 0.0)), 0.05)
+            spec_tm_ratio = st.slider("Time mask max ratio", 0.0, 0.5, float((spec.get("time_mask") or {}).get("max_mask_ratio", 0.2)), 0.01)
+
         st.subheader("🏋️ Training")
         epochs = st.number_input("Epochs", 1, None, config["training"]["epochs"],
                                  help="No upper cap — the config default is 150.")
@@ -480,7 +560,13 @@ with tab_cfg:
         sm_val = st.number_input("Label smoothing", 0.0, 0.5,
                                  float(loss_spk.get("label_smoothing", config["training"].get("label_smoothing", 0.1))), 0.05)
 
-    if st.button("💾 Save Config", type="primary", use_container_width=True):
+    st.subheader("💾 Save")
+    exp_name = st.text_input(
+        "Experiment name", value="", key="exp_name",
+        placeholder="leave empty to write configs/default_config.yaml",
+        help="Non-empty → saved to configs/experiments/<name>.yaml as a named profile.",
+    )
+    if st.button("💾 Save", type="primary", use_container_width=True):
         # ── Encoder config: MERGE with existing keys so partial fine-tune
         #    settings (e.g. unfreeze_last_n_blocks) are never silently dropped.
         old_enc = dict(config["model"].get("encoder_config", {}).get(encoder_type, {}))
@@ -509,13 +595,32 @@ with tab_cfg:
         config["data"]["split"]["scheme"] = split_scheme
         config["data"]["split"]["folds"] = int(n_folds)
         config["data"]["split"]["fold"] = int(fold_idx)
-        # Domain augmentation toggles (waveform params stay config-driven)
-        dom_cfg = config.setdefault("augmentation", {}).setdefault("domain", {})
-        dom_cfg.setdefault("rirs_reverb", {})["p"] = 0.4 if rir_on else 0.0
-        musan_cfg = dom_cfg.setdefault("musan", {})
-        musan_cfg["noise_p"] = 0.4 if musan_on else 0.0
-        musan_cfg["music_p"] = 0.2 if musan_on else 0.0
-        dom_cfg.setdefault("mp3_codec_roundtrip", {})["p"] = 0.3 if mp3_on else 0.0
+        config["data"]["split"]["seed"] = int(split_seed)
+        # Augmentation (waveform / domain / spec) — fully config-driven.
+        aug = config.setdefault("augmentation", {})
+        wf_cfg = aug.setdefault("waveform", {})
+        wf_cfg["gaussian_noise"] = {"p": wf_gn_p, "amp": [wf_gn_min, wf_gn_max]}
+        wf_cfg["gain"] = {"p": wf_gain_p, "db": [wf_gain_min, wf_gain_max]}
+        wf_cfg["polarity_inversion"] = {"p": wf_pol_p}
+        wf_cfg["shift"] = {"p": wf_shift_p, "frac": wf_shift_frac}
+        wf_cfg["pitch_shift"] = {"p": wf_pitch_p, "semitones": [wf_pitch_min, wf_pitch_max]}
+        wf_cfg["time_stretch"] = {"p": wf_str_p, "rate": [wf_rate_min, wf_rate_max]}
+        dom_cfg = aug.setdefault("domain", {})
+        dom_cfg["rirs_reverb"] = {
+            "p": dom_rir_p,
+            "path": (dom_cfg.get("rirs_reverb") or {}).get("path", "data/augmentation/rirs"),
+        }
+        dom_cfg["musan"] = {
+            "noise_p": dom_musan_noise_p,
+            "music_p": dom_musan_music_p,
+            "snr_db": [dom_snr_min, dom_snr_max],
+            "path": (dom_cfg.get("musan") or {}).get("path", "data/augmentation/musan"),
+        }
+        dom_cfg["mp3_codec_roundtrip"] = {
+            "p": dom_mp3_p, "min_bitrate": dom_mp3_min, "max_bitrate": dom_mp3_max,
+        }
+        spec_cfg = aug.setdefault("spec", {})
+        spec_cfg["time_mask"] = {"p": spec_tm_p, "max_mask_ratio": spec_tm_ratio}
         config["training"]["epochs"] = epochs
         config["training"]["learning_rate"] = lr_val
         config["training"]["encoder_lr"] = float(encoder_lr)
@@ -542,16 +647,66 @@ with tab_cfg:
         config["training"]["ood_loss_weight"] = float(ood_w)
         config["training"]["speaker_loss_weight"] = float(spk_w)
         config["training"]["label_smoothing"] = float(sm_val)
-        save_config(config)
+        exp_name = (exp_name or "").strip()
+        if exp_name:
+            save_profile(exp_name, config)
+            st.session_state.edit_config = config
+            st.session_state.loaded_profile_name = exp_name
+            st.success(f"✅ Saved experiment profile `{exp_name}`!")
+        else:
+            save_config(config)
+            st.session_state.edit_config = None
+            st.session_state.loaded_profile_name = "(base)"
+            st.success("✅ Saved to base config!")
         config = load_config()
-        st.success("✅ Saved!")
         st.rerun()
+
+    st.divider()
+    st.subheader("🧪 Hyperparameter Search (Optuna)")
+    st.caption("Coarse phase (Audit §16.2): TPESampler over the key training knobs — "
+               "each trial is a named experiment profile + a short training run. The "
+               "best trial is saved back as a `«study»-best` profile.")
+    with st.expander("🔎 Search space (what Optuna actually tunes)", expanded=False):
+        from src.hpo import HPO_SPACE
+        space_rows = [{
+            "Variable": e["name"],
+            "Type": e["kind"],
+            "Range": f"{e['low']} … {e['high']}" + ("  (log)" if e["log"] else ""),
+            "Meaning": e["description"],
+        } for e in HPO_SPACE]
+        st.dataframe(space_rows, use_container_width=True)
+        st.caption("Sampler: TPESampler (Bayesian) · objective: val Macro-F1 · "
+                   "coarse phase = few epochs, one fold per trial.")
+    if "hpo_runner" not in st.session_state:
+        st.session_state.hpo_runner = None
+    hpr = st.session_state.hpo_runner
+    hpo_running = hpr is not None and hpr.running and not hpr.finished
+    hc1, hc2, hc3, hc4 = st.columns([2, 2, 2, 1])
+    with hc1:
+        hpo_trials = st.number_input("Trials", 1, 200, 30, key="hpo_trials")
+    with hc2:
+        hpo_epochs = st.number_input("Epochs/trial", 1, 200, 30, key="hpo_epochs")
+    with hc3:
+        hpo_study = st.text_input("Study name", value="speaker-hpo", key="hpo_study")
+    with hc4:
+        st.caption("")
+        if st.button("🚀 Launch HPO", type="primary", use_container_width=True,
+                     key="hpo_launch", disabled=hpo_running):
+            cmd = [sys.executable, "-m", "src.hpo",
+                   "--trials", str(int(hpo_trials)),
+                   "--epochs", str(int(hpo_epochs)),
+                   "--study", (hpo_study or "speaker-hpo").strip()]
+            hpr = LocalRunner(cmd, str(PROJECT_ROOT))
+            hpr.start()
+            st.session_state.hpo_runner = hpr
+            st.rerun()
+    _render_local_runner("hpo_runner", "Optuna HPO")
 
 
 # ── TAB: Cloud ──
 with tab_cloud:
     st.header("☁️ Vast.ai — Live Logs")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         gpu = st.selectbox("GPU", GPU_OPTIONS, key="cgpu")
     with c2:
@@ -562,6 +717,29 @@ with tab_cloud:
         disk_gb = st.slider("💾 Disk (GB)", 20, 200,
                             config.get("mlops",{}).get("vast",{}).get("disk_size", 60), 10,
                             help="More disk for bigger models/datasets.")
+    with c4:
+        min_cuda = st.number_input(
+            "Min CUDA", 10.0, 14.0,
+            float(config.get("mlops", {}).get("vast", {}).get("min_cuda_version", 13)),
+            0.1,
+            help="Filter rental offers to hosts whose driver supports at least this "
+                 "CUDA version. uv.lock pins a CUDA 13.x torch build, so keep it ≥ 13.",
+        )
+
+    run_mode = st.radio(
+        "Run mode", ["Single (committed config)", "Experiment queue (profiles)"],
+        index=0, horizontal=True, key="crunmode",
+        help="Single = one run with the committed config + encoder/freeze overrides. "
+             "Queue = run a list of named experiment profiles sequentially on ONE "
+             "instance (cheaper for a multi-run campaign).",
+    )
+    queue_profiles = []
+    if run_mode.startswith("Experiment"):
+        queue_profiles = st.multiselect(
+            "Profiles to run", list_profiles(), key="cqueue",
+            help="These are configs/experiments/<name>.yaml — they must be committed "
+                 "and pushed so the instance's `git clone` sees them.",
+        )
 
     if not (PROJECT_ROOT / ".env").exists():
         st.warning("⚠️ `.env` missing — copy from `.env.example`")
@@ -594,6 +772,9 @@ with tab_cloud:
                 unfreeze_n if ft_mode == "Partial (last N)" else 0)
             os.environ["FREEZE_FEATURE_EXTRACTOR"] = str(ft_mode == "Frozen").lower()  # compat
             os.environ["DISK_SIZE_GB"] = str(disk_gb)
+            os.environ["MIN_CUDA_VERSION"] = str(min_cuda)
+            os.environ["EXPERIMENT_PROFILES"] = (
+                " ".join(queue_profiles) if queue_profiles else "")
             with st.spinner("Creating instance..."):
                 try:
                     env = os.environ.copy(); env["PYTHONIOENCODING"] = "utf-8"
@@ -698,7 +879,14 @@ with tab_local:
 
     if st.button("▶️ Run", type="primary", use_container_width=True, key="lrun",
                  disabled=is_running):
-        cmd = [sys.executable, str(PIPELINE_SCRIPT), "--run", ls, "--config", str(CONFIG_PATH)]
+        # Run the LOADED experiment profile when one is active, else the base config.
+        if (st.session_state.edit_config is not None
+                and st.session_state.loaded_profile_name != "(base)"):
+            cmd = [sys.executable, str(PIPELINE_SCRIPT), "--run", ls,
+                   "--experiment", st.session_state.loaded_profile_name]
+        else:
+            cmd = [sys.executable, str(PIPELINE_SCRIPT), "--run", ls,
+                   "--config", str(CONFIG_PATH)]
         if not mlflow_on: cmd.append("--no-mlflow")
         runner = LocalRunner(cmd, str(PROJECT_ROOT))
         runner.start()
@@ -708,11 +896,157 @@ with tab_local:
     _render_local_runner("local_runner", "Local pipeline")
 
 
+# ── TAB: Experiment Matrix ──
+with tab_matrix:
+    st.header("🧬 Experiment Matrix")
+    st.caption("encoders × recipes × seeds × folds → named profiles → sequential queue. "
+               "Profiles land in `configs/experiments/`; the queue runs them one by one.")
+
+    from src.experiment_matrix import (
+        ENCODERS, RECIPES, DEFAULT_SEEDS, expand_matrix, write_matrix_profiles,
+    )
+    from src.experiment_queue import clear_state, load_state
+
+    def _parse_ints(text: str):
+        if not text.strip():
+            return []
+        try:
+            return [int(x) for x in text.replace(",", " ").split() if x.strip()]
+        except ValueError:
+            return None
+
+    st.subheader("1️⃣ Generate profiles")
+    mc1, mc2 = st.columns(2)
+    with mc1:
+        enc_sel = st.multiselect("Encoders", ENCODERS, default=["ecapa", "campp"],
+                                 key="m_enc")
+        recipe_sel = st.multiselect("Recipes", list(RECIPES), default=["full"],
+                                    key="m_recipe")
+        scheme = st.selectbox("Split scheme", ["single", "kfold"], index=0,
+                              key="m_scheme")
+    with mc2:
+        seeds_text = st.text_input("Seeds (comma-separated)",
+                                   value=", ".join(map(str, DEFAULT_SEEDS)),
+                                   key="m_seeds")
+        folds_text = st.text_input("Folds (comma-separated; empty = no folds)",
+                                   value="", key="m_folds",
+                                   help="Only used when scheme=kfold, e.g. 0,1,2.")
+
+    seeds = _parse_ints(seeds_text)
+    folds = _parse_ints(folds_text)
+    parse_ok = seeds is not None and folds is not None
+    if not parse_ok:
+        st.error("Seeds / folds must be comma-separated integers.")
+
+    if st.button("⚙️ Generate & Save profiles", type="primary",
+                 use_container_width=True, key="m_gen", disabled=not parse_ok):
+        if not enc_sel or not recipe_sel or not seeds:
+            st.warning("Select at least one encoder, one recipe, and one seed.")
+        else:
+            base = load_config()
+            cells = expand_matrix(enc_sel, recipe_sel, seeds,
+                                  folds=folds or None, scheme=scheme, base=base)
+            names = write_matrix_profiles(cells, base=base)
+            st.success(f"Generated {len(names)} profile(s).")
+            st.code("\n".join(names))
+
+    st.subheader("2️⃣ Enqueue & run")
+    all_profiles = list_profiles()
+    q_col1, q_col2, q_col3 = st.columns([3, 1, 1])
+    with q_col1:
+        queue_sel = st.multiselect("Profiles to run (in order)", all_profiles,
+                                   key="m_queue")
+    with q_col2:
+        q_stage = st.selectbox("Stage", ["all", "data", "train", "eval"],
+                               index=0, key="m_qstage")
+    with q_col3:
+        st.caption("")
+        if st.button("🧹 Clear state", key="m_clear", use_container_width=True):
+            clear_state()
+            st.rerun()
+
+    if "matrix_runner" not in st.session_state:
+        st.session_state.matrix_runner = None
+    mr = st.session_state.matrix_runner
+    mr_running = mr is not None and mr.running and not mr.finished
+
+    if st.button("▶️ Run queue", type="primary", use_container_width=True,
+                 key="m_run", disabled=mr_running):
+        if not queue_sel:
+            st.warning("Select at least one profile to enqueue.")
+        else:
+            cmd = [sys.executable, "-m", "src.experiment_queue",
+                   "--profiles"] + queue_sel + ["--run", q_stage]
+            mr = LocalRunner(cmd, str(PROJECT_ROOT))
+            mr.start()
+            st.session_state.matrix_runner = mr
+            st.rerun()
+
+    _render_local_runner("matrix_runner", "Experiment queue")
+
+    # Current queue state
+    with st.expander("📋 Queue state", expanded=False):
+        st.json(load_state())
+
+
 # ── TAB: Analysis ──
 with tab_analysis:
     st.header("🧪 Analysis & Tools")
     st.caption("Run the new pipeline modules locally: unbiased EDA, centroid baseline, "
                "ensemble calibration, and submission inference.")
+
+    st.divider()
+    st.subheader("📊 Run Comparison (MLflow)")
+    st.caption("Rank experiments by their logged Macro-F1, then promote the best "
+               "into a leaderboard submission.")
+    if st.button("🔄 Load MLflow runs", key="a_runs"):
+        from src.run_registry import list_runs
+        runs = list_runs(max_results=50)
+        if not runs:
+            st.warning("No runs found (or MLflow is unreachable). "
+                       "Check the DagsHub/MLflow tracking URI in `.env` / config.")
+        else:
+            rows = []
+            for r in runs:
+                score = f"{r['score']:.4f}" if r["score"] is not None else "—"
+                rows.append({
+                    "Score": score,
+                    "Metric": r["score_metric"] or "—",
+                    "Run": r["run_name"],
+                    "Encoder": r["encoder"] or "—",
+                    "Status": r["status"],
+                })
+            st.dataframe(rows, use_container_width=True)
+
+    st.divider()
+    st.subheader("🚀 Promote to Submission")
+    st.caption("Rebuild the submission package + record a row in `reports/lb_log.md`.")
+    if "promote_runner" not in st.session_state:
+        st.session_state.promote_runner = None
+    pr = st.session_state.promote_runner
+    pr_running = pr is not None and pr.running and not pr.finished
+    p_col1, p_col2 = st.columns([2, 2])
+    with p_col1:
+        p_label = st.text_input("Config / run label", value="", key="a_label")
+    with p_col2:
+        p_note = st.text_input("Note", value="", key="a_note")
+    p_verify = st.checkbox("Run verify_submission.py after build", value=False,
+                           key="a_verify")
+    if st.button("📦 Build + record (Promote)", type="primary",
+                 use_container_width=True, key="a_promote", disabled=pr_running):
+        cmd = [sys.executable, "scripts/promote_run.py",
+               "--label", (p_label or "manual").strip()]
+        if p_note.strip():
+            cmd += ["--note", p_note.strip()]
+        if p_verify:
+            cmd.append("--verify")
+        pr = LocalRunner(cmd, str(PROJECT_ROOT))
+        pr.start()
+        st.session_state.promote_runner = pr
+        st.rerun()
+    _render_local_runner("promote_runner", "Promote")
+
+    st.divider()
 
     if "analysis_runner" not in st.session_state:
         st.session_state.analysis_runner = None

@@ -15,7 +15,7 @@ Pipeline flow:
 import os
 import sys
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -179,6 +179,11 @@ def prepare_data(
     data_cfg = config["data"]
     audio_cfg = config["audio"]
 
+    # Auto-fetch domain augmentation data (MUSAN/RIR) when enabled but absent,
+    # so automated/remote runs never silently skip them (root cause R8/C2).
+    from src.augmentation_data import ensure_augmentation_data
+    ensure_augmentation_data(config)
+
     # ── Verify audio paths exist ──
     labels_path = data_cfg["labels_path"]
     audio_dir = data_cfg["audio_dir"]
@@ -192,7 +197,8 @@ def prepare_data(
         raise FileNotFoundError(f"Labels not found: {labels_path}")
 
     # Leak-free split with corrupted/duplicate filtering + split_report.json.
-    # `data.split` selects single (legacy) vs speaker_aware_kfold (OOF, C5).
+    # `data.split` selects single (legacy) vs speaker_aware_kfold (OOF, C5), and
+    # `data.split.seed` controls the RNG so the matrix can vary the partition.
     split_cfg = data_cfg.get("split", {}) or {}
     split_scheme = str(split_cfg.get("scheme", "single")).lower()
     train_df, val_df, class_map = prepare_clean_split(
@@ -202,6 +208,7 @@ def prepare_data(
         val_per_known=1,
         unknown_val_ratio=0.2,
         min_valid_duration=audio_cfg.get("min_valid_duration", 1.0),
+        random_seed=int(split_cfg.get("seed", 42)),
         split_scheme=split_scheme,
         fold=int(split_cfg.get("fold", 0)),
         folds=int(split_cfg.get("folds", 3)),
@@ -759,3 +766,138 @@ def evaluate_model(
         print(f"  ✅ MLflow run completed with all artifacts.")
 
     return metrics
+
+
+# ─────────────────────────────────────────────────────────
+#  Decision steps (Audit §17.3) — the "decision bundle"
+# ─────────────────────────────────────────────────────────
+#
+# These three steps turn a set of trained checkpoints into a complete,
+# comparable decision bundle: cached val embeddings → centroid + OOD-gate
+# tuning → ensemble weighting. They reuse the exact inference-consistent code
+# paths already shipped by the Phase-1 scripts (single source of truth), and
+# are chained by `run_pipeline.py --run decision` (see `run_decision_stage`).
+
+@step
+def build_embeddings(checkpoints: List[str]) -> Dict:
+    """Cache val probs/embeddings + build per-encoder centroids (17.3 step 1).
+
+    For each checkpoint: (a) dumps inference-consistent val probs + ArcFace
+    embeddings via the Q2 forward path, and (b) builds no-leak train centroids
+    via the Q4 path. The checkpoint's embedded ``data.split`` (scheme/fold/seed)
+    is respected so a kfold-trained checkpoint validates on ITS fold.
+
+    Returns:
+        manifest dict: ``{checkpoints, manifest[{encoder, val_probs, val_emb,
+        centroids}]}`` (all paths under data/processed/).
+    """
+    import json
+
+    from src.decision_engine import dump_val_checkpoint
+    from src.centroid_baseline import build_checkpoint_centroids
+
+    print("=" * 55)
+    print("  [Decision 1/3] Building embeddings + centroids")
+    print("=" * 55)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    data_dir = PROJECT_ROOT / "data" / "processed"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest = []
+    for ckpt in checkpoints:
+        key = Path(ckpt).name.replace("_best.pt", "")
+        print(f"\n  [{key}] val probs + embeddings...")
+        dump_val_checkpoint(ckpt, device)
+        print(f"  [{key}] building centroids...")
+        out = build_checkpoint_centroids(ckpt, device)
+        npz = data_dir / f"centroids_{key}.npz"
+        np.savez_compressed(
+            npz,
+            centroids=out["centroids"],
+            speaker_ids=out["speaker_ids"],
+            embedding_dim=np.array(out["embedding_dim"]),
+        )
+        manifest.append({
+            "encoder": key,
+            "val_probs": f"val_probs_{key}.npy",
+            "val_emb": f"val_emb_{key}.npy",
+            "centroids": npz.name,
+        })
+
+    result = {
+        "checkpoints": [Path(c).name for c in checkpoints],
+        "manifest": manifest,
+        "val_labels": "val_labels.npy",
+    }
+
+    _mlflow_log_artifact(str(data_dir / "val_labels.npy"), artifact_path="decision")
+    _mlflow_log_params({"decision_checkpoints": json.dumps(result["checkpoints"])})
+    print(f"\n  ✓ Embeddings + centroids ready for {len(manifest)} checkpoint(s).")
+    return result
+
+
+@step
+def decision_tune(manifest: Dict) -> Dict:
+    """Tune the centroid + OOD-gate decision knobs on val (17.3 step 2).
+
+    Reuses ``scripts/tune_decision.tune`` (coordinate descent over alpha, kappa,
+    tau, lambda_unknown against competition Macro-F1) and writes
+    ``data/processed/decision_config.json`` — the decision bundle that
+    ``build_submission.py`` ships.
+
+    Returns:
+        the decision bundle dict (params + val_macro_f1 + baseline + delta).
+    """
+    from src.decision_engine import load_decision_artifacts, tune_decision_bundle
+
+    print("=" * 55)
+    print("  [Decision 2/3] Tuning centroid + OOD-gate decision layer")
+    print("=" * 55)
+
+    artifacts = load_decision_artifacts()
+    output = tune_decision_bundle(artifacts)
+
+    _mlflow_log_metrics({
+        "decision_val_macro_f1": output["val_macro_f1"],
+        "decision_baseline_macro_f1": output["baseline_val_macro_f1"],
+        "decision_delta": output["delta"],
+    })
+    return output
+
+
+@step
+def ensemble_select(checkpoints: List[str]) -> Dict:
+    """Select ensemble weights on val (17.3 step 3).
+
+    Reuses ``src.ensemble_calibrate.main`` (per-model Macro-F1 + 6 fusion
+    methods + temperature calibration) and writes
+    ``data/processed/ensemble_fusion_weights.json`` (shipped by
+    ``build_submission.py``).
+
+    Returns:
+        ``{best_method, best_macro_f1}`` read back from the fusion results JSON.
+    """
+    import json
+
+    from src.ensemble_calibrate import main as calibrate_main
+
+    print("=" * 55)
+    print("  [Decision 3/3] Ensemble selection + fusion weights")
+    print("=" * 55)
+
+    # LearnedFusion MLP collapses on a small val set (audit R10) — skip it here.
+    calibrate_main(list(checkpoints), "configs/default_config.yaml",
+                   batch_size=16, skip_learned_mlp=True)
+
+    results_path = PROJECT_ROOT / "data" / "processed" / "ensemble_fusion_results.json"
+    results = json.loads(results_path.read_text(encoding="utf-8"))
+
+    _mlflow_log_metrics({
+        "ensemble_best_macro_f1": results.get("best_macro_f1", 0.0),
+    })
+    _mlflow_log_params({"ensemble_best_method": results.get("best_method", "average")})
+    return {
+        "best_method": results.get("best_method", "average"),
+        "best_macro_f1": results.get("best_macro_f1", 0.0),
+    }

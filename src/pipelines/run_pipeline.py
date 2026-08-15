@@ -39,8 +39,12 @@ from zenml import pipeline
 from zenml.client import Client
 from zenml.config import DockerSettings
 
-from src.pipelines.steps import convert_audio, prepare_data, build_model, train_model, evaluate_model
+from src.pipelines.steps import (
+    convert_audio, prepare_data, build_model, train_model, evaluate_model,
+    build_embeddings, decision_tune, ensemble_select,
+)
 from src.data_pipeline import load_config
+from src.experiment_config import resolve_config_arg, list_profiles
 
 # Windows cp1252 fix: force UTF-8 stdio BEFORE anything prints, otherwise
 # ZenML's logger re-emitting stdout writes crashes on emoji (⚠, ✅, …).
@@ -274,6 +278,26 @@ def run_eval_stage(config_path: str):
     return metrics
 
 
+def run_decision_stage(config_path: str, checkpoints: list):
+    """Run the decision bundle: build_embeddings → decision_tune → ensemble_select.
+
+    Unlike the single-model training stages, this consumes a SET of trained
+    checkpoints (an ensemble) and produces the artifacts that
+    ``build_submission.py`` ships: centroids, decision_config.json and
+    ensemble_fusion_weights.json — all tuned on the leak-free val split.
+    """
+    print("  ▶ Running decision stage (build_embeddings → decision_tune → ensemble_select)")
+    manifest = build_embeddings(checkpoints=checkpoints)
+    decision = decision_tune(manifest=manifest)
+    ensemble = ensemble_select(checkpoints=checkpoints)
+    print(f"\n  ✅ Decision stage complete!")
+    print(f"     Decision val Macro-F1: {decision.get('val_macro_f1')} "
+          f"(baseline {decision.get('baseline_val_macro_f1')})")
+    print(f"     Ensemble best: {ensemble.get('best_method')} "
+          f"(Macro-F1 {ensemble.get('best_macro_f1')})")
+    return {"manifest": manifest, "decision": decision, "ensemble": ensemble}
+
+
 # ─────────────────────────────────────────────────────────
 #  CLI Entry Point
 # ─────────────────────────────────────────────────────────
@@ -289,11 +313,24 @@ def main():
         help="Path to YAML config file (default: configs/default_config.yaml)",
     )
     parser.add_argument(
+        "--experiment",
+        type=str,
+        default=None,
+        help="Named experiment profile (configs/experiments/<name>.yaml) resolved "
+             "over configs/default_config.yaml. Takes precedence over --config.",
+    )
+    parser.add_argument(
         "--run",
         type=str,
         default="all",
-        choices=["all", "data", "train", "eval"],
+        choices=["all", "data", "train", "eval", "decision"],
         help="Which pipeline stage to run (default: all)",
+    )
+    parser.add_argument(
+        "--checkpoints",
+        nargs="*",
+        default=None,
+        help="Checkpoint paths for --run decision (default: all checkpoints/*_best.pt)",
     )
     parser.add_argument(
         "--no-mlflow",
@@ -303,10 +340,15 @@ def main():
 
     args = parser.parse_args()
 
-    config_path = os.path.abspath(args.config)
-    if not os.path.exists(config_path):
-        print(f"❌ Config not found: {config_path}")
+    # Resolve the config source: an experiment profile name wins over a raw
+    # --config path. Profiles are materialised under configs/experiments/_resolved/.
+    try:
+        config_path = str(resolve_config_arg(args.experiment or args.config))
+    except FileNotFoundError as e:
+        print(f"❌ {e}")
         sys.exit(1)
+    if args.experiment:
+        print(f"  🧬 Experiment profile: {args.experiment}")
 
     print("=" * 55)
     print("  Speaker-Identification MLOps Pipeline")
@@ -331,6 +373,16 @@ def main():
         run_train_stage(config_path)
     elif args.run == "eval":
         run_eval_stage(config_path)
+    elif args.run == "decision":
+        checkpoints = args.checkpoints or sorted(
+            str(p) for p in Path("checkpoints").glob("*_best.pt"))
+        if not checkpoints:
+            print("❌ No checkpoints found for --run decision.")
+            sys.exit(1)
+        print(f"  🎯 Decision stage — {len(checkpoints)} checkpoint(s):")
+        for c in checkpoints:
+            print(f"     - {c}")
+        run_decision_stage(config_path, checkpoints)
     else:  # "all"
         # Use the full ZenML pipeline
         print("  🚀 Executing full ZenML pipeline...\n")

@@ -65,7 +65,9 @@ def collect_val_logits(
                 --config-path fallback) that defines audio TTA + data paths.
     """
     from torch.utils.data import DataLoader
-    from src.data_pipeline import prepare_clean_split, SpeakerDataset
+    from src.data_pipeline import (
+        prepare_clean_split, SpeakerDataset, split_args_from_config,
+    )
     from src.train import forward_multi_window
 
     audio_cfg = config["audio"]
@@ -78,6 +80,7 @@ def collect_val_logits(
         val_per_known=1,
         unknown_val_ratio=0.2,
         min_valid_duration=audio_cfg.get("min_valid_duration", 1.0),
+        **split_args_from_config(config),
     )
 
     ds = SpeakerDataset(

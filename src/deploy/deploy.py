@@ -55,6 +55,14 @@ def load_environment() -> dict:
     # Runtime overrides (set by deploy_app.py or CLI)
     config["GPU_TARGET"] = os.getenv("GPU_TARGET", "RTX_3090")
     config["TARGET_PIPELINE"] = os.getenv("TARGET_PIPELINE", "all")
+    # Minimum host-driver CUDA version the rental must support. torch 2.13 in
+    # uv.lock is a CUDA 13.x build, so a driver < 13.0 makes torch.cuda fail
+    # (setup_vast.sh Phase 2.5 aborts). Filter offers by cuda_vers >= this.
+    config["MIN_CUDA_VERSION"] = os.getenv("MIN_CUDA_VERSION", "13")
+    # Space-separated named experiment profiles to run as a sequential queue on
+    # the instance (Audit §17.2 — one instance, many runs). Empty = legacy
+    # single run with the committed config + encoder/freeze env overrides.
+    config["EXPERIMENT_PROFILES"] = os.getenv("EXPERIMENT_PROFILES", "")
     # Encoder fine-tune choice (ECAPA-aware). FREEZE_FEATURE_EXTRACTOR kept for
     # backward compatibility with the old WavLM-only naming.
     config["FREEZE_ENCODER"] = os.getenv("FREEZE_ENCODER", "true")
@@ -188,7 +196,9 @@ def main():
 
     # ── Load config ──
     config = load_environment()
-    print(f"🔍 Searching for cheapest {config['GPU_TARGET']} for pipeline: {config['TARGET_PIPELINE']}...")
+    print(f"🔍 Searching for cheapest {config['GPU_TARGET']} "
+          f"(CUDA ≥ {config['MIN_CUDA_VERSION']}) "
+          f"for pipeline: {config['TARGET_PIPELINE']}...")
 
     # ── Forward the active encoder selection to the instance ──
     # setup_vast.sh applies ENCODER_TYPE / ALLOW_HUB_DOWNLOAD / LOCAL_PATH_<ENC>
@@ -204,8 +214,13 @@ def main():
     run_cmd(f"vastai set api-key {config['VAST_API_KEY']}", silent_error=True)
 
     # ── Search for cheapest GPU ──
+    # cuda_vers = the host machine's max supported CUDA version (driver-derived).
+    # We require it >= MIN_CUDA_VERSION because uv.lock's torch is a CUDA 13.x
+    # build; renting an older-driver host would make training fall back to CPU
+    # or crash (setup_vast.sh verifies this and aborts).
     search_cmd = (
-        f'vastai search offers "gpu_name={config["GPU_TARGET"]} num_gpus=1" '
+        f'vastai search offers "gpu_name={config["GPU_TARGET"]} num_gpus=1 '
+        f'cuda_vers>={config["MIN_CUDA_VERSION"]}" '
         f"-o dph --raw"
     )
     raw_json = run_cmd(search_cmd, return_output=True)
@@ -240,6 +255,7 @@ def main():
             "GIT_BRANCH": config["GIT_BRANCH"],
             "GPU_TARGET": config["GPU_TARGET"],
             "TARGET_PIPELINE": config["TARGET_PIPELINE"],
+            "EXPERIMENT_PROFILES": config.get("EXPERIMENT_PROFILES", ""),
             "FREEZE_ENCODER": config["FREEZE_ENCODER"],
             "UNFREEZE_LAST_N_BLOCKS": config["UNFREEZE_LAST_N_BLOCKS"],
             "FREEZE_FEATURE_EXTRACTOR": config["FREEZE_FEATURE_EXTRACTOR"],
@@ -297,6 +313,7 @@ def main():
 
     print(f"   GPU:        {config['GPU_TARGET']}")
     print(f"   Pipeline:   {config['TARGET_PIPELINE']}")
+    print(f"   Min CUDA:   {config['MIN_CUDA_VERSION']}")
     print(f"   Image:      {image}")
     print(f"   Disk:       {disk_size}GB")
     print()

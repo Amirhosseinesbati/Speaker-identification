@@ -18,6 +18,8 @@ submission/centroids/
 submission/decision_config.json
 data/processed/*
 !data/processed/.gitkeep
+# Large external augmentation datasets (downloaded on demand, never committed).
+data/augmentation/
 Competition-Guide
 __pycache__
 
@@ -40,6 +42,14 @@ mlartifacts/
 
 # Streamlit
 .streamlit/
+
+# Named experiment profiles (source of truth is committed; resolved snapshots
+# are derived and written under _resolved/).
+configs/experiments/_resolved/
+# Transient Optuna trial profiles (the durable output is the '<study>-best' profile).
+configs/experiments/hpo-trial-*.yaml
+# Runtime experiment queue state + matrix manifest + per-job logs.
+data/experiments/
 
 # OS
 Thumbs.db

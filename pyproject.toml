@@ -31,6 +31,9 @@ dependencies = [
     "streamlit",
     "python-dotenv",
     "vastai",
+    # Hyperparameter search (Audit §17.4) — also present on the leaderboard,
+    # but declared locally because HPO runs during training, not evaluation.
+    "optuna",
     # Data Version Control (for DagsHub S3 remote)
     "dvc",
     "dvc-s3",

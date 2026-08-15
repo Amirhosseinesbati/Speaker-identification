@@ -485,6 +485,23 @@ def _write_kfold_report(
     print(f"  ✓ K-fold split report saved to {output_path}")
 
 
+def split_args_from_config(config: dict) -> dict:
+    """Extract split kwargs from ``config['data']['split']`` for `prepare_clean_split`.
+
+    Checkpoints embed their training-time split (scheme/fold/folds/seed), so any
+    downstream artifact builder (val-prob dump, centroid build, ensemble collect)
+    must reuse the SAME partition — otherwise a kfold-trained checkpoint would be
+    validated on the default single seed-42 split (silent OOF mismatch).
+    """
+    split = (config.get("data", {}) or {}).get("split", {}) or {}
+    return {
+        "split_scheme": str(split.get("scheme", "single")).lower().strip(),
+        "fold": int(split.get("fold", 0)),
+        "folds": int(split.get("folds", 3)),
+        "random_seed": int(split.get("seed", 42)),
+    }
+
+
 def prepare_clean_split(
     labels_path: str,
     audio_dir: str,
@@ -652,6 +669,31 @@ def prepare_labels(
 #  Audio Augmentation Pipeline
 # ─────────────────────────────────────────────────────────
 
+def _mp3_backend_available() -> bool:
+    """True if the mp3 codec roundtrip has a usable backend.
+
+    ``audiomentations.Mp3Compression`` tries fast_mp3_augment, then pydub (with
+    lameenc or a system ffmpeg/avconv). If none is present it prints
+    "Failed to import fast_mp3_augment" on EVERY call without actually
+    compressing — log spam plus a silently no-op transform. Detect it up front
+    and skip the transform with a single clear warning instead.
+    """
+    try:
+        import fast_mp3_augment  # noqa: F401
+        return True
+    except Exception:
+        pass
+    try:
+        import shutil
+        if shutil.which("ffmpeg") or shutil.which("avconv"):
+            return True
+        import lameenc  # noqa: F401
+        return True
+    except Exception:
+        return False
+    return False
+
+
 class AudioAugmentation:
     """
     Training-time augmentation pipeline (config-driven — root cause R8).
@@ -773,10 +815,15 @@ class AudioAugmentation:
 
         if _p(domain, "mp3_codec_roundtrip", 0.0) > 0:
             mp3 = domain.get("mp3_codec_roundtrip", {}) or {}
-            _add(lambda mp3=mp3, p=_p(domain, "mp3_codec_roundtrip", 0.0):
-                 AA.Mp3Compression(min_bitrate=int(mp3.get("min_bitrate", 64)),
-                                   max_bitrate=int(mp3.get("max_bitrate", 192)),
-                                   p=p))
+            if _mp3_backend_available():
+                _add(lambda mp3=mp3, p=_p(domain, "mp3_codec_roundtrip", 0.0):
+                     AA.Mp3Compression(min_bitrate=int(mp3.get("min_bitrate", 64)),
+                                       max_bitrate=int(mp3.get("max_bitrate", 192)),
+                                       p=p))
+            else:
+                print("  ⚠ mp3 codec roundtrip disabled: no backend "
+                      "(fast_mp3_augment / pydub+ffmpeg / lameenc). "
+                      "Install one to enable it.")
 
         # ── Spec (time-domain masking approximation of SpecAugment) ──
         if _p(spec, "time_mask", 0.0) > 0:

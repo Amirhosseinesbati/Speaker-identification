@@ -300,11 +300,20 @@ echo "✅ ZenML initialized."
 #  Phase 6: Run Pipeline
 # ============================================================================
 echo ""
-echo "🔥 Starting Pipeline: $TARGET_PIPELINE"
-echo "   Running: python -m src.pipelines.run_pipeline --run $TARGET_PIPELINE"
-echo ""
-
-uv run --no-sync python -m src.pipelines.run_pipeline --run "$TARGET_PIPELINE"
+if [ -n "$EXPERIMENT_PROFILES" ]; then
+    # One instance, many runs (Audit §17.2): run the named profiles as a
+    # sequential queue. The profiles must be committed + pushed so the clone
+    # above sees configs/experiments/*.yaml.
+    echo "🔥 Running experiment queue: $EXPERIMENT_PROFILES"
+    echo "   Running: python -m src.experiment_queue --profiles $EXPERIMENT_PROFILES --run $TARGET_PIPELINE"
+    echo ""
+    uv run --no-sync python -m src.experiment_queue --profiles $EXPERIMENT_PROFILES --run "$TARGET_PIPELINE"
+else
+    echo "🔥 Starting Pipeline: $TARGET_PIPELINE"
+    echo "   Running: python -m src.pipelines.run_pipeline --run $TARGET_PIPELINE"
+    echo ""
+    uv run --no-sync python -m src.pipelines.run_pipeline --run "$TARGET_PIPELINE"
+fi
 
 # ============================================================================
 #  Phase 7: Complete

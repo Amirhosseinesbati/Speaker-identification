@@ -208,7 +208,9 @@ def build_checkpoint_centroids(
           n_train_files  — int (known files used)
     """
     from torch.utils.data import DataLoader
-    from src.data_pipeline import load_config, prepare_clean_split, SpeakerDataset
+    from src.data_pipeline import (
+        load_config, prepare_clean_split, SpeakerDataset, split_args_from_config,
+    )
     from src.model_factory import create_model_from_config
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
@@ -230,6 +232,7 @@ def build_checkpoint_centroids(
         val_per_known=1,
         unknown_val_ratio=0.2,
         min_valid_duration=audio_cfg.get("min_valid_duration", MIN_VALID_DURATION),
+        **split_args_from_config(config),
     )
     # Align to the CHECKPOINT's class_map (not the freshly rebuilt one) so the
     # centroid rows match the global class indices exactly.
