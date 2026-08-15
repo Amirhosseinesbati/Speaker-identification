@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
@@ -113,13 +114,23 @@ def run_queue(
         cmd = build_command(job["name"], job["stage"], no_mlflow)
         print(f"\n  ▶ {job['name']}  →  {' '.join(cmd)}")
 
+        # Stream the child's output line-by-line to BOTH the log file and our
+        # own stdout, so a remote/long run is visible live (the old code wrote
+        # only to the file, which made the console look stuck).
+        env = {**os.environ, "PYTHONUNBUFFERED": "1",
+               "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+        proc = subprocess.Popen(
+            cmd, cwd=str(PROJECT_ROOT),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
+        )
         with open(log_file, "w", encoding="utf-8") as lf:
-            proc = subprocess.Popen(
-                cmd, cwd=str(PROJECT_ROOT),
-                stdout=lf, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace",
-            )
-            proc.wait()
+            for line in iter(proc.stdout.readline, ""):
+                lf.write(line)
+                lf.flush()
+                print(line, end="", flush=True)
+        proc.stdout.close()
+        proc.wait()
 
         job["exit_code"] = int(proc.returncode)
         job["status"] = "done" if proc.returncode == 0 else "failed"

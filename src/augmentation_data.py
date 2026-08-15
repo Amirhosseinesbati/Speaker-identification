@@ -56,26 +56,36 @@ def rirs_present(path: Path) -> bool:
 #  Download helpers
 # ────────────────────────────────────────────────────────────────
 
-def _download(url: str, dest: Path) -> Path:
+def _download(url: str, dest: Path, timeout: float = 60.0) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     if dest.exists():
         print(f"  ✅ {dest.name} already cached — skipping download.")
         return dest
 
-    print(f"  📥 Downloading {url}")
-    last_pct = [-1]
-
-    def _hook(blocks: int, block_size: int, total: int) -> None:
-        if total <= 0:
-            return
-        pct = int(blocks * block_size * 100 / total)
-        if pct != last_pct[0] and pct % 5 == 0:
-            last_pct[0] = pct
-            print(f"  ⏳ {dest.name}: {pct:3d}% "
-                  f"({blocks * block_size / 1e9:.2f}/{total / 1e9:.2f} GB)")
-
-    urllib.request.urlretrieve(url, tmp, reporthook=_hook)
+    print(f"  📥 Downloading {url} (socket timeout {timeout:.0f}s)")
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            total = int(resp.headers.get("Content-Length") or 0)
+            downloaded = 0
+            last_pct = -1
+            with open(tmp, "wb") as out:
+                while True:
+                    chunk = resp.read(256 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        pct = int(downloaded * 100 / total)
+                        if pct != last_pct and pct % 5 == 0:
+                            last_pct = pct
+                            print(f"  ⏳ {dest.name}: {pct:3d}% "
+                                  f"({downloaded / 1e9:.2f}/{total / 1e9:.2f} GB)",
+                                  flush=True)
+    except Exception as e:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"download of {dest.name} failed: {e}") from e
     print()
     tmp.rename(dest)
     return dest

@@ -119,8 +119,15 @@ class MLflowTracker:
         if mlflow.active_run():
             mlflow.end_run()
 
-        self._run = mlflow.start_run(run_name=run_name)
-        print(f"\n  🚀 MLflow run started: {run_name}")
+        try:
+            self._run = mlflow.start_run(run_name=run_name)
+            print(f"\n  🚀 MLflow run started: {run_name}")
+        except Exception as e:
+            # A bad token / unreachable tracker (e.g. DagsHub 403) must not kill
+            # the training step — degrade to running WITHOUT tracking instead.
+            self._run = None
+            print(f"\n  ⚠ MLflow run start failed ({e}) — running WITHOUT tracking. "
+                  f"Check your DagsHub/MLflow credentials in .env.")
         return self._run
 
     def end_run(self):
