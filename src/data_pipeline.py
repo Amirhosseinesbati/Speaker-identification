@@ -4,6 +4,7 @@ Handles stratified 5-shot split, augmentation, and weighted sampling.
 """
 
 import os
+import re
 import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -22,11 +23,33 @@ warnings.filterwarnings("ignore", category=UserWarning)
 #  Configuration Loader
 # ─────────────────────────────────────────────────────────
 
+_ENV_PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _resolve_env_placeholders(value):
+    """Resolve ``${VAR}`` placeholders to their env value ("" when unset).
+
+    The config's ``mlops.tracking`` carries ``${DAGSHUB_USER_TOKEN}`` /
+    ``${DAGSHUB_REPO_OWNER}`` placeholders that only get values at deploy time.
+    ZenML substitutes ``${...}`` in step inputs and RAISES when the env var is
+    absent — which breaks any direct ``@step`` call (the HPO/queue subprocess
+    path) that doesn't export those vars. Resolve them eagerly here so the
+    config dict handed to steps is always self-contained.
+    """
+    if isinstance(value, str):
+        return _ENV_PLACEHOLDER.sub(lambda m: os.environ.get(m.group(1), ""), value)
+    if isinstance(value, dict):
+        return {k: _resolve_env_placeholders(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_env_placeholders(v) for v in value]
+    return value
+
+
 def load_config(config_path: str = "configs/default_config.yaml") -> dict:
-    """Load YAML configuration."""
+    """Load YAML configuration (with ``${ENV_VAR}`` placeholders resolved)."""
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
-    return config
+    return _resolve_env_placeholders(config)
 
 
 def get_active_profile(config: dict) -> dict:
