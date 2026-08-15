@@ -99,8 +99,29 @@ def read_model_selection() -> dict:
     if enc_type:
         result["ENCODER_TYPE"] = str(enc_type)
     result["ALLOW_HUB_DOWNLOAD"] = str(bool(mc.get("allow_hub_download", False))).lower()
-    for enc_name, enc_cfg in mc.get("encoder_config", {}).items():
-        lp = enc_cfg.get("local_path")
+
+    # Derive the freeze mode of the ACTIVE encoder from config. Without this,
+    # a config-level Full-FT choice (Phase 2 default) would be silently reset
+    # to Frozen when deploying directly via `python -m src.deploy.deploy`
+    # (load_environment defaults FREEZE_ENCODER to "true"). Env overrides from
+    # the UI still win over these config-derived values.
+    enc_cfg = mc.get("encoder_config", {}).get(str(enc_type), {}) if enc_type else {}
+    if enc_type == "ecapa":
+        freeze = bool(enc_cfg.get("freeze_encoder", True))
+        result["FREEZE_ENCODER"] = str(freeze).lower()
+        result["UNFREEZE_LAST_N_BLOCKS"] = str(
+            int(enc_cfg.get("unfreeze_last_n_blocks", 0)) if not freeze else 0)
+    elif enc_type == "wavlm":
+        freeze = bool(enc_cfg.get("freeze_feature_extractor", True))
+        result["FREEZE_ENCODER"] = str(freeze).lower()
+        result["UNFREEZE_LAST_N_BLOCKS"] = "0"
+    else:
+        freeze = bool(enc_cfg.get("freeze_encoder", True))
+        result["FREEZE_ENCODER"] = str(freeze).lower()
+        result["UNFREEZE_LAST_N_BLOCKS"] = "0"
+
+    for enc_name, enc_cfg2 in mc.get("encoder_config", {}).items():
+        lp = enc_cfg2.get("local_path")
         if lp:
             result[f"LOCAL_PATH_{str(enc_name).upper()}"] = str(lp)
     return result

@@ -204,6 +204,17 @@ def _encoder_save_config(encoder_type: str, old_enc: dict, ft_mode: str,
     return new_enc
 
 
+def _head_type(config: dict) -> str:
+    """Active speaker-head type (arcface | arcface_subcenter | linear)."""
+    return config["model"].get("speaker_head_type", "arcface")
+
+
+def _head_cfg(config: dict) -> dict:
+    """Config block of the active speaker head."""
+    ht = _head_type(config)
+    return (config["model"].get("speaker_head_config", {}).get(ht, {}) or {})
+
+
 # ═══════════════════════════════════════════════════════════
 #  Log Streaming Engine
 # ═══════════════════════════════════════════════════════════
@@ -275,7 +286,14 @@ with st.sidebar:
     mwin = config["audio"].get("max_eval_windows", "-")
     oodr = config["audio"].get("ood_batch_ratio", "-")
     enc_lr = config["training"].get("encoder_lr", "-")
-    arc = mc.get("speaker_head_config", {}).get("arcface", {})
+    arc = _head_cfg(config)
+    head_name = _head_type(config)
+    head_label = (
+        f"Sub-center ArcFace (k={arc.get('sub_centers', 3)}, "
+        f"m={arc.get('margin', 0.3)}, s={arc.get('scale', 32)})"
+        if head_name == "arcface_subcenter"
+        else f"ArcFace (m={arc.get('margin', 0.4)}, s={arc.get('scale', 30)})"
+    )
     ft_label = ("Frozen" if freeze
                 else (f"Partial (last {blocks})" if blocks and blocks > 0 else "Full"))
     st.markdown(f"""
@@ -283,7 +301,7 @@ with st.sidebar:
     |-------|-------|
     | Encoder | `{enc}` |
     | Pooling | `{pool}` |
-    | Head | ArcFace (m={arc.get('margin',0.4)}, s={arc.get('scale',30)}) |
+    | Head | {head_label} |
     | Fine-tune | `{ft_label}` |
     | Duration | `{dur}s` |
     | Windows | train `{nwin}` / eval `{mwin}` (hop `{ehop}`) |
@@ -357,12 +375,22 @@ with tab_cfg:
                  "dev machine / fresh Vast instance to fetch weights once.",
         )
 
-        st.subheader("🎯 ArcFace Head")
-        arc_cfg = mc.get("speaker_head_config", {}).get("arcface", {})
+        st.subheader("🎯 Speaker Head")
+        head_type = st.selectbox(
+            "Head type", ["arcface", "arcface_subcenter"],
+            index=0 if _head_type(config) == "arcface" else 1,
+            help="Sub-center ArcFace keeps K centres per speaker (max-cosine score) "
+                 "and is more robust for few-shot classes (4-5 files/speaker).",
+        )
+        arc_cfg = _head_cfg(config)
         arc_m = st.slider("Margin", 0.1, 0.5, float(arc_cfg.get("margin", 0.3)), 0.05)
-        arc_s = st.slider("Scale", 5.0, 64.0, float(arc_cfg.get("scale", 15.0)), 1.0)
+        arc_s = st.slider("Scale", 5.0, 64.0, float(arc_cfg.get("scale", 32.0)), 1.0)
         arc_emb = st.selectbox("Embedding dim", [128, 192, 256],
                                index=[128,192,256].index(arc_cfg.get("embedding_dim",192)))
+        sub_centers = 3
+        if head_type == "arcface_subcenter":
+            sub_centers = st.number_input("Sub-centers (K)", 1, 8,
+                                          int(arc_cfg.get("sub_centers", 3)))
     with c2:
         st.subheader("🎵 Audio")
         audio_dur = st.slider("Duration (s)", 2.0, 8.0, float(config["audio"]["duration_seconds"]), 0.5)
@@ -377,6 +405,26 @@ with tab_cfg:
                                   int(config["audio"].get("max_eval_windows", 8)))
         ood_ratio = st.slider("OOD batch ratio", 0.1, 0.9,
                               float(config["audio"].get("ood_batch_ratio", 0.5)), 0.05)
+        st.subheader("🎲 Split")
+        split_cfg = config["data"].get("split", {}) or {}
+        split_scheme = st.selectbox(
+            "Split scheme", ["single", "kfold"],
+            index=0 if str(split_cfg.get("scheme", "single")) == "single" else 1,
+            help="kfold = speaker-aware K-fold for out-of-fold (OOF) tuning. "
+                 "Each fold runs separately (set the fold index).",
+        )
+        n_folds = int(split_cfg.get("folds", 3))
+        fold_idx = int(split_cfg.get("fold", 0))
+        if split_scheme == "kfold":
+            n_folds = st.number_input("Folds (K)", 2, 10, int(split_cfg.get("folds", 3)))
+            fold_idx = st.number_input("Fold index", 0, n_folds - 1, int(split_cfg.get("fold", 0)))
+        st.subheader("🎛 Augmentation (domain)")
+        dom = (config.get("augmentation", {}).get("domain", {}) or {})
+        rir_on = st.checkbox("RIR reverb", value=float((dom.get("rirs_reverb", {}) or {}).get("p", 0)) > 0,
+                             help="Needs data/augmentation/rirs (download RIRs first).")
+        musan_on = st.checkbox("MUSAN noise/music", value=float((dom.get("musan", {}) or {}).get("noise_p", 0)) > 0,
+                               help="Needs data/augmentation/musan (download MUSAN first).")
+        mp3_on = st.checkbox("mp3 codec roundtrip", value=float((dom.get("mp3_codec_roundtrip", {}) or {}).get("p", 0)) > 0)
         st.subheader("🏋️ Training")
         epochs = st.number_input("Epochs", 1, None, config["training"]["epochs"],
                                  help="No upper cap — the config default is 150.")
@@ -389,18 +437,48 @@ with tab_cfg:
         patience = st.number_input("Early stop patience", 1, 50,
                                    int(config["training"].get("early_stopping_patience", 10)),
                                    help="Early stopping / checkpoint selection on val Macro-F1.")
+        st.subheader("📈 Schedule & Precision")
+        c1s, c2s = st.columns(2)
+        with c1s:
+            schedule_type = st.selectbox(
+                "Schedule", ["cosine", "cosine_warm_restarts"],
+                index=0 if config["training"].get("schedule", "cosine") == "cosine" else 1)
+            warmup_ratio = st.slider("Warmup ratio", 0.0, 0.4,
+                                     float(config["training"].get("warmup_ratio", 0.1)), 0.01)
+        with c2s:
+            amp_dtype = st.selectbox(
+                "AMP dtype", ["fp16", "bf16"],
+                index=0 if config["training"].get("amp_dtype", "fp16") == "fp16" else 1,
+                help="bf16 is numerically stable for WavLM-Large (fp16 NaN'd in Phase 6).")
+            ema_on = st.checkbox("EMA", value=bool(config["training"].get("ema_enabled", False)),
+                                 help="Exponential moving average of weights (saved into best ckpt).")
+        ema_decay = 0.999
+        if ema_on:
+            ema_decay = st.number_input("EMA decay", 0.9, 0.9999,
+                                        float(config["training"].get("ema_decay", 0.999)), format="%.4f")
         st.subheader("🎯 Loss")
-        st.caption("Focal Loss always ON (γ=2).")
+        loss_spk = (config["training"].get("loss", {}).get("speaker", {}) or {})
+        loss_ood = (config["training"].get("loss", {}).get("ood", {}) or {})
+        cur_loss_type = str(loss_spk.get("type", "focal"))
+        loss_type = st.selectbox(
+            "Speaker loss", ["ce", "focal"],
+            index=0 if cur_loss_type == "ce" else 1,
+            help="CE + label smoothing (metric-aligned, A10) vs Focal (legacy).",
+        )
+        focal_gamma = 2.0
+        if loss_type == "focal":
+            focal_gamma = st.number_input("Focal γ", 0.0, 5.0,
+                                          float(loss_spk.get("focal_gamma", 2.0)), 0.5)
         ood_hidden = st.number_input("OOD head hidden dim", 0, 1024,
                                      mc.get("ood_head_config",{}).get("hidden_dim",256), 64)
         ood_pos_w = st.number_input("OOD pos_weight", 0.1, 10.0,
-                                    float(config["training"].get("ood_pos_weight", 1.0)), 0.1)
+                                    float(loss_ood.get("pos_weight", config["training"].get("ood_pos_weight", 1.0))), 0.1)
         ood_w = st.number_input("OOD loss weight", 0.0, 1.0,
-                                float(config["training"].get("ood_loss_weight", 0.3)), 0.05)
+                                float(loss_ood.get("weight", config["training"].get("ood_loss_weight", 0.3))), 0.05)
         spk_w = st.number_input("Speaker loss weight", 0.0, 1.0,
-                                float(config["training"].get("speaker_loss_weight", 0.7)), 0.05)
+                                float(loss_spk.get("weight", config["training"].get("speaker_loss_weight", 0.7))), 0.05)
         sm_val = st.number_input("Label smoothing", 0.0, 0.5,
-                                 float(config["training"].get("label_smoothing", 0.1)), 0.05)
+                                 float(loss_spk.get("label_smoothing", config["training"].get("label_smoothing", 0.1))), 0.05)
 
     if st.button("💾 Save Config", type="primary", use_container_width=True):
         # ── Encoder config: MERGE with existing keys so partial fine-tune
@@ -414,9 +492,11 @@ with tab_cfg:
         # (WavLM) with identity-pooled encoders without a global conflict.
         config["model"]["encoder_config"][encoder_type]["pooling_type"] = pooling_type
         config["model"]["allow_hub_download"] = hub_download
-        config["model"]["speaker_head_type"] = "arcface"
-        config["model"]["speaker_head_config"]["arcface"] = {
-            "embedding_dim": arc_emb, "margin": arc_m, "scale": arc_s}
+        config["model"]["speaker_head_type"] = head_type
+        head_block = {"embedding_dim": arc_emb, "margin": arc_m, "scale": arc_s}
+        if head_type == "arcface_subcenter":
+            head_block["sub_centers"] = int(sub_centers)
+        config["model"].setdefault("speaker_head_config", {})[head_type] = head_block
         config["model"]["ood_head_config"]["hidden_dim"] = ood_hidden
         config["audio"]["duration_seconds"] = audio_dur
         config["audio"]["min_valid_duration"] = min_dur
@@ -424,12 +504,40 @@ with tab_cfg:
         config["audio"]["eval_hop_ratio"] = float(hop_ratio)
         config["audio"]["max_eval_windows"] = int(max_win)
         config["audio"]["ood_batch_ratio"] = float(ood_ratio)
+        # Split (single vs speaker-aware K-fold)
+        config["data"].setdefault("split", {})
+        config["data"]["split"]["scheme"] = split_scheme
+        config["data"]["split"]["folds"] = int(n_folds)
+        config["data"]["split"]["fold"] = int(fold_idx)
+        # Domain augmentation toggles (waveform params stay config-driven)
+        dom_cfg = config.setdefault("augmentation", {}).setdefault("domain", {})
+        dom_cfg.setdefault("rirs_reverb", {})["p"] = 0.4 if rir_on else 0.0
+        musan_cfg = dom_cfg.setdefault("musan", {})
+        musan_cfg["noise_p"] = 0.4 if musan_on else 0.0
+        musan_cfg["music_p"] = 0.2 if musan_on else 0.0
+        dom_cfg.setdefault("mp3_codec_roundtrip", {})["p"] = 0.3 if mp3_on else 0.0
         config["training"]["epochs"] = epochs
         config["training"]["learning_rate"] = lr_val
         config["training"]["encoder_lr"] = float(encoder_lr)
         config["training"]["weight_decay"] = wd
         config["training"]["max_grad_norm"] = grad_norm
         config["training"]["early_stopping_patience"] = int(patience)
+        config["training"]["schedule"] = schedule_type
+        config["training"]["warmup_ratio"] = float(warmup_ratio)
+        config["training"]["amp_dtype"] = amp_dtype
+        config["training"]["ema_enabled"] = bool(ema_on)
+        config["training"]["ema_decay"] = float(ema_decay)
+        # Loss (nested block + flat keys kept in sync for backward-compat readers)
+        loss_block = config["training"].setdefault("loss", {})
+        spk_block = loss_block.setdefault("speaker", {})
+        ood_block = loss_block.setdefault("ood", {})
+        spk_block["type"] = loss_type
+        spk_block["focal_gamma"] = float(focal_gamma)
+        spk_block["label_smoothing"] = float(sm_val)
+        spk_block["weight"] = float(spk_w)
+        ood_block["type"] = "bce"
+        ood_block["pos_weight"] = float(ood_pos_w)
+        ood_block["weight"] = float(ood_w)
         config["training"]["ood_pos_weight"] = float(ood_pos_w)
         config["training"]["ood_loss_weight"] = float(ood_w)
         config["training"]["speaker_loss_weight"] = float(spk_w)

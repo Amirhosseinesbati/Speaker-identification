@@ -6,13 +6,53 @@ audio:
   min_valid_duration: 1.0
   n_fft: 400
   n_mels: 80
-  num_train_windows: 3
-  ood_batch_ratio: 0.5
+  num_train_windows: 4
+  ood_batch_ratio: 0.35
   sample_rate: 16000
+augmentation:
+  waveform:
+    gaussian_noise:
+      p: 0.4
+      amp: [0.001, 0.012]
+    gain:
+      p: 0.3
+      db: [-6, 6]
+    polarity_inversion:
+      p: 0.5
+    shift:
+      p: 0.3
+      frac: 0.1
+    pitch_shift:
+      p: 0.25
+      semitones: [-1, 1]
+    time_stretch:
+      p: 0.2
+      rate: [0.85, 1.18]
+  domain:
+    rirs_reverb:
+      p: 0.4
+      path: data/augmentation/rirs
+    musan:
+      noise_p: 0.4
+      music_p: 0.2
+      snr_db: [5, 20]
+      path: data/augmentation/musan
+    mp3_codec_roundtrip:
+      p: 0.3
+      min_bitrate: 64
+      max_bitrate: 192
+  spec:
+    time_mask:
+      p: 0.5
+      max_mask_ratio: 0.2
 data:
   audio_dir: data\processed\audio_wav
   labels_path: data\processed\audio_wav_labels.csv
   processed_labels: data/processed/cleaned_labels.csv
+  split:
+    scheme: single
+    folds: 3
+    fold: 0
 hardware:
   mode: local
   profiles:
@@ -73,7 +113,7 @@ model:
     ecapa:
       freeze_encoder: false
       source: speechbrain/spkrec-ecapa-voxceleb
-      unfreeze_last_n_blocks: 2
+      unfreeze_last_n_blocks: 0
       local_path: weights/ecapa
       pooling_type: identity
     wavlm:
@@ -84,7 +124,7 @@ model:
     campp:
       model_id: iic/speech_campplus_sv_en_voxceleb_16k
       revision: v1.0.2
-      freeze_encoder: true
+      freeze_encoder: false
       local_path: weights/campp
       pooling_type: identity
     eres2net:
@@ -108,19 +148,39 @@ model:
       embedding_dim: 192
       margin: 0.4
       scale: 30.0
+    arcface_subcenter:
+      embedding_dim: 192
+      margin: 0.3
+      scale: 32.0
+      sub_centers: 3
     linear:
       hidden_dims: []
-  speaker_head_type: arcface
+  speaker_head_type: arcface_subcenter
 training:
   early_stopping_patience: 15
-  encoder_lr: 1.0e-05
+  encoder_lr: 3.0e-05
   epochs: 200
-  label_smoothing: 0.1
-  learning_rate: 0.0001
+  label_smoothing: 0.05
+  learning_rate: 0.0003
   max_grad_norm: 5.0
   ood_grad_norm: 1.0
-  ood_loss_weight: 0.3
+  ood_loss_weight: 0.15
   ood_pos_weight: 1.0
-  speaker_loss_weight: 0.7
-  warmup_steps: 500
-  weight_decay: 1.0e-05
+  speaker_loss_weight: 0.85
+  weight_decay: 1.0e-04
+  schedule: cosine
+  warmup_ratio: 0.10
+  min_lr_ratio: 0.05
+  amp_dtype: bf16
+  ema_enabled: true
+  ema_decay: 0.999
+  loss:
+    speaker:
+      type: ce
+      focal_gamma: 2.0
+      label_smoothing: 0.05
+      weight: 0.85
+    ood:
+      type: bce
+      pos_weight: 1.0
+      weight: 0.15

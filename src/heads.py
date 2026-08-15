@@ -207,6 +207,105 @@ class ArcFaceHead(nn.Module):
 
 
 # ═══════════════════════════════════════════════════════════
+#  Sub-center ArcFace Head
+# ═══════════════════════════════════════════════════════════
+
+class SubCenterArcFaceHead(nn.Module):
+    """
+    Sub-center ArcFace (Additive Angular Margin with K sub-centers per class).
+
+    Standard ArcFace keeps ONE centre per speaker. With only ~4-5 files per
+    speaker, a single centre is sensitive to intra-speaker variability
+    (different devices / environments / codecs across a speaker's files).
+    Sub-center ArcFace keeps ``sub_centers`` centres per class and uses the
+    **max cosine** to any of them as the class score — it is more robust for
+    few-shot classes (root causes R1/R3, C3).
+
+    Formula:  s * cos(theta_j + m)   where theta_j = argmax_k angle to w_{j,k}.
+
+    Reference:
+        Deng et al., "Sub-center ArcFace: Boosting Face Recognition by
+        Large-scale Noisy Web Faces" (ECCV 2020).
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_classes: int,
+        embedding_dim: int = 192,
+        margin: float = 0.3,
+        scale: float = 32.0,
+        sub_centers: int = 3,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.num_classes = num_classes
+        self.embedding_dim = embedding_dim
+        self.m = margin
+        self.s = scale
+        self.K = max(1, int(sub_centers))
+
+        import math
+        self.cos_m = math.cos(margin)
+        self.sin_m = math.sin(margin)
+        self.th = math.cos(math.pi - margin)
+        self.mm = math.sin(math.pi - margin) * margin
+
+        # Project to embedding space
+        self.embedding_proj = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, embedding_dim),
+            nn.Dropout(0.2),
+        )
+
+        # (num_classes * K, embedding_dim) — reshaped to (num_classes, K, D).
+        self.weight = nn.Parameter(
+            torch.FloatTensor(num_classes * self.K, embedding_dim)
+        )
+        nn.init.xavier_normal_(self.weight, gain=1)
+
+    def _max_cosine(self, embeddings: torch.Tensor) -> torch.Tensor:
+        """(batch, embedding_dim) → (batch, num_classes) max-over-sub-centers."""
+        emb = self.embedding_proj(embeddings)
+        emb_norm = F.normalize(emb, p=2, dim=1)
+        weight_norm = F.normalize(self.weight, p=2, dim=1)
+        cosine = F.linear(emb_norm, weight_norm)          # (batch, num_classes*K)
+        cosine = cosine.view(-1, self.num_classes, self.K)  # (batch, num_classes, K)
+        cosine, _ = cosine.max(dim=2)                     # (batch, num_classes)
+        return cosine.clamp(-1.0 + 1e-7, 1.0 - 1e-7)
+
+    def forward(
+        self,
+        embeddings: torch.Tensor,
+        labels: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            embeddings: (batch, input_dim) — pooled encoder output
+            labels:     (batch,) — 0..num_classes-1 speaker labels. REQUIRED for
+                        training (margin). If None, returns margin-free cosine
+                        logits (inference).
+
+        Returns:
+            logits: (batch, num_classes)
+        """
+        cosine = self._max_cosine(embeddings)
+
+        if labels is None:
+            return cosine * self.s
+
+        # ArcFace margin applied to the max sub-centre of the target class.
+        sine = torch.sqrt((1.0 - cosine.pow(2)).clamp(0, 1))
+        phi = cosine * self.cos_m - sine * self.sin_m
+        phi = torch.where(cosine > self.th, phi, cosine - self.mm)
+
+        one_hot = torch.zeros_like(cosine)
+        one_hot.scatter_(1, labels.view(-1, 1).long(), 1)
+        output = (one_hot * phi) + ((1.0 - one_hot) * cosine)
+        return output * self.s
+
+
+# ═══════════════════════════════════════════════════════════
 #  Head Factories
 # ═══════════════════════════════════════════════════════════
 
@@ -221,7 +320,7 @@ def create_speaker_head(config: dict, input_dim: int, num_known: int) -> nn.Modu
     """
     Build speaker classification head from config.
 
-    Supports: "linear" | "arcface"
+    Supports: "linear" | "arcface" | "arcface_subcenter"
     """
     model_cfg = config["model"]
     head_type = model_cfg.get("speaker_head_type", "linear").lower().strip()
@@ -239,10 +338,21 @@ def create_speaker_head(config: dict, input_dim: int, num_known: int) -> nn.Modu
             scale=arc_cfg.get("scale", 15.0),
         )
 
+    elif head_type == "arcface_subcenter":
+        arc_cfg = model_cfg.get("speaker_head_config", {}).get("arcface_subcenter", {})
+        return SubCenterArcFaceHead(
+            input_dim=input_dim,
+            num_classes=num_known,
+            embedding_dim=arc_cfg.get("embedding_dim", 192),
+            margin=arc_cfg.get("margin", 0.3),
+            scale=arc_cfg.get("scale", 32.0),
+            sub_centers=arc_cfg.get("sub_centers", 3),
+        )
+
     else:
         raise ValueError(
             f"Unknown speaker_head_type: '{head_type}'. "
-            f"Expected 'linear' or 'arcface'."
+            f"Expected 'linear', 'arcface' or 'arcface_subcenter'."
         )
 
 

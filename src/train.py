@@ -34,6 +34,12 @@ setup_utf8_stdio()
 from src.data_pipeline import load_config, get_active_profile, get_dataloaders
 from src.model_factory import create_model_from_config
 from src.metrics import evaluate_macro_f1
+from src.training_utils import (
+    EMA,
+    build_amp,
+    build_scheduler,
+    flatten_windows,
+)
 
 warnings.filterwarnings("ignore")
 
@@ -250,6 +256,49 @@ class TwoPartLoss(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────
+#  Config-driven Loss Factory
+# ─────────────────────────────────────────────────────────
+
+def build_criterion(train_cfg: dict) -> TwoPartLoss:
+    """Build the two-part loss from the ``training`` config (root cause R9/C4).
+
+    Reads an optional ``training.loss`` block:
+
+        training.loss.speaker.type        → "focal" (legacy default) | "ce"
+        training.loss.speaker.focal_gamma → γ for focal
+        training.loss.speaker.label_smoothing
+        training.loss.speaker.weight      → speaker loss weight
+        training.loss.ood.weight          → OOD loss weight
+        training.loss.ood.pos_weight      → BCE pos_weight
+
+    Falls back to the flat legacy keys (``use_focal``, ``focal_gamma``,
+    ``ood_loss_weight``, ``speaker_loss_weight``, ``label_smoothing``,
+    ``ood_pos_weight``) so existing configs keep working unchanged.
+    """
+    loss_cfg = train_cfg.get("loss", {}) or {}
+    speaker_cfg = loss_cfg.get("speaker", {}) or {}
+    ood_cfg = loss_cfg.get("ood", {}) or {}
+
+    speaker_type = str(speaker_cfg.get("type", train_cfg.get("use_focal", "focal"))).lower()
+    use_focal = speaker_type == "focal"
+
+    return TwoPartLoss(
+        ignore_index=-100,
+        use_focal=use_focal,
+        focal_gamma=float(speaker_cfg.get(
+            "focal_gamma", train_cfg.get("focal_gamma", 2.0))),
+        ood_weight=float(ood_cfg.get(
+            "weight", train_cfg.get("ood_loss_weight", 1.0))),
+        speaker_weight=float(speaker_cfg.get(
+            "weight", train_cfg.get("speaker_loss_weight", 1.0))),
+        label_smoothing=float(speaker_cfg.get(
+            "label_smoothing", train_cfg.get("label_smoothing", 0.0))),
+        ood_pos_weight=float(ood_cfg.get(
+            "pos_weight", train_cfg.get("ood_pos_weight", 1.0))),
+    )
+
+
+# ─────────────────────────────────────────────────────────
 #  Metric Calculators
 # ─────────────────────────────────────────────────────────
 
@@ -378,11 +427,22 @@ def train_epoch(
     max_grad_norm: float = 5.0,
     ood_grad_norm: float = 1.0,
     ood_head_attr: str = "head_ood",
+    autocast_fn=None,
+    ema: Optional[EMA] = None,
 ) -> Dict[str, float]:
     """
     Train for one epoch with AMP.
+
+    **Per-window loss (root cause R2):** a ``(B, W, 1, T)`` batch is flattened
+    to ``(B*W, 1, T)`` and the file label is repeated, so the loss is computed
+    on each window independently instead of averaging the ``W`` logits first.
+
     Returns dict of average metrics.
     """
+    if autocast_fn is None:
+        def autocast_fn():
+            return autocast()
+
     model.train()
     total_loss = 0.0
     total_ood_acc = 0.0
@@ -396,8 +456,11 @@ def train_epoch(
 
         optimizer.zero_grad()
 
-        with autocast():
-            ood_logits, speaker_logits = forward_multi_window(model, waveforms, labels=labels)
+        # Per-window training: flatten (B, W, 1, T) → (B*W, 1, T) + repeat labels.
+        waveforms, labels = flatten_windows(waveforms, labels)
+
+        with autocast_fn():
+            ood_logits, speaker_logits = model(waveforms, labels=labels)
             loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
         # Fail loudly on NaN/Inf instead of silently training a broken model
@@ -429,6 +492,10 @@ def train_epoch(
 
         scaler.step(optimizer)
         scaler.update()
+
+        # EMA shadow update (after the optimizer step).
+        if ema is not None:
+            ema.update(model)
 
         # Metrics
         total_loss += loss_dict["loss_total"]
@@ -573,19 +640,16 @@ def train(config_path: str = "configs/default_config.yaml"):
         param_groups,
         weight_decay=train_cfg["weight_decay"],
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=train_cfg["epochs"]
+    scheduler = build_scheduler(optimizer, train_cfg, train_cfg["epochs"])
+    criterion = build_criterion(train_cfg)
+    amp_dtype = train_cfg.get("amp_dtype", "fp16")
+    autocast_fn, scaler = build_amp(
+        amp_enabled=hw_profile["mixed_precision"], amp_dtype=amp_dtype, device=device,
     )
-    criterion = TwoPartLoss(
-        ignore_index=-100,
-        use_focal=True,
-        focal_gamma=2.0,
-        ood_weight=train_cfg.get("ood_loss_weight", 1.0),
-        speaker_weight=train_cfg.get("speaker_loss_weight", 1.0),
-        label_smoothing=train_cfg.get("label_smoothing", 0.0),
-        ood_pos_weight=train_cfg.get("ood_pos_weight", 1.0),
-    )
-    scaler = GradScaler(enabled=hw_profile["mixed_precision"])
+    ema = EMA(model, decay=float(train_cfg.get("ema_decay", 0.999))) \
+        if train_cfg.get("ema_enabled", False) else None
+    if ema is not None and ema.enabled:
+        print(f"  🧊 EMA enabled (decay={ema.decay:.4f})")
 
     # ── Training Loop ──
     print(f"\n  [4/4] Starting training...")
@@ -607,6 +671,9 @@ def train(config_path: str = "configs/default_config.yaml"):
         train_metrics = train_epoch(
             model, train_loader, optimizer, criterion,
             scaler, device, train_cfg["max_grad_norm"],
+            ood_grad_norm=train_cfg.get("ood_grad_norm", 1.0),
+            autocast_fn=autocast_fn,
+            ema=ema,
         )
 
         # Validate
@@ -643,7 +710,9 @@ def train(config_path: str = "configs/default_config.yaml"):
                 val_metrics["ood_logits"], val_metrics["labels"])
             ckpt = {
                 "epoch": epoch,
-                "model_state_dict": model.state_dict(),
+                "model_state_dict": (
+                    ema.state_dict(model) if ema is not None else model.state_dict()
+                ),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
                 "config": config,

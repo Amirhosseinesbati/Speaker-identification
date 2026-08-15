@@ -40,12 +40,13 @@ from src.metrics import evaluate_macro_f1
 from src.train import (
     train_epoch,
     validate_epoch,
-    TwoPartLoss,
+    build_criterion,
     forward_multi_window,
     compute_ood_accuracy,
     compute_speaker_accuracy,
     setup_device,
 )
+from src.training_utils import EMA, build_amp, build_scheduler
 
 
 # ─────────────────────────────────────────────────────────
@@ -190,7 +191,10 @@ def prepare_data(
     if not os.path.exists(labels_path):
         raise FileNotFoundError(f"Labels not found: {labels_path}")
 
-    # Leak-free split with corrupted/duplicate filtering + split_report.json
+    # Leak-free split with corrupted/duplicate filtering + split_report.json.
+    # `data.split` selects single (legacy) vs speaker_aware_kfold (OOF, C5).
+    split_cfg = data_cfg.get("split", {}) or {}
+    split_scheme = str(split_cfg.get("scheme", "single")).lower()
     train_df, val_df, class_map = prepare_clean_split(
         labels_path=labels_path,
         audio_dir=audio_dir,
@@ -198,6 +202,9 @@ def prepare_data(
         val_per_known=1,
         unknown_val_ratio=0.2,
         min_valid_duration=audio_cfg.get("min_valid_duration", 1.0),
+        split_scheme=split_scheme,
+        fold=int(split_cfg.get("fold", 0)),
+        folds=int(split_cfg.get("folds", 3)),
     )
 
     print(f"  ✓ Train: {len(train_df)} samples | Val: {len(val_df)} samples")
@@ -358,6 +365,7 @@ def train_model(
         num_train_windows=audio_cfg.get("num_train_windows", 1),
         eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
         max_eval_windows=audio_cfg.get("max_eval_windows", 8),
+        augmentation=config.get("augmentation"),
     )
     val_dataset = SpeakerDataset(
         df=val_df,
@@ -421,29 +429,19 @@ def train_model(
         param_groups,
         weight_decay=train_cfg["weight_decay"],
     )
-    # Linear warmup (3 epochs) + CosineAnnealingWarmRestarts
-    warmup_epochs = 3
-    scheduler_warmup = torch.optim.lr_scheduler.LinearLR(
-        optimizer, start_factor=0.1, total_iters=warmup_epochs,
+    # Config-driven schedule (warmup_ratio + cosine by default; the old
+    # hardcoded 3-epoch warmup + warm-restarts is the "cosine_warm_restarts"
+    # option for backward compatibility).
+    scheduler = build_scheduler(optimizer, train_cfg, train_cfg["epochs"])
+    criterion = build_criterion(train_cfg)
+    amp_dtype = train_cfg.get("amp_dtype", "fp16")
+    autocast_fn, scaler = build_amp(
+        amp_enabled=hw_profile["mixed_precision"], amp_dtype=amp_dtype, device=device,
     )
-    scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=10, T_mult=1,
-    )
-    scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer,
-        schedulers=[scheduler_warmup, scheduler_cosine],
-        milestones=[warmup_epochs],
-    )
-    criterion = TwoPartLoss(
-        ignore_index=-100,
-        use_focal=True,
-        focal_gamma=2.0,
-        ood_weight=train_cfg.get("ood_loss_weight", 1.0),
-        speaker_weight=train_cfg.get("speaker_loss_weight", 1.0),
-        label_smoothing=train_cfg.get("label_smoothing", 0.0),
-        ood_pos_weight=train_cfg.get("ood_pos_weight", 1.0),
-    )
-    scaler = torch.cuda.amp.GradScaler(enabled=hw_profile["mixed_precision"])
+    ema = EMA(model, decay=float(train_cfg.get("ema_decay", 0.999))) \
+        if train_cfg.get("ema_enabled", False) else None
+    if ema is not None and ema.enabled:
+        print(f"  🧊 EMA enabled (decay={ema.decay:.4f})")
 
     # ── Training Loop with MLflow autologging ──
     log_cfg = config.get("logging", {})
@@ -462,6 +460,8 @@ def train_model(
             model, train_loader, optimizer, criterion,
             scaler, device, train_cfg["max_grad_norm"],
             ood_grad_norm=train_cfg.get("ood_grad_norm", 1.0),
+            autocast_fn=autocast_fn,
+            ema=ema,
         )
         # Validate + competition metric (Macro-F1 over all 447 classes)
         val_metrics = validate_epoch(model, val_loader, criterion, device)
@@ -502,7 +502,9 @@ def train_model(
             patience_counter = 0
             best_ckpt = {
                 "epoch": epoch,
-                "model_state_dict": model.state_dict(),
+                "model_state_dict": (
+                    ema.state_dict(model) if ema is not None else model.state_dict()
+                ),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
                 "config": config,
@@ -636,15 +638,7 @@ def evaluate_model(
 
     # Evaluate with threshold tuning (criterion mirrors training weights)
     train_cfg = config["training"]
-    criterion = TwoPartLoss(
-        ignore_index=-100,
-        use_focal=True,
-        focal_gamma=2.0,
-        ood_weight=train_cfg.get("ood_loss_weight", 1.0),
-        speaker_weight=train_cfg.get("speaker_loss_weight", 1.0),
-        label_smoothing=0.0,  # eval: no label smoothing (standard)
-        ood_pos_weight=train_cfg.get("ood_pos_weight", 1.0),
-    )
+    criterion = build_criterion(train_cfg)
     total_loss = 0.0
     total_ood_acc = 0.0
     total_speaker_acc = 0.0

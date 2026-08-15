@@ -277,6 +277,94 @@ def stratified_split(
     return train_df, val_df
 
 
+def speaker_aware_kfold(
+    labels_df: pd.DataFrame,
+    folds: int = 3,
+    random_seed: int = 42,
+    duplicate_groups: Optional[Dict[str, List[str]]] = None,
+    corrupted_files: Optional[Set[str]] = None,
+) -> List[Tuple[pd.DataFrame, pd.DataFrame]]:
+    """
+    Speaker-aware K-fold split for out-of-fold (OOF) evaluation (root cause R4/C5).
+
+    The single 1-file-per-speaker val split makes epoch/threshold/fusion
+    selection ride on ~891 samples of a single seed. K-fold instead validates
+    **every file exactly once** (leave-one-group-out), producing ~all-train
+    OOF predictions for stable tuning, while each fold keeps ~(K-1)/K of a
+    speaker's files for training (few-shot preserved: with 5 files and K=3,
+    each fold trains on ~3-4 files).
+
+    Rules (same leak guards as `stratified_split`):
+      - corrupted files are dropped entirely;
+      - MD5-duplicate files never appear in a val fold (they always stay in
+        train) so byte-identical recordings cannot leak across the boundary.
+
+    Args:
+        labels_df: DataFrame with ``audio_file`` + ``speaker_id`` + ``label``.
+        folds:     number of folds (K).
+        random_seed: RNG seed for the per-speaker/class partition.
+        duplicate_groups: MD5 groups (see find_duplicate_groups).
+        corrupted_files:  set of audio_files to drop.
+
+    Returns:
+        list of ``(train_df, val_df)`` — one pair per fold.
+    """
+    folds = max(1, int(folds))
+    rng = np.random.default_rng(random_seed)
+    df = labels_df.copy()
+    if corrupted_files:
+        df = df[~df["audio_file"].isin(corrupted_files)].reset_index(drop=True)
+
+    dup_files: Set[str] = set()
+    if duplicate_groups:
+        for fnames in duplicate_groups.values():
+            dup_files.update(fnames)
+
+    fold_train_rows: List[List[pd.DataFrame]] = [[] for _ in range(folds)]
+    fold_val_rows: List[List[pd.DataFrame]] = [[] for _ in range(folds)]
+
+    def _partition(indices: np.ndarray) -> List[np.ndarray]:
+        """Split `indices` into `folds` groups as evenly as possible."""
+        idx = rng.permutation(indices)
+        groups: List[List[int]] = [[] for _ in range(folds)]
+        for i, x in enumerate(idx):
+            groups[i % folds].append(int(x))
+        return [np.asarray(g, dtype=int) for g in groups]
+
+    # ── Known speakers ──
+    df_known = df[df["speaker_id"] != "unknown"]
+    for _, group in df_known.groupby("speaker_id"):
+        group = group.reset_index(drop=True)
+        non_dup_idx = np.where(~group["audio_file"].isin(dup_files).values)[0]
+        groups = _partition(non_dup_idx)
+        for f in range(folds):
+            val_idx = groups[f]
+            val_files = set(group.iloc[val_idx]["audio_file"])
+            train_mask = ~group["audio_file"].isin(val_files).values
+            fold_val_rows[f].append(group.iloc[val_idx])
+            fold_train_rows[f].append(group[train_mask])
+
+    # ── Unknown class ──
+    df_unknown = df[df["speaker_id"] == "unknown"]
+    unknown_idx = np.where(~df_unknown["audio_file"].isin(dup_files).values)[0]
+    groups = _partition(unknown_idx)
+    for f in range(folds):
+        val_idx = groups[f]
+        val_files = set(df_unknown.iloc[val_idx]["audio_file"])
+        train_mask = ~df_unknown["audio_file"].isin(val_files).values
+        fold_val_rows[f].append(df_unknown.iloc[val_idx])
+        fold_train_rows[f].append(df_unknown[train_mask])
+
+    splits = []
+    for f in range(folds):
+        train_df = pd.concat(fold_train_rows[f], ignore_index=True)
+        val_df = pd.concat(fold_val_rows[f], ignore_index=True)
+        train_df = train_df.sample(frac=1, random_state=rng).reset_index(drop=True)
+        val_df = val_df.sample(frac=1, random_state=rng).reset_index(drop=True)
+        splits.append((train_df, val_df))
+    return splits
+
+
 def _write_split_report(
     labels_df: pd.DataFrame,
     train_df: pd.DataFrame,
@@ -355,6 +443,48 @@ def _write_split_report(
     print(f"  ✓ Split report saved to {output_path}")
 
 
+def _write_kfold_report(
+    labels_df: pd.DataFrame,
+    splits: List[Tuple[pd.DataFrame, pd.DataFrame]],
+    duplicate_groups: Dict[str, List[str]],
+    corrupted: List[str],
+    output_path: str,
+) -> None:
+    """Write data/processed/split_report.json for a speaker-aware K-fold split."""
+    import json
+
+    fold_summaries = []
+    for f, (train_df, val_df) in enumerate(splits):
+        fold_summaries.append({
+            "fold": f,
+            "train_samples": int(len(train_df)),
+            "val_samples": int(len(val_df)),
+            "train_known": int((train_df["label"] != 0).sum()),
+            "val_known": int((val_df["label"] != 0).sum()),
+            "train_unknown": int((train_df["label"] == 0).sum()),
+            "val_unknown": int((val_df["label"] == 0).sum()),
+        })
+
+    report = {
+        "scheme": "speaker_aware_kfold",
+        "n_folds": len(splits),
+        "corrupted_files": {
+            "total": len(corrupted),
+            "files": corrupted,
+        },
+        "duplicate_groups": {
+            "total_groups": len(duplicate_groups),
+            "total_files": sum(len(v) for v in duplicate_groups.values()),
+        },
+        "folds": fold_summaries,
+    }
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+    print(f"  ✓ K-fold split report saved to {output_path}")
+
+
 def prepare_clean_split(
     labels_path: str,
     audio_dir: str,
@@ -364,6 +494,9 @@ def prepare_clean_split(
     min_valid_duration: float = 1.0,
     random_seed: int = 42,
     split_report_path: str = "data/processed/split_report.json",
+    split_scheme: str = "single",
+    fold: int = 0,
+    folds: int = 3,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
     """
     Load, clean and leak-free split labels; write data/processed/split_report.json.
@@ -373,8 +506,9 @@ def prepare_clean_split(
       2. Scan durations (header-only) for every labelled file.
       3. Detect corrupted (< min_valid_duration) / missing files.
       4. Detect MD5-duplicate groups (incl. conflicting-label groups).
-      5. Leak-free stratified_split (duplicates/corrupted never in val).
-      6. Save cleaned labels and split_report.json.
+      5. Leak-free split: ``single`` (default) or ``kfold`` (speaker-aware
+         K-fold; returns the ``fold``-th split for OOF training).
+      6. Save cleaned labels and split_report.json (single scheme only).
 
     Returns:
         train_df, val_df, class_map
@@ -404,24 +538,40 @@ def prepare_clean_split(
               f"({sum(len(v) for v in dup_groups.values())} files)")
 
     # ── Leak-free split ──
-    train_df, val_df = stratified_split(
-        df,
-        val_per_known=val_per_known,
-        unknown_val_ratio=unknown_val_ratio,
-        random_seed=random_seed,
-        duplicate_groups=dup_groups,
-        corrupted_files=set(corrupted),
-    )
+    if str(split_scheme).lower().strip() == "kfold":
+        kfold_splits = speaker_aware_kfold(
+            df,
+            folds=folds,
+            random_seed=random_seed,
+            duplicate_groups=dup_groups,
+            corrupted_files=set(corrupted),
+        )
+        fold_idx = max(0, min(int(fold), len(kfold_splits) - 1))
+        train_df, val_df = kfold_splits[fold_idx]
+        print(f"  ✓ K-fold split (fold {fold_idx}/{folds}, "
+              f"train={len(train_df)}, val={len(val_df)})")
+    else:
+        train_df, val_df = stratified_split(
+            df,
+            val_per_known=val_per_known,
+            unknown_val_ratio=unknown_val_ratio,
+            random_seed=random_seed,
+            duplicate_groups=dup_groups,
+            corrupted_files=set(corrupted),
+        )
 
     # ── Save cleaned labels ──
     os.makedirs(os.path.dirname(processed_labels), exist_ok=True)
     df.to_csv(processed_labels, index=False)
     print(f"  ✓ Saved cleaned labels ({len(df)} rows) to {processed_labels}")
 
-    # ── Split report ──
-    _write_split_report(
-        df, train_df, val_df, dup_groups, corrupted, durations, split_report_path,
-    )
+    # ── Split report (single-scheme only; kfold writes a per-fold summary) ──
+    if str(split_scheme).lower().strip() == "kfold":
+        _write_kfold_report(df, kfold_splits, dup_groups, corrupted, split_report_path)
+    else:
+        _write_split_report(
+            df, train_df, val_df, dup_groups, corrupted, durations, split_report_path,
+        )
 
     print(f"  ✓ Train samples: {len(train_df)} | Val samples: {len(val_df)}")
     print(
@@ -443,6 +593,9 @@ def prepare_labels(
     unknown_val_ratio: float = 0.2,
     audio_dir: Optional[str] = None,
     min_valid_duration: float = 1.0,
+    split_scheme: str = "single",
+    fold: int = 0,
+    folds: int = 3,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
     """
     Load, clean, split labels and create class mapping.
@@ -459,6 +612,9 @@ def prepare_labels(
             val_per_known=val_per_known,
             unknown_val_ratio=unknown_val_ratio,
             min_valid_duration=min_valid_duration,
+            split_scheme=split_scheme,
+            fold=fold,
+            folds=folds,
         )
 
     df = pd.read_csv(labels_path)
@@ -498,33 +654,139 @@ def prepare_labels(
 
 class AudioAugmentation:
     """
-    Training-time augmentation pipeline using audiomentations.
+    Training-time augmentation pipeline (config-driven — root cause R8).
 
-    Applies a diverse set of waveform-level augmentations:
-    - Gaussian noise injection
-    - Pitch shifting (±1 semitone — gentle, frozen encoders can't adapt to more)
-    - Time stretching (0.8× – 1.25×)
-    - Gain variation (±6 dB)
-    - Polarity inversion
-    - Time shifting (±10%)
+    Reads the ``augmentation`` block of the config:
 
-    All augmentations preserve the waveform length.
+      - ``waveform``: gentle waveform-level effects (gaussian noise, gain,
+        polarity, shift, pitch, time-stretch) — safe for frozen encoders.
+      - ``domain``:   RIR reverb, MUSAN noise/music, mp3 codec roundtrip — the
+        highest-value additions for generalization to the competition's
+        recording conditions (C2). These are SKIPPED with a warning when their
+        data dirs / backends are absent, so training never crashes on a
+        machine without MUSAN/RIR/ffmpeg.
+      - ``spec``:     time-domain masking (a waveform approximation of
+        SpecAugment's time masking). Frequency masking needs spectrogram
+        access and is left out — the encoders consume raw waveforms.
+
+    Defaults reproduce the previous hardcoded pipeline exactly when the config
+    block is absent, so this refactor is backward-compatible.
     """
 
-    def __init__(self, sample_rate: int = 16000):
+    def __init__(
+        self,
+        sample_rate: int = 16000,
+        augmentation_config: Optional[dict] = None,
+    ):
         import audiomentations as AA
+
         self.sample_rate = sample_rate
-        self.pipeline = AA.Compose([
-            AA.AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.5),
+        self._warned = False
+        cfg = augmentation_config or {}
+        wf = cfg.get("waveform", {}) or {}
+        domain = cfg.get("domain", {}) or {}
+        spec = cfg.get("spec", {}) or {}
+
+        def _p(block: dict, key: str, default: float) -> float:
+            sub = block.get(key)
+            return float(sub.get("p", default)) if isinstance(sub, dict) else default
+
+        def _range(block: dict, key: str, field: str, default):
+            sub = block.get(key)
+            if isinstance(sub, dict) and field in sub:
+                return sub[field]
+            return default
+
+        transforms = []
+
+        def _add(fn):
+            """Append a transform, degrading gracefully when a data dir or
+            backend (ffmpeg/lameenc/pydub) is unavailable."""
+            try:
+                transforms.append(fn())
+            except Exception as e:  # pragma: no cover — environment-dependent
+                print(f"  ⚠ Skipping augmentation: {e}")
+
+        # ── Waveform-level (gentle) ──
+        if _p(wf, "gaussian_noise", 0.5) > 0:
+            amp = _range(wf, "gaussian_noise", "amp", [0.001, 0.015]) or [0.001, 0.015]
+            _add(lambda amp=amp, p=_p(wf, "gaussian_noise", 0.5):
+                 AA.AddGaussianNoise(min_amplitude=amp[0], max_amplitude=amp[1], p=p))
+        if _p(wf, "gain", 0.3) > 0:
+            db = _range(wf, "gain", "db", [-6, 6]) or [-6, 6]
+            _add(lambda db=db, p=_p(wf, "gain", 0.3):
+                 AA.Gain(min_gain_db=db[0], max_gain_db=db[1], p=p))
+        if _p(wf, "polarity_inversion", 0.5) > 0:
+            _add(lambda p=_p(wf, "polarity_inversion", 0.5): AA.PolarityInversion(p=p))
+        if _p(wf, "shift", 0.3) > 0:
+            frac = float((wf.get("shift") or {}).get("frac", 0.1))
+            _add(lambda frac=frac, p=_p(wf, "shift", 0.3):
+                 AA.Shift(min_shift=-frac, max_shift=frac, shift_unit="fraction",
+                          rollover=True, fade_duration=0.005, p=p))
+        if _p(wf, "pitch_shift", 0.3) > 0:
             # Gentle pitch shift only — a frozen encoder can't adapt to ±4
             # semitones (it caused the inverted train/val gap in the last run).
-            AA.PitchShift(min_semitones=-1, max_semitones=1, p=0.3),
-            AA.TimeStretch(min_rate=0.8, max_rate=1.25, p=0.2),
-            AA.Gain(min_gain_db=-6, max_gain_db=6, p=0.3),
-            AA.PolarityInversion(p=0.5),
-            AA.Shift(min_shift=-0.1, max_shift=0.1, shift_unit="fraction",
-                     rollover=True, fade_duration=0.005, p=0.3),
-        ])
+            st = _range(wf, "pitch_shift", "semitones", [-1, 1]) or [-1, 1]
+            _add(lambda st=st, p=_p(wf, "pitch_shift", 0.3):
+                 AA.PitchShift(min_semitones=st[0], max_semitones=st[1], p=p))
+        if _p(wf, "time_stretch", 0.2) > 0:
+            rate = _range(wf, "time_stretch", "rate", [0.8, 1.25]) or [0.8, 1.25]
+            _add(lambda rate=rate, p=_p(wf, "time_stretch", 0.2):
+                 AA.TimeStretch(min_rate=rate[0], max_rate=rate[1], p=p))
+
+        # ── Domain (RIR / MUSAN / codec) ──
+        rir = domain.get("rirs_reverb", {}) or {}
+        if _p(domain, "rirs_reverb", 0.0) > 0:
+            path = rir.get("path", "data/augmentation/rirs")
+            if path and os.path.isdir(path):
+                rir_cls = getattr(AA, "AddImpulseResponse",
+                                  getattr(AA, "ApplyImpulseResponse", None))
+                if rir_cls is not None:
+                    _add(lambda rir_cls=rir_cls, path=path, p=_p(domain, "rirs_reverb", 0.0):
+                         rir_cls(ir_path=path, p=p))
+            else:
+                print(f"  ⚠ RIR reverb skipped: '{path}' not found (download RIRs first)")
+
+        musan = domain.get("musan", {}) or {}
+        if _p(domain, "musan", 0.0) > 0 or float(musan.get("noise_p", 0) or 0) > 0 \
+                or float(musan.get("music_p", 0) or 0) > 0:
+            base = musan.get("path", "data/augmentation/musan")
+            snr = musan.get("snr_db", [5, 20]) or [5, 20]
+            noise_dir = os.path.join(base, "noise")
+            music_dir = os.path.join(base, "music")
+            noise_p = float(musan.get("noise_p", 0.4) or 0)
+            music_p = float(musan.get("music_p", 0.2) or 0)
+            if noise_p > 0 and os.path.isdir(noise_dir):
+                _add(lambda noise_dir=noise_dir, snr=snr, noise_p=noise_p:
+                     AA.AddBackgroundNoise(sounds_path=noise_dir,
+                                           min_snr_in_db=snr[0], max_snr_in_db=snr[1],
+                                           p=noise_p))
+            elif noise_p > 0:
+                print(f"  ⚠ MUSAN noise skipped: '{noise_dir}' not found")
+            if music_p > 0 and os.path.isdir(music_dir):
+                _add(lambda music_dir=music_dir, snr=snr, music_p=music_p:
+                     AA.AddBackgroundNoise(sounds_path=music_dir,
+                                           min_snr_in_db=snr[0], max_snr_in_db=snr[1],
+                                           p=music_p))
+            elif music_p > 0:
+                print(f"  ⚠ MUSAN music skipped: '{music_dir}' not found")
+
+        if _p(domain, "mp3_codec_roundtrip", 0.0) > 0:
+            mp3 = domain.get("mp3_codec_roundtrip", {}) or {}
+            _add(lambda mp3=mp3, p=_p(domain, "mp3_codec_roundtrip", 0.0):
+                 AA.Mp3Compression(min_bitrate=int(mp3.get("min_bitrate", 64)),
+                                   max_bitrate=int(mp3.get("max_bitrate", 192)),
+                                   p=p))
+
+        # ── Spec (time-domain masking approximation of SpecAugment) ──
+        if _p(spec, "time_mask", 0.0) > 0:
+            tm = spec.get("time_mask", {}) or {}
+            _add(lambda tm=tm, p=_p(spec, "time_mask", 0.0):
+                 AA.TimeMask(min_band_part=0.0,
+                             max_band_part=float(tm.get("max_mask_ratio", 0.2)),
+                             fade_duration=0.0, p=p))
+
+        self.pipeline = AA.Compose(transforms) if transforms else None
 
     def __call__(self, waveform: torch.Tensor) -> torch.Tensor:
         """
@@ -536,10 +798,21 @@ class AudioAugmentation:
         Returns:
             Augmented waveform of same shape (1, T)
         """
-        # audiomentations expects (samples,) numpy array
-        audio_np = waveform.squeeze(0).numpy()
-        augmented = self.pipeline(samples=audio_np, sample_rate=self.sample_rate)
-        return torch.from_numpy(augmented).unsqueeze(0).float()
+        if self.pipeline is None:
+            return waveform
+        try:
+            # audiomentations expects (samples,) numpy array
+            audio_np = waveform.squeeze(0).numpy()
+            augmented = self.pipeline(samples=audio_np, sample_rate=self.sample_rate)
+            return torch.from_numpy(augmented).unsqueeze(0).float()
+        except Exception as e:
+            # A single bad sample (e.g. ffmpeg missing at call time) must not
+            # kill training — degrade to the un-augmented waveform.
+            if not self._warned:
+                print(f"  ⚠ Augmentation failed for a sample ({e}); "
+                      f"returning un-augmented. Further failures are silent.")
+                self._warned = True
+            return waveform
 
 
 # ─────────────────────────────────────────────────────────
@@ -572,6 +845,7 @@ class SpeakerDataset(Dataset):
         num_train_windows: int = 1,
         eval_hop_ratio: float = 0.5,
         max_eval_windows: int = 8,
+        augmentation: Optional[dict] = None,
     ):
         self.df = df.reset_index(drop=True)
         self.audio_dir = Path(audio_dir)
@@ -583,9 +857,10 @@ class SpeakerDataset(Dataset):
         self.num_train_windows = max(1, num_train_windows)
         self.eval_hop_ratio = eval_hop_ratio
         self.max_eval_windows = max(1, max_eval_windows)
+        self.augmentation = augmentation
 
         if self.augment:
-            self.augmentor = AudioAugmentation(sample_rate)
+            self.augmentor = AudioAugmentation(sample_rate, self.augmentation)
 
     def __len__(self) -> int:
         return len(self.df)
@@ -801,7 +1076,10 @@ def get_dataloaders(
     print(f"  Audio dir: {audio_dir}")
     print(f"  Files: {wav_count} WAV + {mp3_count} MP3")
 
-    # Prepare labels + leak-free split (corrupted/duplicate filtering inside)
+    # Prepare labels + leak-free split (corrupted/duplicate filtering inside).
+    # `data.split` selects single (legacy) vs speaker_aware_kfold (OOF, C5).
+    split_cfg = data_cfg.get("split", {}) or {}
+    split_scheme = str(split_cfg.get("scheme", "single")).lower()
     train_df, val_df, class_map = prepare_labels(
         labels_path=labels_path,
         output_path=data_cfg["processed_labels"],
@@ -809,6 +1087,9 @@ def get_dataloaders(
         unknown_val_ratio=0.2,
         audio_dir=audio_dir,
         min_valid_duration=min_valid_duration,
+        split_scheme=split_scheme,
+        fold=int(split_cfg.get("fold", 0)),
+        folds=int(split_cfg.get("folds", 3)),
     )
 
     # Create datasets
@@ -822,6 +1103,7 @@ def get_dataloaders(
         num_train_windows=audio_cfg.get("num_train_windows", 1),
         eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
         max_eval_windows=audio_cfg.get("max_eval_windows", 8),
+        augmentation=config.get("augmentation"),
     )
 
     val_dataset = SpeakerDataset(
