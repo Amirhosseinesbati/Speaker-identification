@@ -5,7 +5,6 @@ Usage: uv run streamlit run src/deploy/deploy_app.py
 
 import os, re, subprocess, sys, threading, time
 from pathlib import Path
-from queue import Queue
 from typing import Optional
 
 import streamlit as st
@@ -227,60 +226,6 @@ def _head_cfg(config: dict) -> dict:
     """Config block of the active speaker head."""
     ht = _head_type(config)
     return (config["model"].get("speaker_head_config", {}).get(ht, {}) or {})
-
-
-# ═══════════════════════════════════════════════════════════
-#  Log Streaming Engine
-# ═══════════════════════════════════════════════════════════
-
-def _stream_logs(instance_id: str, queue: Queue, stop_event: threading.Event):
-    """Background thread: wait for instance to boot, then stream logs via retry loop."""
-    max_retries = 24       # ~2 minutes total
-    retry_delay = 5        # seconds between retries
-
-    for attempt in range(max_retries):
-        if stop_event.is_set():
-            queue.put("__STREAM_END__")
-            return
-
-        try:
-            proc = subprocess.Popen(
-                ["vastai", "logs", instance_id],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
-            )
-            # Read first line to check for errors (container not ready yet)
-            first_line = proc.stdout.readline()
-            is_retryable = any(x in first_line for x in [
-                "404", "Invalid instance", "No such container",
-            ])
-            if is_retryable:
-                proc.terminate()
-                if attempt == 0:
-                    queue.put(f"⏳ Instance booting... waiting for logs (attempt {attempt+1}/{max_retries})")
-                elif attempt % 3 == 0:
-                    queue.put(f"⏳ Still waiting... (attempt {attempt+1}/{max_retries})")
-                time.sleep(retry_delay)
-                continue
-
-            # Success — stream the rest
-            queue.put(first_line.rstrip())
-            for line in iter(proc.stdout.readline, ""):
-                if stop_event.is_set():
-                    proc.terminate()
-                    break
-                queue.put(line.rstrip())
-            proc.stdout.close()
-            proc.wait()
-            break  # normal exit
-
-        except Exception as e:
-            queue.put(f"[log error] {e}")
-            time.sleep(retry_delay)
-
-    else:
-        queue.put("⚠️ Could not connect to logs after 2min. Instance may still be provisioning.")
-    queue.put("__STREAM_END__")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -705,7 +650,7 @@ with tab_cfg:
 
 # ── TAB: Cloud ──
 with tab_cloud:
-    st.header("☁️ Vast.ai — Live Logs")
+    st.header("☁️ Vast.ai")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         gpu = st.selectbox("GPU", GPU_OPTIONS, key="cgpu")
@@ -744,114 +689,41 @@ with tab_cloud:
     if not (PROJECT_ROOT / ".env").exists():
         st.warning("⚠️ `.env` missing — copy from `.env.example`")
 
-    # ── Session state for live logs ──
-    if "log_instance_id" not in st.session_state:
-        st.session_state.log_instance_id = None
-    if "log_running" not in st.session_state:
-        st.session_state.log_running = False
-    if "log_queue" not in st.session_state:
-        st.session_state.log_queue = Queue()
-    if "log_stop" not in st.session_state:
-        st.session_state.log_stop = threading.Event()
-
-    col_launch, col_destroy = st.columns([3, 1])
-
-    with col_launch:
-        if st.button("🔥 Launch on Vast.ai", type="primary", use_container_width=True,
-                     disabled=st.session_state.log_running,
-                     key="launch"):
-            if not (PROJECT_ROOT / ".env").exists():
-                st.error("❌ .env missing!"); st.stop()
-            os.environ["GPU_TARGET"] = gpu
-            os.environ["TARGET_PIPELINE"] = stage
-            # Encoder selection + fine-tune choice (setup_vast.sh reads these)
-            os.environ["ENCODER_TYPE"] = encoder_type
-            os.environ["ALLOW_HUB_DOWNLOAD"] = str(hub_download).lower()
-            os.environ["FREEZE_ENCODER"] = str(ft_mode == "Frozen").lower()
-            os.environ["UNFREEZE_LAST_N_BLOCKS"] = str(
-                unfreeze_n if ft_mode == "Partial (last N)" else 0)
-            os.environ["FREEZE_FEATURE_EXTRACTOR"] = str(ft_mode == "Frozen").lower()  # compat
-            os.environ["DISK_SIZE_GB"] = str(disk_gb)
-            os.environ["MIN_CUDA_VERSION"] = str(min_cuda)
-            os.environ["EXPERIMENT_PROFILES"] = (
-                " ".join(queue_profiles) if queue_profiles else "")
-            with st.spinner("Creating instance..."):
-                try:
-                    env = os.environ.copy(); env["PYTHONIOENCODING"] = "utf-8"
-                    r = subprocess.run([sys.executable, str(DEPLOY_SCRIPT)],
-                                       capture_output=True, text=True, encoding="utf-8",
-                                       env=env, timeout=180, cwd=str(PROJECT_ROOT), check=True)
-                    output = r.stdout
-                    # Extract instance ID
-                    m = re.search(r"INSTANCE_ID=(\d+)", output)
-                    if m:
-                        st.session_state.log_instance_id = m.group(1)
-                        st.session_state.log_running = True
-                        st.session_state.log_stop.clear()
-                        st.session_state.log_queue = Queue()
-                        # Start background log streamer
-                        t = threading.Thread(
-                            target=_stream_logs,
-                            args=(st.session_state.log_instance_id,
-                                  st.session_state.log_queue,
-                                  st.session_state.log_stop),
-                            daemon=True)
-                        t.start()
-                        st.success(f"✅ Instance #{st.session_state.log_instance_id} launched!")
-                    else:
-                        st.warning("⚠️ Launched but could not parse instance ID.")
-                    with st.expander("Deploy output"):
-                        st.code(output)
-                except subprocess.CalledProcessError as e:
-                    st.error("❌ Deploy failed!")
-                    st.code(e.stdout or "")
-
-    with col_destroy:
-        if st.button("🛑 Destroy", type="secondary", use_container_width=True,
-                     disabled=not st.session_state.log_running,
-                     key="destroy"):
-            iid = st.session_state.log_instance_id
-            if iid:
-                with st.spinner(f"Destroying #{iid}..."):
-                    try:
-                        subprocess.run(["vastai", "destroy", "instance", iid, "-y"],
-                                       capture_output=True, text=True, timeout=30)
-                    except Exception:
-                        pass
-                st.session_state.log_stop.set()
-                st.session_state.log_running = False
-                st.session_state.log_instance_id = None
-                st.warning(f"🛑 Instance #{iid} destroyed.")
-                st.rerun()
-
-    # ── Live log display ──
-    if st.session_state.log_running and st.session_state.log_instance_id:
-        st.divider()
-        st.subheader(f"📜 Live Logs — Instance #{st.session_state.log_instance_id}")
-        log_placeholder = st.empty()
-
-        # Drain queue and display
-        lines = []
-        q = st.session_state.log_queue
-        while not q.empty():
-            line = q.get_nowait()
-            if line == "__STREAM_END__":
-                st.session_state.log_running = False
-                st.warning("🏁 Log stream ended (instance finished or destroyed).")
-                break
-            lines.append(line)
-
-        if lines:
-            # Keep last 200 lines max
-            if "log_history" not in st.session_state:
-                st.session_state.log_history = []
-            st.session_state.log_history.extend(lines)
-            st.session_state.log_history = st.session_state.log_history[-200:]
-            log_placeholder.code("\n".join(st.session_state.log_history))
-
-        # Auto-refresh every 1 second
-        time.sleep(1)
-        st.rerun()
+    if st.button("🔥 Launch on Vast.ai", type="primary", use_container_width=True,
+                 key="launch"):
+        if not (PROJECT_ROOT / ".env").exists():
+            st.error("❌ .env missing!"); st.stop()
+        os.environ["GPU_TARGET"] = gpu
+        os.environ["TARGET_PIPELINE"] = stage
+        # Encoder selection + fine-tune choice (setup_vast.sh reads these)
+        os.environ["ENCODER_TYPE"] = encoder_type
+        os.environ["ALLOW_HUB_DOWNLOAD"] = str(hub_download).lower()
+        os.environ["FREEZE_ENCODER"] = str(ft_mode == "Frozen").lower()
+        os.environ["UNFREEZE_LAST_N_BLOCKS"] = str(
+            unfreeze_n if ft_mode == "Partial (last N)" else 0)
+        os.environ["FREEZE_FEATURE_EXTRACTOR"] = str(ft_mode == "Frozen").lower()  # compat
+        os.environ["DISK_SIZE_GB"] = str(disk_gb)
+        os.environ["MIN_CUDA_VERSION"] = str(min_cuda)
+        os.environ["EXPERIMENT_PROFILES"] = (
+            " ".join(queue_profiles) if queue_profiles else "")
+        with st.spinner("Creating instance..."):
+            try:
+                env = os.environ.copy(); env["PYTHONIOENCODING"] = "utf-8"
+                r = subprocess.run([sys.executable, str(DEPLOY_SCRIPT)],
+                                   capture_output=True, text=True, encoding="utf-8",
+                                   env=env, timeout=180, cwd=str(PROJECT_ROOT), check=True)
+                output = r.stdout
+                # Extract instance ID from the deploy output
+                m = re.search(r"INSTANCE_ID=(\d+)", output)
+                if m:
+                    st.success(f"✅ Instance #{m.group(1)} launched!")
+                else:
+                    st.warning("⚠️ Launched but could not parse instance ID.")
+                with st.expander("Deploy output", expanded=True):
+                    st.code(output)
+            except subprocess.CalledProcessError as e:
+                st.error("❌ Deploy failed!")
+                st.code(e.stdout or "")
 
 
 # ── TAB: Local ──
