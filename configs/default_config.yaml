@@ -16,8 +16,8 @@ augmentation:
       min_bitrate: 64
       p: 0.3
     musan:
-      music_p: 0.2
-      noise_p: 0.4
+      music_p: 0.0
+      noise_p: 0.0
       path: data/augmentation/musan
       snr_db:
       - 5.0
