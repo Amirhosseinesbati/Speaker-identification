@@ -56,8 +56,8 @@ augmentation:
       - 0.85
       - 1.18
 data:
-  audio_dir: data\processed\audio_wav
-  labels_path: data\processed\audio_wav_labels.csv
+  audio_dir: data/processed/audio_wav
+  labels_path: data/processed/audio_wav_labels.csv
   processed_labels: data/processed/cleaned_labels.csv
   split:
     fold: 0

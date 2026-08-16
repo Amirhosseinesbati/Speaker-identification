@@ -232,6 +232,7 @@ def speaker_id_pipeline(config_path: str = "configs/default_config.yaml"):
 def run_data_stage(config_path: str):
     """Run only data preparation and model building."""
     print("  ▶ Running data preparation + model building stage")
+    convert_audio(config_path=config_path)  # ensure WAVs exist (mp3 → wav)
     config, class_map, train_df, val_df = prepare_data(config_path=config_path)
     model_path = build_model(config=config, class_map=class_map)
     print(f"\n  ✅ Data stage complete. Model checkpoint: {model_path}")
@@ -241,6 +242,7 @@ def run_data_stage(config_path: str):
 def run_train_stage(config_path: str):
     """Run data prep + model building + training."""
     print("  ▶ Running training stage (data → build → train)")
+    convert_audio(config_path=config_path)  # ensure WAVs exist (mp3 → wav)
     config, class_map, train_df, val_df = prepare_data(config_path=config_path)
     model_path = build_model(config=config, class_map=class_map)
     best_path, summary = train_model(
@@ -258,6 +260,7 @@ def run_train_stage(config_path: str):
 def run_eval_stage(config_path: str):
     """Run the full pipeline including evaluation."""
     print("  ▶ Running full pipeline (data → build → train → evaluate)")
+    convert_audio(config_path=config_path)  # ensure WAVs exist (mp3 → wav)
     config, class_map, train_df, val_df = prepare_data(config_path=config_path)
     model_path = build_model(config=config, class_map=class_map)
     best_path, summary = train_model(

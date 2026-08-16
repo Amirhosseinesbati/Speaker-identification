@@ -117,8 +117,11 @@ def convert_audio(
     # Paths (raw_dir/audio_dir read from config when present, else canonical
     # defaults — lets the step run against a fixture config in tests).
     data_cfg = config.get("data", {})
-    raw_dir = Path(data_cfg.get("raw_dir", "data/raw"))
-    wav_dir = Path(data_cfg.get("audio_dir", "data/processed/audio_wav"))
+    # Normalise backslashes to forward slashes so the SAME committed config works
+    # on Linux (Vast.ai) and Windows — a Windows-authored config would otherwise
+    # produce a literal "data\processed\audio_wav" name on Linux.
+    raw_dir = Path(str(data_cfg.get("raw_dir", "data/raw")).replace("\\", "/"))
+    wav_dir = Path(str(data_cfg.get("audio_dir", "data/processed/audio_wav")).replace("\\", "/"))
     wav_labels_path = wav_dir.parent / f"{wav_dir.name}_labels.csv"
 
     # ── Convert (same code as the local script) ──
@@ -133,8 +136,8 @@ def convert_audio(
         print(f"  ⚠ {err}")
 
     # ── Update config and save to file ──
-    config["data"]["audio_dir"] = str(wav_dir)
-    config["data"]["labels_path"] = str(wav_labels_path)
+    config["data"]["audio_dir"] = str(wav_dir).replace("\\", "/")
+    config["data"]["labels_path"] = str(wav_labels_path).replace("\\", "/")
 
     with open(config_path, "w", encoding="utf-8") as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
