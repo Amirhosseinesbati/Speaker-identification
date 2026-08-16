@@ -82,6 +82,7 @@ def load_environment() -> dict:
     _OPTIONAL = frozenset({
         "KAGGLE_USERNAME", "KAGGLE_KEY",
         "EXPERIMENT_PROFILES", "HPO_STUDY", "HPO_BASE_PROFILE",
+        "HPO_TRIALS", "HPO_EPOCHS",   # only used when HPO_STUDY is set
     })
     missing = [k for k, v in config.items() if not v and k not in _OPTIONAL]
     if missing:
