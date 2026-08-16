@@ -20,6 +20,7 @@ DEPLOY_SCRIPT = PROJECT_ROOT / "src" / "deploy" / "deploy.py"
 PIPELINE_SCRIPT = PROJECT_ROOT / "src" / "pipelines" / "run_pipeline.py"
 
 from src.experiment_config import list_profiles, load_profile, save_profile
+from src.cli_utils import pump_pipe
 
 # Vast.ai GPU targets offered in the Cloud tab. Keep in sync with
 # configs/default_config.yaml → mlops.vast.gpu_options and setup_vast.sh.
@@ -51,6 +52,7 @@ class LocalRunner:
         self.cmd = cmd
         self.cwd = cwd
         self.lines: list = []
+        self.current: str = ""   # latest \r-updated progress line (single live line)
         self.finished = False
         self.returncode: Optional[int] = None
         self._stop = threading.Event()
@@ -71,10 +73,21 @@ class LocalRunner:
 
     def _reader(self):
         try:
-            for line in iter(self.proc.stdout.readline, ""):
+            # pump_pipe splits \n lines from \r progress updates, so download /
+            # tqdm bars render as ONE live line (self.current) instead of log
+            # spam, and never block readline waiting for a newline.
+            def on_line(line):
                 if self._stop.is_set():
-                    break
-                self.lines.append(line.rstrip())
+                    return
+                self.lines.append(line)
+                self.current = ""   # a newline line ends any \r progress bar
+
+            def on_progress(text):
+                if self._stop.is_set():
+                    return
+                self.current = text
+
+            pump_pipe(self.proc.stdout.buffer, on_line, on_progress)
         except Exception:
             pass
         finally:
@@ -107,6 +120,16 @@ class LocalRunner:
         return self.proc is not None and self.proc.poll() is None
 
 
+def _progress_pct(line: str) -> Optional[float]:
+    """First percentage in a progress line (download / extraction / tqdm bar)."""
+    m = re.search(r"(\d{1,3})%", line)
+    if m:
+        pct = int(m.group(1))
+        if 0 <= pct <= 100:
+            return pct / 100.0
+    return None
+
+
 def _render_local_runner(key: str, title: str) -> None:
     """Live-log + stop panel for a running/finished LocalRunner in session_state."""
     runner = st.session_state.get(key)
@@ -116,6 +139,11 @@ def _render_local_runner(key: str, title: str) -> None:
     if runner.running and not runner.finished:
         st.warning(f"⏳ `{title}` در حال اجراست — لاگ‌ها به‌صورت زنده به‌روز می‌شوند. "
                    f"برای توقف دکمه‌ی 🛑 را بزنید.")
+        if runner.current:
+            pct = _progress_pct(runner.current)
+            if pct is not None:
+                st.progress(pct)
+            st.code(runner.current, language=None)
         st.code("\n".join(runner.lines[-500:]), language=None)
         if st.button("🛑 Stop", key=f"stop_{key}", type="secondary"):
             runner.stop()

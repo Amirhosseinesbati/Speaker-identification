@@ -148,7 +148,8 @@ def _download_once(url: str, tmp: Path, timeout: float, name: str) -> None:
                     line += f" · {speed / 1e6:.1f} MB/s"
                     if total > 0 and speed > 0:
                         line += f" · ETA {_fmt_eta((total - downloaded) / speed)}"
-                    print(line, flush=True)
+                    sys.stdout.write("\r" + line.ljust(78))
+                    sys.stdout.flush()
             # ``read(amt)`` returns b"" instead of raising when the server
             # closes early, so an interrupted transfer would silently "finish"
             # with a truncated file. Catch it explicitly — the retry resumes.
@@ -168,13 +169,12 @@ def _download(url: str, dest: Path, timeout: float = 60.0,
     - RETRIES transient failures (TLS handshake stalls, socket read timeouts,
       mid-transfer disconnects, HTTP 5xx) with exponential backoff. Only a
       4xx answer or exhausting ``max_attempts`` gives up.
-    - Progress is printed as NEWLINE-terminated lines (not a ``\\r`` progress
-      bar) on purpose: the Streamlit UI's ``LocalRunner`` and the experiment
-      queue both read the subprocess stdout line-by-line, so a ``tqdm``-style
-      carriage-return bar would sit invisible in the pipe buffer. Each line
-      carries % · size · speed · ETA and is emitted on a time cadence (plus at
-      5% milestones), so a slow or stalled link is visible instead of a silent
-      freeze.
+    - Progress is a SINGLE ``\\r``-updated line (download % · size · speed ·
+      ETA), so a slow or stalled link is visible WITHOUT spamming the log. The
+      UI's LocalRunner / experiment queue split ``\\r`` updates from ``\\n``
+      lines, so it renders as one live progress bar; in a plain terminal it is
+      the classic overwriting progress line. ``\\n`` is only emitted for
+      attempt / retry / completion messages.
     - On final failure the partial file is KEPT; ``ensure_augmentation_data``
       turns the exception into the usual skip-with-warning and a re-run
       resumes from the kept bytes.
@@ -237,10 +237,11 @@ def _extract_musan(archive: Path, base: Path) -> None:
                 shutil.copyfileobj(src, out)
             if time.monotonic() - last_print >= 2.0 or i == total:
                 last_print = time.monotonic()
-                print(f"  ⏳ extracting {dest.name} ({i}/{total}) "
-                      f"· {i * 100 // total:3d}% · "
-                      f"{i / max(time.monotonic() - start, 1e-9):.0f} files/s",
-                      flush=True)
+                line = (f"  ⏳ extracting {dest.name} ({i}/{total}) "
+                        f"· {i * 100 // total:3d}% · "
+                        f"{i / max(time.monotonic() - start, 1e-9):.0f} files/s")
+                sys.stdout.write("\r" + line.ljust(78))
+                sys.stdout.flush()
     print(f"  ✅ MUSAN noise/music extracted to {base} ({total} files)")
 
 
@@ -261,10 +262,11 @@ def _extract_rirs(archive: Path, path: Path) -> None:
             n += 1
             if time.monotonic() - last_print >= 2.0 or n == total:
                 last_print = time.monotonic()
-                print(f"  ⏳ extracting {Path(name).name} ({n}/{total}) "
-                      f"· {n * 100 // total:3d}% · "
-                      f"{n / max(time.monotonic() - start, 1e-9):.0f} files/s",
-                      flush=True)
+                line = (f"  ⏳ extracting {Path(name).name} ({n}/{total}) "
+                        f"· {n * 100 // total:3d}% · "
+                        f"{n / max(time.monotonic() - start, 1e-9):.0f} files/s")
+                sys.stdout.write("\r" + line.ljust(78))
+                sys.stdout.flush()
     print(f"  ✅ RIRs extracted to {path} ({n} files)")
 
 

@@ -26,6 +26,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from src.cli_utils import pump_pipe
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PIPELINE_SCRIPT = PROJECT_ROOT / "src" / "pipelines" / "run_pipeline.py"
 STATE_DIR = PROJECT_ROOT / "data" / "experiments"
@@ -128,10 +130,19 @@ def run_queue(
             text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
         )
         with open(log_file, "w", encoding="utf-8") as lf:
-            for line in iter(proc.stdout.readline, ""):
-                lf.write(line)
+            def on_line(line):
+                lf.write(line + "\n")
                 lf.flush()
-                print(line, end="", flush=True)
+                print(line, flush=True)
+
+            def on_progress(text):
+                # Forward \r progress updates live to our own stdout (the
+                # parent LocalRunner / terminal renders them as ONE overwriting
+                # line); the log file keeps only clean newline-terminated lines.
+                sys.stdout.write("\r" + text)
+                sys.stdout.flush()
+
+            pump_pipe(proc.stdout.buffer, on_line, on_progress)
         proc.stdout.close()
         proc.wait()
 
