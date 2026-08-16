@@ -67,6 +67,7 @@ dependencies = [
     "simplejson>=3.19.0",
     "sortedcontainers>=2.4.0",
     "yapf>=0.40.0",
+    "lameenc>=1.8.4",
 ]
 
 [project.optional-dependencies]
