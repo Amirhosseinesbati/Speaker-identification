@@ -707,6 +707,29 @@ def _mp3_backend_available() -> bool:
         return False
 
 
+def _make_background_noise(sounds_path: str, snr, p: float):
+    """AddBackgroundNoise with version-compatible SNR kwargs.
+
+    audiomentations renamed ``min_snr_in_db``/``max_snr_in_db`` →
+    ``min_snr_db``/``max_snr_db`` in 0.33.0, so the keyword name depends on the
+    installed version (the server resolved a newer one than the local venv).
+    """
+    import inspect
+
+    import audiomentations as AA
+
+    params = inspect.signature(AA.AddBackgroundNoise.__init__).parameters
+    if "min_snr_in_db" in params:
+        return AA.AddBackgroundNoise(
+            sounds_path=sounds_path,
+            min_snr_in_db=snr[0], max_snr_in_db=snr[1], p=p,
+        )
+    return AA.AddBackgroundNoise(
+        sounds_path=sounds_path,
+        min_snr_db=snr[0], max_snr_db=snr[1], p=p,
+    )
+
+
 class AudioAugmentation:
     """
     Training-time augmentation pipeline (config-driven — root cause R8).
@@ -813,16 +836,12 @@ class AudioAugmentation:
             music_p = float(musan.get("music_p", 0.2) or 0)
             if noise_p > 0 and os.path.isdir(noise_dir):
                 _add(lambda noise_dir=noise_dir, snr=snr, noise_p=noise_p:
-                     AA.AddBackgroundNoise(sounds_path=noise_dir,
-                                           min_snr_in_db=snr[0], max_snr_in_db=snr[1],
-                                           p=noise_p))
+                     _make_background_noise(noise_dir, snr, noise_p))
             elif noise_p > 0:
                 print(f"  ⚠ MUSAN noise skipped: '{noise_dir}' not found")
             if music_p > 0 and os.path.isdir(music_dir):
                 _add(lambda music_dir=music_dir, snr=snr, music_p=music_p:
-                     AA.AddBackgroundNoise(sounds_path=music_dir,
-                                           min_snr_in_db=snr[0], max_snr_in_db=snr[1],
-                                           p=music_p))
+                     _make_background_noise(music_dir, snr, music_p))
             elif music_p > 0:
                 print(f"  ⚠ MUSAN music skipped: '{music_dir}' not found")
 
@@ -973,6 +992,14 @@ class SpeakerDataset(Dataset):
                 w = torch.nn.functional.pad(w, (0, T - n))
             if self.augment:
                 w = self.augmentor(w)
+                # TimeStretch / PitchShift can change the window length
+                # (newer audiomentations keep the stretched duration instead of
+                # resampling back), so re-normalise before stacking — otherwise
+                # torch.stack fails on unequal sizes (server R8/C2 crash).
+                if w.size(-1) > T:
+                    w = w[..., :T]
+                elif w.size(-1) < T:
+                    w = torch.nn.functional.pad(w, (0, T - w.size(-1)))
             windows.append(w)
         return torch.stack(windows)
 
