@@ -22,6 +22,7 @@ from __future__ import annotations
 import shutil
 import sys
 import tarfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -56,35 +57,93 @@ def rirs_present(path: Path) -> bool:
 #  Download helpers
 # ────────────────────────────────────────────────────────────────
 
+def _fmt_eta(seconds: float) -> str:
+    seconds = max(int(seconds), 0)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
 def _download(url: str, dest: Path, timeout: float = 60.0) -> Path:
+    """Download ``url`` to ``dest`` with resumable, time-based progress.
+
+    - A ``.part`` file left by an earlier failed attempt is RESUMED via a
+      Range request. This matters: openslr.org is flaky and MUSAN is a ~10 GB
+      archive, so a first attempt will very likely stall at least once.
+    - Progress is printed as NEWLINE-terminated lines (not a ``\\r`` progress
+      bar) on purpose: the Streamlit UI's ``LocalRunner`` and the experiment
+      queue both read the subprocess stdout line-by-line, so a ``tqdm``-style
+      carriage-return bar would sit invisible in the pipe buffer. Each line
+      carries % · size · speed · ETA and is emitted on a time cadence (plus at
+      5% milestones), so a slow or stalled link is visible instead of a silent
+      freeze.
+    - On failure the partial file is KEPT for the next attempt and a short
+      hint is printed; ``ensure_augmentation_data`` turns the exception into
+      the usual skip-with-warning.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     if dest.exists():
         print(f"  ✅ {dest.name} already cached — skipping download.")
         return dest
 
+    resume_from = tmp.stat().st_size if tmp.exists() else 0
+    headers = {"User-Agent": "Mozilla/5.0"}
+    if resume_from:
+        headers["Range"] = f"bytes={resume_from}-"
+        print(f"  ⏮ resuming {dest.name} from "
+              f"{resume_from / 1e9:.2f} GB (previous attempt)")
+
     print(f"  📥 Downloading {url} (socket timeout {timeout:.0f}s)")
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            total = int(resp.headers.get("Content-Length") or 0)
-            downloaded = 0
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            # A server that ignores Range answers 200 → restart from scratch.
+            if resp.status == 200 and resume_from:
+                resume_from = 0
+            # Full size: Content-Range "bytes X-Y/TOTAL" beats Content-Length
+            # (which only covers the remaining bytes of a 206 response).
+            content_range = resp.headers.get("Content-Range") or ""
+            if "/" in content_range:
+                try:
+                    total = int(content_range.rsplit("/", 1)[1])
+                except ValueError:
+                    total = 0
+            else:
+                total = int(resp.headers.get("Content-Length") or 0)
+                if resume_from:
+                    total += resume_from
+
+            downloaded = resume_from
+            start = time.monotonic()
+            last_print = 0.0
             last_pct = -1
-            with open(tmp, "wb") as out:
+            with open(tmp, "ab" if resume_from else "wb") as out:
                 while True:
                     chunk = resp.read(256 * 1024)
                     if not chunk:
                         break
                     out.write(chunk)
                     downloaded += len(chunk)
-                    if total > 0:
-                        pct = int(downloaded * 100 / total)
-                        if pct != last_pct and pct % 5 == 0:
-                            last_pct = pct
-                            print(f"  ⏳ {dest.name}: {pct:3d}% "
-                                  f"({downloaded / 1e9:.2f}/{total / 1e9:.2f} GB)",
-                                  flush=True)
+                    now = time.monotonic()
+                    pct = int(downloaded * 100 / total) if total > 0 else -1
+                    if (now - last_print >= 2.0
+                            or (total > 0 and pct != last_pct and pct % 5 == 0)):
+                        last_print = now
+                        last_pct = pct
+                        speed = downloaded / max(now - start, 1e-9)
+                        if total > 0:
+                            line = (f"  ⏳ {dest.name}: {pct:3d}% "
+                                    f"({downloaded / 1e9:.2f}/{total / 1e9:.2f} GB)")
+                        else:
+                            line = f"  ⏳ {dest.name}: {downloaded / 1e9:.2f} GB"
+                        line += f" · {speed / 1e6:.1f} MB/s"
+                        if total > 0 and speed > 0:
+                            line += f" · ETA {_fmt_eta((total - downloaded) / speed)}"
+                        print(line, flush=True)
     except Exception as e:
-        tmp.unlink(missing_ok=True)
+        print(f"  ⚠ download of {dest.name} failed mid-way — partial file kept "
+              f"at {tmp.name}; re-running resumes it")
         raise RuntimeError(f"download of {dest.name} failed: {e}") from e
     print()
     tmp.rename(dest)
@@ -98,27 +157,45 @@ def _extract_musan(archive: Path, base: Path) -> None:
                    if m.isfile()
                    and (m.name.startswith("musan/noise/")
                         or m.name.startswith("musan/music/"))]
-        for m in members:
+        total = len(members)
+        start = time.monotonic()
+        last_print = 0.0
+        for i, m in enumerate(members, 1):
             rel = Path(m.name).relative_to("musan")   # noise/… or music/…
             dest = base / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             with tf.extractfile(m) as src, open(dest, "wb") as out:
                 shutil.copyfileobj(src, out)
-    print(f"  ✅ MUSAN noise/music extracted to {base} ({len(members)} files)")
+            if time.monotonic() - last_print >= 2.0 or i == total:
+                last_print = time.monotonic()
+                print(f"  ⏳ extracting {dest.name} ({i}/{total}) "
+                      f"· {i * 100 // total:3d}% · "
+                      f"{i / max(time.monotonic() - start, 1e-9):.0f} files/s",
+                      flush=True)
+    print(f"  ✅ MUSAN noise/music extracted to {base} ({total} files)")
 
 
 def _extract_rirs(archive: Path, path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+    start = time.monotonic()
+    last_print = 0.0
     n = 0
     with zipfile.ZipFile(archive) as zf:
         names = [n for n in zf.namelist()
                  if n.startswith("RIRS_NOISES/simulated_rirs/")
                  and n.lower().endswith(".wav")]
+        total = len(names)
         for name in names:
             # Flatten into the target dir — audiomentations AddImpulseResponse
             # reads a flat folder of .wav files.
             (path / Path(name).name).write_bytes(zf.read(name))
             n += 1
+            if time.monotonic() - last_print >= 2.0 or n == total:
+                last_print = time.monotonic()
+                print(f"  ⏳ extracting {Path(name).name} ({n}/{total}) "
+                      f"· {n * 100 // total:3d}% · "
+                      f"{n / max(time.monotonic() - start, 1e-9):.0f} files/s",
+                      flush=True)
     print(f"  ✅ RIRs extracted to {path} ({n} files)")
 
 
