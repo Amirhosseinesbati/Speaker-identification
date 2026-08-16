@@ -5,6 +5,8 @@ logs/*
 checkpoints/*
 !logs/.gitkeep
 !checkpoints/.gitkeep
+# Runtime logs (pipeline / analysis run output) — never committed.
+*.log
 *.pt
 *.pth
 # Model weights — downloaded via scripts/download_all_weights.py,
