@@ -693,28 +693,18 @@ def prepare_labels(
 # ─────────────────────────────────────────────────────────
 
 def _mp3_backend_available() -> bool:
-    """True if the mp3 codec roundtrip has a usable backend.
+    """True if the mp3 codec roundtrip's backend (lameenc) is installed.
 
-    ``audiomentations.Mp3Compression`` tries fast_mp3_augment, then pydub (with
-    lameenc or a system ffmpeg/avconv). If none is present it prints
-    "Failed to import fast_mp3_augment" on EVERY call without actually
-    compressing — log spam plus a silently no-op transform. Detect it up front
-    and skip the transform with a single clear warning instead.
+    ``audiomentations.Mp3Compression`` is created with ``backend="lameenc"``
+    (the only cross-platform wheel — fast_mp3_augment has no Windows wheel and
+    pydub needs a system ffmpeg). Detect it up front so a missing backend
+    produces one clear warning instead of an ImportError mid-training.
     """
     try:
-        import fast_mp3_augment  # noqa: F401
-        return True
-    except Exception:
-        pass
-    try:
-        import shutil
-        if shutil.which("ffmpeg") or shutil.which("avconv"):
-            return True
         import lameenc  # noqa: F401
         return True
     except Exception:
         return False
-    return False
 
 
 class AudioAugmentation:
@@ -842,11 +832,11 @@ class AudioAugmentation:
                 _add(lambda mp3=mp3, p=_p(domain, "mp3_codec_roundtrip", 0.0):
                      AA.Mp3Compression(min_bitrate=int(mp3.get("min_bitrate", 64)),
                                        max_bitrate=int(mp3.get("max_bitrate", 192)),
+                                       backend="lameenc", preserve_delay=True,
                                        p=p))
             else:
-                print("  ⚠ mp3 codec roundtrip disabled: no backend "
-                      "(fast_mp3_augment / pydub+ffmpeg / lameenc). "
-                      "Install one to enable it.")
+                print("  ⚠ mp3 codec roundtrip disabled: lameenc not installed "
+                      "(`uv sync` / `pip install lameenc`).")
 
         # ── Spec (time-domain masking approximation of SpecAugment) ──
         if _p(spec, "time_mask", 0.0) > 0:
