@@ -380,12 +380,13 @@ def main():
                     tracker.start_run(run_name=f"{profile}-{enc}")
                 except Exception as e:
                     print(f"  ⚠ Could not start MLflow run: {e}")
-            # For stages that skip convert_audio (data/train/eval/decision) this
-            # run is the ONLY one — log the full run metadata now, so every run
-            # carries its config files + deployment params as artifacts. --run all
-            # logs the same metadata inside convert_audio (after it updates the
-            # config with the WAV paths), which avoids logging it twice.
-            if tracker.is_active and args.run != "all":
+            # Log the full run metadata (code snapshot + config files +
+            # deployment params) once, right here at run start, for EVERY
+            # stage — including --run all. convert_audio reuses this run and
+            # only logs metadata when it started the run itself (standalone),
+            # so logging here guarantees each run is auditable from its own
+            # artifacts exactly once, with no duplicates.
+            if tracker.is_active:
                 profile_path = None
                 if args.experiment and is_profile(args.experiment):
                     profile_path = str(Path("configs/experiments")
