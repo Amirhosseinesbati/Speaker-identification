@@ -1,0 +1,9 @@
+_meta:
+  name: cam_full_7_dropout
+  base: default_config.yaml
+  created: '2026-08-17T18:34:32'
+  base_git: 777aa7e
+model:
+  speaker_head_config:
+    arcface_subcenter:
+      embedding_dim: 256

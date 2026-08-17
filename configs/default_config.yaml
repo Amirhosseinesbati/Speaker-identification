@@ -125,15 +125,23 @@ mlops:
     selector:
       pool_size: 50            # top-N cheapest candidates fetched from the API
       retry_count: 3           # how many of the ranked pool to try renting
-      min_reliability: 0       # host uptime health (0..1)
-      min_inet_down_mbps: 0    # download MB/s
+      min_reliability: 0       # host uptime health (0..1) — min only
+      min_inet_down_mbps: 0    # download MB/s (0 = open)
+      max_inet_down_mbps: 0
       min_inet_up_mbps: 0      # upload MB/s
+      max_inet_up_mbps: 0
       min_cpu_cores: 0         # advertised vCPUs
+      max_cpu_cores: 0
       min_cpu_ram_gb: 0        # host RAM (GB)
+      max_cpu_ram_gb: 0
       min_disk_gb: 0           # free disk space (GB)
+      max_disk_gb: 0
       min_duration_days: 0     # host max rental length (days)
-      max_price_per_hour: 0    # 0 = no cap
+      max_duration_days: 0
+      min_price_per_hour: 0    # $/h band (0 = open)
+      max_price_per_hour: 0
       min_pcie_bw_gbps: 0      # CPU↔GPU PCIe bandwidth (GB/s)
+      max_pcie_bw_gbps: 0
       min_gpu_frac: 0          # min GPU fraction; 1.0 = full GPU only
       blocked_countries: ""    # comma-separated ISO codes, e.g. "US,HK"
       pick_best: true          # true = best by quality score; false = cheapest
