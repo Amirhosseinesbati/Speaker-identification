@@ -869,6 +869,18 @@ def decision_tune(manifest: Dict) -> Dict:
     artifacts = load_decision_artifacts()
     output = tune_decision_bundle(artifacts)
 
+    # Persist the bundle so build_submission.py ships the FRESH decision params.
+    # The step previously only returned the dict, which left a stale
+    # decision_config.json on disk (from an earlier offline
+    # scripts/tune_decision.py run) and made the submission ship outdated knobs.
+    import json
+
+    decision_path = PROJECT_ROOT / "data" / "processed" / "decision_config.json"
+    decision_path.write_text(
+        json.dumps(output, indent=2, ensure_ascii=False), encoding="utf-8",
+    )
+    print(f"  ✓ Decision config saved to {decision_path}")
+
     _mlflow_log_metrics({
         "decision_val_macro_f1": output["val_macro_f1"],
         "decision_baseline_macro_f1": output["baseline_val_macro_f1"],

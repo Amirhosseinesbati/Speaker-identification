@@ -283,17 +283,24 @@ def run_eval_stage(config_path: str):
 
 
 def run_decision_stage(config_path: str, checkpoints: list):
-    """Run the decision bundle: build_embeddings → decision_tune → ensemble_select.
+    """Run the decision bundle: build_embeddings → ensemble_select → decision_tune.
 
     Unlike the single-model training stages, this consumes a SET of trained
     checkpoints (an ensemble) and produces the artifacts that
     ``build_submission.py`` ships: centroids, decision_config.json and
     ensemble_fusion_weights.json — all tuned on the leak-free val split.
+
+    ``ensemble_select`` MUST run before ``decision_tune``: the decision layer
+    reads the per-encoder fusion weights from ``ensemble_fusion_weights.json``,
+    which ``ensemble_select`` (re)writes. Running them in the old order made the
+    decision tune silently consume the STALE weights from the previous run
+    (e.g. a single-model `[campp=1.0]`), so an ensemble was never actually fused
+    with the centroid + OOD-gate layer.
     """
-    print("  ▶ Running decision stage (build_embeddings → decision_tune → ensemble_select)")
+    print("  ▶ Running decision stage (build_embeddings → ensemble_select → decision_tune)")
     manifest = build_embeddings(checkpoints=checkpoints)
-    decision = decision_tune(manifest=manifest)
     ensemble = ensemble_select(checkpoints=checkpoints)
+    decision = decision_tune(manifest=manifest)
     print(f"\n  ✅ Decision stage complete!")
     print(f"     Decision val Macro-F1: {decision.get('val_macro_f1')} "
           f"(baseline {decision.get('baseline_val_macro_f1')})")

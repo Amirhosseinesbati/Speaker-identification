@@ -422,10 +422,14 @@ def main(checkpoints: List[str], config_path: str, batch_size: int,
         # entrypoint uses this to align checkpoints with weights exactly.
         "encoder_names": encoder_names,
         "checkpoints": output["checkpoints"],
+        # The weighted-average weights are ALWAYS shipped, even when a different
+        # method (e.g. max_prob) scored marginally higher. Both the decision
+        # layer (decision_tune → load_decision_artifacts) and the leaderboard
+        # entrypoint (submission.py) fuse via weighted_average, so `weights` must
+        # be present or the next stage crashes with a KeyError.
+        "weights": fusion_results["weighted_average"]["weights"],
     }
-    if best_method == "weighted_average":
-        weights_data["weights"] = fusion_results["weighted_average"]["weights"]
-    elif best_method == "learned_mlp":
+    if best_method == "learned_mlp":
         weights_data["state_path"] = fusion_results["learned_mlp"].get("state_path", "")
     WEIGHTS_JSON.write_text(
         json.dumps(weights_data, indent=2, ensure_ascii=False),
