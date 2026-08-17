@@ -1,0 +1,5 @@
+_meta:
+  name: cam_full_3_dropout
+  base: default_config.yaml
+  created: '2026-08-17T11:26:27'
+  base_git: 675836d
