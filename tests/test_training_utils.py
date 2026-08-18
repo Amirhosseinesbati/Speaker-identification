@@ -109,15 +109,56 @@ def test_ema_extend_adds_newly_trainable_params():
     model = DummyModel()
     model.encoder.freeze()  # EMA built while the encoder is frozen
     ema = EMA(model, decay=0.999)
-    n_before = len(ema._names)
+    n_before = len(ema._shadow)
     model.encoder.unfreeze()
     ema.extend(model)
-    n_after = len(ema._names)
+    n_after = len(ema._shadow)
     assert n_after > n_before
     trainable = [p for p in model.parameters() if p.requires_grad]
     assert n_after == len(trainable)
-    # existing head shadows are preserved (same length as trainable now)
-    assert len(ema._shadow) == n_after
+
+
+def test_ema_update_after_extend_stays_aligned():
+    """Regression: update()/state_dict() used positional zip, so after
+    extend() the head shadows paired with encoder params (the 192-vs-256
+    crash / silent checkpoint corruption under progressive unfreezing).
+    Updates must be name-based and each shadow must track its own param."""
+    model = DummyModel()
+    model.encoder.freeze()
+    ema = EMA(model, decay=0.999)
+    head_name = "head.weight"
+    head_shadow_before = ema._shadow[head_name].clone()
+
+    model.encoder.unfreeze()
+    ema.extend(model)
+    assert len(ema._shadow) == len([p for p in model.parameters()
+                                    if p.requires_grad])
+
+    # Simulate an optimizer step: heads move one way, encoder another.
+    with torch.no_grad():
+        model.head.weight.add_(1.0)
+        for p in model.encoder.parameters():
+            p.mul_(2.0)
+
+    ema.update(model)  # must not raise (used to crash on size mismatch)
+
+    # The head shadow must have moved toward the HEAD weight only.
+    expected = head_shadow_before * ema.decay + model.head.weight.float() * (
+        1.0 - ema.decay
+    )
+    assert torch.allclose(ema._shadow[head_name], expected, atol=1e-6)
+
+    # Every tracked shadow keeps the shape of its own parameter.
+    for name, p in model.named_parameters():
+        if name in ema._shadow:
+            assert ema._shadow[name].shape == p.shape
+
+    # state_dict substitutes each EMA weight under its own parameter name.
+    sd = ema.state_dict(model)
+    assert torch.allclose(sd[head_name], ema._shadow[head_name])
+    assert torch.allclose(
+        sd["encoder.blocks.3.weight"], ema._shadow["encoder.blocks.3.weight"]
+    )
 
 
 # ── PrototypicalLoss ──

@@ -55,42 +55,47 @@ def flatten_windows(
 class EMA:
     """Exponential moving average of trainable parameters (``decay=0.999``).
 
-    Keeps a float32 shadow copy of every trainable parameter and updates it
-    after each optimizer step. The EMA weights are the ones saved into the
-    best checkpoint (they are more stable and typically generalize better —
-    an almost-free robustness win for few-shot fine-tuning).
+    Keeps a float32 shadow copy of every trainable parameter, keyed by
+    parameter name, and updates it after each optimizer step. The EMA weights
+    are the ones saved into the best checkpoint (they are more stable and
+    typically generalize better — an almost-free robustness win for few-shot
+    fine-tuning).
+
+    Shadows are looked up by name (not by list position), so ``extend`` can
+    add newly-unfrozen encoder params out of module order without corrupting
+    the pairing between shadows and parameters.
 
     ``state_dict(model)`` returns a copy of the model's state_dict with the
-    EMA shadow substituted for trainable parameters; frozen encoder weights
-    (``requires_grad=False``) pass through unchanged.
+    EMA shadow substituted for every tracked parameter; parameters never
+    added to the EMA (e.g. an encoder that stays frozen) pass through
+    unchanged.
     """
 
     def __init__(self, model: torch.nn.Module, decay: float = 0.999):
         self.decay = float(decay)
-        self._names: list = []
-        self._shadow: list = []
+        self._shadow: dict = {}
         for name, p in model.named_parameters():
             if p.requires_grad:
-                self._names.append(name)
-                self._shadow.append(p.detach().clone().float())
+                self._shadow[name] = p.detach().clone().float()
 
     @property
     def enabled(self) -> bool:
-        return bool(self._names)
+        return bool(self._shadow)
 
     def update(self, model: torch.nn.Module) -> None:
-        """Step the shadow toward the current weights (call after optimizer.step)."""
-        trainable = [p for p in model.parameters() if p.requires_grad]
+        """Step the shadows toward the current weights (call after optimizer.step)."""
         with torch.no_grad():
-            for shadow, p in zip(self._shadow, trainable):
-                shadow.mul_(self.decay).add_(p.data.float(), alpha=1.0 - self.decay)
+            for name, p in model.named_parameters():
+                shadow = self._shadow.get(name)
+                if shadow is not None:
+                    shadow.mul_(self.decay).add_(p.data.float(), alpha=1.0 - self.decay)
 
     def state_dict(self, model: torch.nn.Module) -> dict:
-        """Model state_dict with EMA weights substituted for trainable params."""
+        """Model state_dict with EMA weights substituted for tracked params."""
         sd = model.state_dict()
-        trainable = [p for p in model.parameters() if p.requires_grad]
-        for name, shadow, p in zip(self._names, self._shadow, trainable):
-            sd[name] = shadow.to(p.dtype)
+        for name, shadow in self._shadow.items():
+            if name in sd:
+                sd[name] = shadow.to(sd[name].dtype)
         return sd
 
     def extend(self, model: torch.nn.Module) -> None:
@@ -98,18 +103,12 @@ class EMA:
 
         Used by the progressive-unfreezing schedule: the encoder is frozen while
         EMA is built (so its params are skipped), then becomes trainable at the
-        transition epoch. This appends shadows for those params in parameter
-        order, preserving the existing head shadows untouched.
+        transition epoch. This registers shadows for those params, keeping the
+        existing head shadows untouched.
         """
-        tracked = set(self._names)
-        new_names: list = []
-        new_shadow: list = []
         for name, p in model.named_parameters():
-            if p.requires_grad and name not in tracked:
-                new_names.append(name)
-                new_shadow.append(p.detach().clone().float())
-        self._names.extend(new_names)
-        self._shadow.extend(new_shadow)
+            if p.requires_grad and name not in self._shadow:
+                self._shadow[name] = p.detach().clone().float()
 
 
 # ═══════════════════════════════════════════════════════════
