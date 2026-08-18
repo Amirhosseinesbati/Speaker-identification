@@ -1,5 +1,5 @@
 _meta:
-  name: ecapa-partial_ft-s42
+  name: campp-two_phase_partial_ft-s42
   base: default_config.yaml
   created: '2026-08-18T19:00:18'
   base_git: 436baac
@@ -28,11 +28,11 @@ data:
     scheme: single
 model:
   encoder_config:
-    ecapa:
+    campp:
       unfreeze_last_n_blocks: 2
-  encoder_type: ecapa
 training:
   encoder_lr: 1.0e-05
+  freeze_epochs: 20
   label_smoothing: 0.1
   loss:
     speaker:

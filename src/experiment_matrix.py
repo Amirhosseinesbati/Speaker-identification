@@ -63,6 +63,10 @@ RECIPES = {
     # then full encoder fine-tune — the strategy that avoids propagating garbage
     # gradients from a random-initialised head into the encoder at epoch 0.
     "two_phase_ft": {"freeze_mode": "full", "fine_tune": True, "freeze_epochs": 20},
+    # Same, but phase 2 only unfreezes the last N trunk blocks (even safer for
+    # ~5 files/speaker — the encoder never fully leaves its pretrained manifold).
+    "two_phase_partial_ft": {"freeze_mode": "partial", "unfreeze_last_n_blocks": 2,
+                             "fine_tune": True, "freeze_epochs": 20},
 }
 
 # Aggressive domain augmentation used by the ``*_ft`` recipes. Enables encoder

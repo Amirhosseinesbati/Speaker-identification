@@ -111,3 +111,11 @@ def test_two_phase_ft_sets_freeze_epochs(base):
     assert cfg["training"]["freeze_epochs"] == 20
     # single-phase recipes leave freeze_epochs unset
     assert em.build_cell_config(base, "campp", "full_ft", 42)["training"].get("freeze_epochs", 0) == 0
+
+
+def test_two_phase_partial_ft_combines_partial_and_freeze_epochs(base):
+    cfg = em.build_cell_config(base, "campp", "two_phase_partial_ft", 42)
+    assert cfg["training"]["freeze_epochs"] == 20
+    assert cfg["model"]["encoder_config"]["campp"]["freeze_encoder"] is False
+    assert cfg["model"]["encoder_config"]["campp"]["unfreeze_last_n_blocks"] == 2
+    assert cfg["augmentation"]["waveform"]["time_stretch"]["p"] == 0.9

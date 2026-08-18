@@ -1,8 +1,8 @@
 _meta:
   name: eres2net-partial_ft-s42
   base: default_config.yaml
-  created: '2026-08-18T18:10:25'
-  base_git: 38ede0a
+  created: '2026-08-18T19:00:18'
+  base_git: 436baac
 audio:
   num_train_windows: 8
 augmentation:
