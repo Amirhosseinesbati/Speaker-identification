@@ -1,0 +1,12 @@
+_meta:
+  name: campp-frozen-s42
+  base: default_config.yaml
+  created: '2026-08-18T18:10:24'
+  base_git: 38ede0a
+data:
+  split:
+    scheme: single
+model:
+  encoder_config:
+    campp:
+      freeze_encoder: true

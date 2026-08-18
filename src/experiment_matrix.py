@@ -18,7 +18,7 @@ from itertools import product
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
-from src.experiment_config import load_base, save_profile
+from src.experiment_config import deep_merge, load_base, save_profile
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MATRIX_DIR = PROJECT_ROOT / "data" / "experiments"
@@ -34,14 +34,64 @@ FREEZE_KEYS = {
     "titanet": "freeze_encoder",
     "wavlm": "freeze_feature_extractor",
 }
-PARTIAL_KEYS = {"ecapa": "unfreeze_last_n_blocks"}
+PARTIAL_KEYS = {
+    "ecapa": "unfreeze_last_n_blocks",
+    "campp": "unfreeze_last_n_blocks",
+    "eres2net": "unfreeze_last_n_blocks",
+}
 
 # Recipe name → how to set the ACTIVE encoder's freeze mode. Full FT is the
 # Phase-2 default; frozen/partial are kept for controlled ablations (A1).
+#
+# The ``*_ft`` recipes additionally enable the aggressive augmentation stack +
+# fine-tuning training settings (see AGGRESSIVE_AUGMENTATION / FINE_TUNE_SETTINGS
+# below) — the encoder fine-tuning strategy that targets the ~0.97 Macro-F1
+# ceiling (frozen VoxCeleb encoders alone plateau at ~0.9496 on val).
 RECIPES = {
     "frozen": {"freeze_mode": "frozen"},
     "full": {"freeze_mode": "full"},
     "partial": {"freeze_mode": "partial", "unfreeze_last_n_blocks": 2},
+    # ``frozen_ft`` isolates the AUGMENTATION effect: frozen encoder + aggressive
+    # augmentation + more crops + regularisation, WITHOUT any fine-tuning. Compare
+    # it against ``frozen`` (gentle) and ``full_ft`` (aggressive + fine-tuned) to
+    # decompose the fine-tuning gain into "augmentation" vs "trainable encoder".
+    "frozen_ft": {"freeze_mode": "frozen", "fine_tune": True},
+    "full_ft": {"freeze_mode": "full", "fine_tune": True},
+    "partial_ft": {"freeze_mode": "partial", "unfreeze_last_n_blocks": 2,
+                   "fine_tune": True},
+    # Two-phase fine-tune: heads-only for `freeze_epochs` epochs (encoder frozen),
+    # then full encoder fine-tune — the strategy that avoids propagating garbage
+    # gradients from a random-initialised head into the encoder at epoch 0.
+    "two_phase_ft": {"freeze_mode": "full", "fine_tune": True, "freeze_epochs": 20},
+}
+
+# Aggressive domain augmentation used by the ``*_ft`` recipes. Enables encoder
+# fine-tuning on ~5 files/speaker without overfitting: speed perturbation
+# (near-always-on), MUSAN noise/music, RIR reverb, mp3 codec roundtrip — the
+# classic VoxCeleb fine-tuning stack. Merged onto the base augmentation block
+# (every other effect keeps its base probability).
+AGGRESSIVE_AUGMENTATION = {
+    "waveform": {
+        "time_stretch": {"p": 0.9, "rate": [0.9, 1.1]},
+    },
+    "domain": {
+        "musan": {"noise_p": 0.8, "music_p": 0.5, "snr_db": [0.0, 15.0]},
+        "rirs_reverb": {"p": 0.6},
+        "mp3_codec_roundtrip": {"p": 0.5},
+    },
+}
+
+# Training settings for the ``*_ft`` recipes: low encoder LR, heavier weight
+# decay + label smoothing, and more random crops per file (implicit data
+# multiplication — the few-shot overfitting guard).
+FINE_TUNE_SETTINGS = {
+    "training": {
+        "encoder_lr": 1.0e-5,
+        "weight_decay": 3.0e-4,
+        "label_smoothing": 0.1,
+        "loss": {"speaker": {"label_smoothing": 0.1}},
+    },
+    "audio": {"num_train_windows": 8},
 }
 
 DEFAULT_SEEDS = [42, 1337, 2026]
@@ -86,6 +136,18 @@ def build_cell_config(
     mc["encoder_type"] = encoder
     mc.setdefault("encoder_config", {}).setdefault(encoder, {})
     mc["encoder_config"][encoder].update(apply_recipe(encoder, recipe))
+
+    # Fine-tune recipes also enable the aggressive augmentation stack + the
+    # fine-tuning training settings (low encoder LR, heavier regularisation,
+    # more crops). deep_merge preserves every base key that isn't overridden.
+    if recipe in RECIPES and RECIPES[recipe].get("fine_tune"):
+        cfg["augmentation"] = deep_merge(
+            cfg.get("augmentation", {}), AGGRESSIVE_AUGMENTATION)
+        cfg = deep_merge(cfg, FINE_TUNE_SETTINGS)
+        # Two-phase recipes keep the encoder frozen for the first N epochs.
+        fe = RECIPES[recipe].get("freeze_epochs")
+        if fe:
+            cfg.setdefault("training", {})["freeze_epochs"] = int(fe)
 
     split = cfg.setdefault("data", {}).setdefault("split", {})
     split["scheme"] = scheme

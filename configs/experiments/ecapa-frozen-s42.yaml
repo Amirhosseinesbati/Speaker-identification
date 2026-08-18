@@ -1,0 +1,13 @@
+_meta:
+  name: ecapa-frozen-s42
+  base: default_config.yaml
+  created: '2026-08-18T18:10:25'
+  base_git: 38ede0a
+data:
+  split:
+    scheme: single
+model:
+  encoder_config:
+    ecapa:
+      freeze_encoder: true
+  encoder_type: ecapa

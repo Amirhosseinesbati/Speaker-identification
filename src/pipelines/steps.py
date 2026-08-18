@@ -45,8 +45,15 @@ from src.train import (
     compute_ood_accuracy,
     compute_speaker_accuracy,
     setup_device,
+    PrototypicalLoss,
 )
-from src.training_utils import EMA, build_amp, build_scheduler
+from src.training_utils import (
+    EMA,
+    apply_encoder_finetune_mode,
+    build_amp,
+    build_scheduler,
+    encoder_will_train,
+)
 
 
 # ─────────────────────────────────────────────────────────
@@ -430,9 +437,23 @@ def train_model(
 
     # ── Optimizer, Loss, Scheduler, Scaler ──
     train_cfg = config["training"]
-    # Separate LR for unfrozen encoder blocks (fine-tuning) vs the heads
-    encoder_params = [p for n, p in model.named_parameters()
-                      if "encoder" in n and p.requires_grad]
+    # Progressive unfreezing (two-phase fine-tune): keep the encoder frozen for
+    # the first `freeze_epochs` epochs, then restore the configured mode.
+    freeze_epochs = int(train_cfg.get("freeze_epochs", 0))
+    progressive = freeze_epochs > 0 and encoder_will_train(config)
+    if progressive:
+        model.encoder.freeze()
+        print(f"  🧊 Progressive unfreezing: encoder frozen for first {freeze_epochs} epoch(s)")
+
+    # Separate LR for unfrozen encoder blocks (fine-tuning) vs the heads.
+    # Under progressive unfreezing the encoder params are collected by NAME
+    # (currently frozen, so `requires_grad` is False) so the optimizer param
+    # group exists from the start and begins stepping after the transition.
+    if progressive:
+        encoder_params = [p for n, p in model.named_parameters() if "encoder" in n]
+    else:
+        encoder_params = [p for n, p in model.named_parameters()
+                          if "encoder" in n and p.requires_grad]
     head_params = [p for n, p in model.named_parameters()
                    if "encoder" not in n and p.requires_grad]
     param_groups = [{"params": head_params, "lr": train_cfg["learning_rate"]}]
@@ -461,6 +482,26 @@ def train_model(
     if ema is not None and ema.enabled:
         print(f"  🧊 EMA enabled (decay={ema.decay:.4f})")
 
+    # Prototypical loss (EMA centroids) — optional, aligns training with the
+    # nearest-centroid readout. Disabled by default (training.loss.proto.enabled).
+    proto_cfg = (train_cfg.get("loss", {}) or {}).get("proto", {}) or {}
+    proto_criterion = None
+    proto_weight = 0.0
+    if bool(proto_cfg.get("enabled", False)):
+        emb_dim = getattr(model.head_speaker, "embedding_dim", None)
+        if emb_dim is None:
+            emb_dim = model.encoder.output_dim * model.pooling.output_multiplier
+        proto_criterion = PrototypicalLoss(
+            num_classes=num_known,
+            embedding_dim=int(emb_dim),
+            scale=float(proto_cfg.get("scale", 30.0)),
+            margin=float(proto_cfg.get("margin", 0.2)),
+            decay=float(proto_cfg.get("decay", 0.9)),
+        ).to(device)
+        proto_weight = float(proto_cfg.get("weight", 0.1))
+        print(f"  🎯 Prototypical loss enabled (weight={proto_weight}, "
+              f"scale={proto_cfg.get('scale', 30.0)}, margin={proto_cfg.get('margin', 0.2)})")
+
     # ── Training Loop with MLflow autologging ──
     log_cfg = config.get("logging", {})
     checkpoint_dir = Path(log_cfg.get("checkpoint_dir", "checkpoints"))
@@ -473,6 +514,14 @@ def train_model(
     history = []
 
     for epoch in range(1, train_cfg["epochs"] + 1):
+        # Progressive unfreezing: at the transition epoch, restore the configured
+        # fine-tune mode and add the newly-trainable encoder params to the EMA.
+        if progressive and epoch == freeze_epochs + 1:
+            apply_encoder_finetune_mode(model, config)
+            if ema is not None and ema.enabled:
+                ema.extend(model)
+            print(f"  🔓 Encoder unfrozen (progressive schedule, epoch {epoch})")
+
         # Train
         train_metrics = train_epoch(
             model, train_loader, optimizer, criterion,
@@ -480,6 +529,8 @@ def train_model(
             ood_grad_norm=train_cfg.get("ood_grad_norm", 1.0),
             autocast_fn=autocast_fn,
             ema=ema,
+            proto_criterion=proto_criterion,
+            proto_weight=proto_weight,
         )
         # Validate + competition metric (Macro-F1 over all 447 classes)
         val_metrics = validate_epoch(model, val_loader, criterion, device)

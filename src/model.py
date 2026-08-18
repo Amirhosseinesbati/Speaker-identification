@@ -57,16 +57,21 @@ class TwoHeadedSpeakerModel(nn.Module):
         self,
         waveforms: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return_embedding: bool = False,
+    ):
         """
         Args:
             waveforms: (batch, 1, T) — raw audio, 16kHz
             labels:    Optional (batch,) — speaker labels for ArcFace training.
                        None for inference.
+            return_embedding: also return the L2-normalised speaker embedding
+                       (ArcFace projection, or pooled features for linear head) —
+                       used by the prototypical loss.
 
         Returns:
             ood_logit:      (batch, 1)  — raw logit (sigmoid → P(unknown))
             speaker_logits: (batch, N)  — logits over known speakers
+            embedding:      (batch, D)  — only when return_embedding=True
         """
         # ── Encoder ──
         hidden_states, lengths = self.encoder(waveforms)
@@ -102,6 +107,13 @@ class TwoHeadedSpeakerModel(nn.Module):
                 speaker_logits = self.head_speaker(pooled)
         else:
             speaker_logits = self.head_speaker(pooled)
+
+        if return_embedding:
+            if hasattr(self.head_speaker, "embedding_proj"):
+                emb = F.normalize(self.head_speaker.embedding_proj(pooled), p=2, dim=1)
+            else:
+                emb = F.normalize(pooled, p=2, dim=1)
+            return ood_logit, speaker_logits, emb
 
         return ood_logit, speaker_logits
 

@@ -716,6 +716,18 @@ python -m src.pipelines.run_pipeline --run train --no-mlflow   # partial, no tra
     `encoder_lr`/`ood_pos_weight`. Saving **merges** the encoder config so
     `unfreeze_last_n_blocks` is never dropped.
   - **☁️ Cloud (Vast.ai)** — launch/destroy instances with live log streaming.
+    The 🔍 *Server selection filters* expander has a **🎯 Best candidate**
+    toggle: ON (default) picks the best of the top-N cheapest offers that pass
+    the filters (you type N, e.g. "search among the first 20"); OFF takes the
+    cheapest offer that passes the filters. Each numeric gate has a min AND
+    max twin (0 = open), so e.g. download speed can be bounded both ways.
+    Blocked countries match the offer's country code ("US" blocks
+    "California, US"). All gates default to 0 / empty, i.e. **no filtering**;
+    the remaining gates (upload, RAM, disk, rental duration, PCIe, GPU
+    fraction, price) keep the defaults in `mlops.vast.selector` and can be
+    raised via `VAST_*` env vars. A failed rental automatically retries the
+    next candidate. The CUDA gate (`cuda_vers>=13`) is independent and
+    untouched.
   - **💻 Local** — run the ZenML pipeline stages locally.
   - **🧪 Analysis** — run the new modules from the UI: `eda_embeddings`,
     `centroid_baseline`, `ensemble_calibrate`, and `submission.inference`.

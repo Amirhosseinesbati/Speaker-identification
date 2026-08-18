@@ -29,7 +29,7 @@ class OODHead(nn.Module):
     Output: single logit — sigmoid(output) = P(unknown)
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int = 256, dropout: float = 0.5):
+    def __init__(self, input_dim: int, hidden_dim: int = 256, dropout: float = 0.7):
         super().__init__()
         self.input_dim = input_dim
 
@@ -148,7 +148,7 @@ class ArcFaceHead(nn.Module):
         self.embedding_proj = nn.Sequential(
             nn.LayerNorm(input_dim),
             nn.Linear(input_dim, embedding_dim),
-            nn.Dropout(0.4),
+            nn.Dropout(0.2),
         )
 
         # Classification weight matrix (L2-normalized rows after each forward)
@@ -255,7 +255,7 @@ class SubCenterArcFaceHead(nn.Module):
         self.embedding_proj = nn.Sequential(
             nn.LayerNorm(input_dim),
             nn.Linear(input_dim, embedding_dim),
-            nn.Dropout(0.4),
+            nn.Dropout(0.2),
         )
 
         # (num_classes * K, embedding_dim) — reshaped to (num_classes, K, D).

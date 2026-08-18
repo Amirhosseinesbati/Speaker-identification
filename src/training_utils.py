@@ -93,6 +93,24 @@ class EMA:
             sd[name] = shadow.to(p.dtype)
         return sd
 
+    def extend(self, model: torch.nn.Module) -> None:
+        """Add fresh shadows for params that became trainable after construction.
+
+        Used by the progressive-unfreezing schedule: the encoder is frozen while
+        EMA is built (so its params are skipped), then becomes trainable at the
+        transition epoch. This appends shadows for those params in parameter
+        order, preserving the existing head shadows untouched.
+        """
+        tracked = set(self._names)
+        new_names: list = []
+        new_shadow: list = []
+        for name, p in model.named_parameters():
+            if p.requires_grad and name not in tracked:
+                new_names.append(name)
+                new_shadow.append(p.detach().clone().float())
+        self._names.extend(new_names)
+        self._shadow.extend(new_shadow)
+
 
 # ═══════════════════════════════════════════════════════════
 #  Config-driven learning-rate scheduler
@@ -178,3 +196,44 @@ def build_amp(
     def autocast_fn():
         return torch.autocast(device_type=device.type, enabled=False)
     return autocast_fn, GradScaler(grad_scaler_device, enabled=False)
+
+
+# ═══════════════════════════════════════════════════════════
+#  Progressive unfreezing (two-phase fine-tuning schedule)
+# ═══════════════════════════════════════════════════════════
+
+def encoder_will_train(config: dict) -> bool:
+    """True if the configured fine-tune mode leaves encoder params trainable.
+
+    Progressive unfreezing is only meaningful for encoders whose whole trunk can
+    be frozen (ecapa / campp / eres2net / titanet). WavLM keeps its transformer
+    trainable even when ``freeze_feature_extractor`` is on, so it returns False.
+    """
+    enc_type = str(config.get("model", {}).get("encoder_type", "")).lower().strip()
+    if enc_type == "wavlm":
+        return False
+    enc_cfg = (config.get("model", {}).get("encoder_config", {}) or {}).get(enc_type, {}) or {}
+    return not bool(enc_cfg.get("freeze_encoder", True))
+
+
+def apply_encoder_finetune_mode(model: torch.nn.Module, config: dict) -> None:
+    """Restore the configured fine-tune mode on ``model.encoder`` (idempotent).
+
+    Used by the progressive-unfreezing schedule (``training.freeze_epochs``): the
+    encoder is forced frozen during the warm-up phase, then this restores the
+    configured mode (frozen / partial last-N / full) at the transition epoch.
+    """
+    enc_type = str(config.get("model", {}).get("encoder_type", "")).lower().strip()
+    enc_cfg = (config.get("model", {}).get("encoder_config", {}) or {}).get(enc_type, {}) or {}
+    encoder = model.encoder
+
+    freeze_key = "freeze_feature_extractor" if enc_type == "wavlm" else "freeze_encoder"
+    if enc_cfg.get(freeze_key, True):
+        encoder.freeze()
+        return
+
+    n = int(enc_cfg.get("unfreeze_last_n_blocks", 0) or 0)
+    if n > 0 and hasattr(encoder, "unfreeze_last_n_blocks"):
+        encoder.unfreeze_last_n_blocks(n)
+    else:
+        encoder.unfreeze()

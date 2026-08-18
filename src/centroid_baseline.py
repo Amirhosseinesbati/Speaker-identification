@@ -295,14 +295,24 @@ def centroid_probs_global(
     ood_scores: np.ndarray,
     speakers: np.ndarray,
     num_classes: int = 447,
-    temperature: float = 1.0,
+    kappa: float = 24.0,
 ) -> np.ndarray:
-    """Turn centroid similarities + OOD scores into a 447-way distribution."""
+    """Turn centroid similarities + OOD scores into a 447-way distribution.
+
+    ``known_probs`` is a sharpened softmax (``softmax(kappa * sims)``). Without
+    a large ``kappa`` the 446-way softmax is nearly flat (~1/446 per class), so
+    ``p[0] = ood_score`` (≈0.3–0.4 for known files) always wins the argmax and
+    every file collapses to ``unknown`` (Macro-F1 ≈ 0.004). With ``kappa ≈ 24``
+    the softmax is essentially one-hot, so a file close to its own centroid
+    scores ``p[speaker] ≈ 1 − p_unknown > p_unknown`` and the argmax is correct —
+    the same sharpening the decision layer uses
+    (``submission/inference.py::centroid_probs_matrix``).
+    """
     from scipy.special import softmax
 
     M = sims.shape[0]
     probs = np.zeros((M, num_classes), dtype=np.float64)
-    known_probs = softmax(sims / max(temperature, 1e-6), axis=1)
+    known_probs = softmax(float(kappa) * sims, axis=1)
     p_unknown = np.clip(ood_scores, 0.0, 1.0)
     probs[:, 0] = p_unknown
     for i, sid in enumerate(speakers):

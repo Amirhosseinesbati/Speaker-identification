@@ -57,6 +57,9 @@ data/experiments/
 Thumbs.db
 .DS_Store
 
+# Local backups of old model artifacts / submission zips (restore points, not source)
+backup_20260816/
+
 
 eda
 # Leaderboard submission zip (built artifact — never commit)

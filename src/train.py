@@ -36,8 +36,10 @@ from src.model_factory import create_model_from_config
 from src.metrics import evaluate_macro_f1
 from src.training_utils import (
     EMA,
+    apply_encoder_finetune_mode,
     build_amp,
     build_scheduler,
+    encoder_will_train,
 )
 
 warnings.filterwarnings("ignore")
@@ -298,6 +300,77 @@ def build_criterion(train_cfg: dict) -> TwoPartLoss:
 
 
 # ─────────────────────────────────────────────────────────
+#  Prototypical Loss (EMA centroids — matches the centroid readout)
+# ─────────────────────────────────────────────────────────
+
+class PrototypicalLoss(nn.Module):
+    """
+    EMA-centroid prototypical loss — aligns training with the nearest-centroid
+    readout the decision layer uses at inference.
+
+    Maintains an EMA prototype (L2-normalised) per known class in the ArcFace
+    embedding space. Each known sample is scored by AM-softmax (subtractive
+    margin) against all prototypes, so the projection learns a space where
+    nearest-centroid classification works. The prototypes are data-derived
+    (EMA of the actual train embeddings), unlike ArcFace's learned weight rows
+    — this is the few-shot-safe complement that ties training to the readout.
+
+    Labels are the ORIGINAL dataset ids (0 = unknown, 1..446 = known); unknown
+    samples are masked out and remapped known classes use 0..445.
+    """
+
+    def __init__(
+        self,
+        num_classes: int,
+        embedding_dim: int,
+        scale: float = 30.0,
+        margin: float = 0.2,
+        decay: float = 0.9,
+    ):
+        super().__init__()
+        self.num_classes = int(num_classes)
+        self.embedding_dim = int(embedding_dim)
+        self.scale = float(scale)
+        self.margin = float(margin)
+        self.decay = float(decay)
+
+        # EMA prototypes: (num_classes, embedding_dim), L2-normalised.
+        proto = torch.randn(self.num_classes, self.embedding_dim)
+        self.register_buffer("prototypes", F.normalize(proto, p=2, dim=1))
+
+    def forward(self, embeddings: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """embeddings: (N, D) L2-normalised; labels: (N,) original (0 = unknown)."""
+        remapped = labels - 1  # known 1..446 → 0..445; unknown 0 → -1
+        known_mask = remapped >= 0
+        if not known_mask.any():
+            return torch.tensor(0.0, device=embeddings.device, requires_grad=True)
+
+        emb = embeddings[known_mask]
+        lab = remapped[known_mask]
+
+        # EMA prototype update (no grad — the prototypes are not parameters).
+        with torch.no_grad():
+            for c in range(self.num_classes):
+                m = lab == c
+                if not m.any():
+                    continue
+                new = F.normalize(emb[m].mean(dim=0, keepdim=True), p=2, dim=1)[0]
+                self.prototypes[c] = (
+                    self.decay * self.prototypes[c] + (1.0 - self.decay) * new
+                )
+
+        cos = emb @ self.prototypes.T  # (N, num_classes)
+        cos = cos.clamp(-1.0 + 1e-7, 1.0 - 1e-7)
+
+        # AM-softmax subtractive margin on the target class.
+        cos = cos.clone()
+        cos.scatter_(1, lab.unsqueeze(1), cos.gather(1, lab.unsqueeze(1)) - self.margin)
+
+        logits = self.scale * cos
+        return F.cross_entropy(logits, lab)
+
+
+# ─────────────────────────────────────────────────────────
 #  Metric Calculators
 # ─────────────────────────────────────────────────────────
 
@@ -428,6 +501,8 @@ def train_epoch(
     ood_head_attr: str = "head_ood",
     autocast_fn=None,
     ema: Optional[EMA] = None,
+    proto_criterion: Optional[nn.Module] = None,
+    proto_weight: float = 0.0,
 ) -> Dict[str, float]:
     """
     Train for one epoch with AMP.
@@ -471,8 +546,14 @@ def train_epoch(
         for w in range(W):
             wf = waveforms[:, w] if W > 1 else waveforms  # (B, 1, T)
             with autocast_fn():
-                ood_logits, speaker_logits = model(wf, labels=labels)
+                if proto_criterion is not None:
+                    ood_logits, speaker_logits, emb = model(
+                        wf, labels=labels, return_embedding=True)
+                else:
+                    ood_logits, speaker_logits = model(wf, labels=labels)
                 loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
+                if proto_criterion is not None:
+                    loss = loss + proto_weight * proto_criterion(emb, labels)
 
             # Fail loudly on NaN/Inf instead of silently training a broken model
             if not torch.isfinite(loss):
@@ -640,9 +721,23 @@ def train(config_path: str = "configs/default_config.yaml"):
 
     # ── Optimizer, Loss, Scaler ──
     print(f"\n  [3/4] Setting up optimizer & loss...")
-    # Separate LR for unfrozen encoder blocks (fine-tuning) vs the heads
-    encoder_params = [p for n, p in model.named_parameters()
-                      if "encoder" in n and p.requires_grad]
+    # Progressive unfreezing (two-phase fine-tune): keep the encoder frozen for
+    # the first `freeze_epochs` epochs, then restore the configured mode.
+    freeze_epochs = int(train_cfg.get("freeze_epochs", 0))
+    progressive = freeze_epochs > 0 and encoder_will_train(config)
+    if progressive:
+        model.encoder.freeze()
+        print(f"  🧊 Progressive unfreezing: encoder frozen for first {freeze_epochs} epoch(s)")
+
+    # Separate LR for unfrozen encoder blocks (fine-tuning) vs the heads.
+    # Under progressive unfreezing the encoder params are collected by NAME
+    # (currently frozen, so `requires_grad` is False) so the optimizer param
+    # group exists from the start and begins stepping after the transition.
+    if progressive:
+        encoder_params = [p for n, p in model.named_parameters() if "encoder" in n]
+    else:
+        encoder_params = [p for n, p in model.named_parameters()
+                          if "encoder" in n and p.requires_grad]
     head_params = [p for n, p in model.named_parameters()
                    if "encoder" not in n and p.requires_grad]
     param_groups = [{"params": head_params, "lr": train_cfg["learning_rate"]}]
@@ -668,6 +763,26 @@ def train(config_path: str = "configs/default_config.yaml"):
     if ema is not None and ema.enabled:
         print(f"  🧊 EMA enabled (decay={ema.decay:.4f})")
 
+    # Prototypical loss (EMA centroids) — optional, aligns training with the
+    # nearest-centroid readout. Disabled by default (training.loss.proto.enabled).
+    proto_cfg = (train_cfg.get("loss", {}) or {}).get("proto", {}) or {}
+    proto_criterion = None
+    proto_weight = 0.0
+    if bool(proto_cfg.get("enabled", False)):
+        emb_dim = getattr(model.head_speaker, "embedding_dim", None)
+        if emb_dim is None:
+            emb_dim = model.encoder.output_dim * model.pooling.output_multiplier
+        proto_criterion = PrototypicalLoss(
+            num_classes=num_known,
+            embedding_dim=int(emb_dim),
+            scale=float(proto_cfg.get("scale", 30.0)),
+            margin=float(proto_cfg.get("margin", 0.2)),
+            decay=float(proto_cfg.get("decay", 0.9)),
+        ).to(device)
+        proto_weight = float(proto_cfg.get("weight", 0.1))
+        print(f"  🎯 Prototypical loss enabled (weight={proto_weight}, "
+              f"scale={proto_cfg.get('scale', 30.0)}, margin={proto_cfg.get('margin', 0.2)})")
+
     # ── Training Loop ──
     print(f"\n  [4/4] Starting training...")
     print(f"  {'='*50}\n")
@@ -684,6 +799,14 @@ def train(config_path: str = "configs/default_config.yaml"):
 
         print(f"\n  ── Epoch {epoch}/{train_cfg['epochs']} ──")
 
+        # Progressive unfreezing: at the transition epoch, restore the configured
+        # fine-tune mode and add the newly-trainable encoder params to the EMA.
+        if progressive and epoch == freeze_epochs + 1:
+            apply_encoder_finetune_mode(model, config)
+            if ema is not None and ema.enabled:
+                ema.extend(model)
+            print(f"  🔓 Encoder unfrozen (progressive schedule, epoch {epoch})")
+
         # Train
         train_metrics = train_epoch(
             model, train_loader, optimizer, criterion,
@@ -691,6 +814,8 @@ def train(config_path: str = "configs/default_config.yaml"):
             ood_grad_norm=train_cfg.get("ood_grad_norm", 1.0),
             autocast_fn=autocast_fn,
             ema=ema,
+            proto_criterion=proto_criterion,
+            proto_weight=proto_weight,
         )
 
         # Validate

@@ -758,12 +758,14 @@ class _ModelScopeEncoderBase(BaseEncoder):
         allow_hub_download: bool = False,
         freeze_encoder: bool = True,
         revision: str = "master",
+        unfreeze_last_n_blocks: int = 0,
     ):
         super().__init__()
         self.model_id = model_id
         self.local_path = local_path
         self.revision = revision
         self._frozen = freeze_encoder
+        self._unfreeze_last_n_blocks = max(0, int(unfreeze_last_n_blocks))
         self._device = torch.device("cpu")
 
         self.model = _modelscope_load_model(
@@ -774,6 +776,8 @@ class _ModelScopeEncoderBase(BaseEncoder):
 
         if freeze_encoder:
             self.freeze()
+        elif self._unfreeze_last_n_blocks > 0:
+            self.unfreeze_last_n_blocks(self._unfreeze_last_n_blocks)
         else:
             self.unfreeze()
 
@@ -828,6 +832,38 @@ class _ModelScopeEncoderBase(BaseEncoder):
             param.requires_grad = True
         self._frozen = False
 
+    def unfreeze_last_n_blocks(self, n: int = 2) -> None:
+        """Unfreeze the last ``n`` dense-TDNN blocks of the CAM++ backbone.
+
+        The ModelScope CAMPPlus net stores its trunk in ``embedding_model.xvector``
+        (``block1..block3`` interleaved with ``transit`` layers). Only the deepest
+        ``n`` blocks become trainable; the FCM head, tdnn stem, transits, stats
+        pooling and dense projection stay frozen — the few-shot-safe fine-tune
+        mode for CAM++.
+        """
+        self.freeze()  # freeze everything first
+        emb = getattr(self.model, "embedding_model", None)
+        xvector = getattr(emb, "xvector", None)
+        if xvector is not None:
+            xvector_mods = dict(xvector.named_children())
+            block_names = [nm for nm in xvector_mods if nm.startswith("block")]
+            n = max(1, min(int(n), len(block_names)))
+            for nm in block_names[-n:]:
+                for p in xvector_mods[nm].parameters():
+                    p.requires_grad = True
+            self._frozen = False
+            return
+        # Fallback for unusual CAMPPlus variants: unfreeze the last n top-level
+        # trainable children of the embedding model.
+        children = [(nm, m) for nm, m in emb.named_children()
+                    if sum(p.numel() for p in m.parameters()) > 0]
+        targets = set(nm for nm, _ in children[-n:])
+        for nm, m in children:
+            if nm in targets:
+                for p in m.parameters():
+                    p.requires_grad = True
+        self._frozen = False
+
 
 # ═══════════════════════════════════════════════════════════
 #  CAM++ Encoder (ModelScope) — Phase 2a
@@ -855,6 +891,7 @@ class CAMPlusPlusEncoder(_ModelScopeEncoderBase):
         allow_hub_download: bool = False,
         freeze_encoder: bool = True,
         revision: str = "v1.0.2",
+        unfreeze_last_n_blocks: int = 0,
     ):
         super().__init__(
             model_id=model_id,
@@ -862,6 +899,7 @@ class CAMPlusPlusEncoder(_ModelScopeEncoderBase):
             allow_hub_download=allow_hub_download,
             freeze_encoder=freeze_encoder,
             revision=revision,
+            unfreeze_last_n_blocks=unfreeze_last_n_blocks,
         )
         self._output_dim = 512
 
@@ -909,11 +947,13 @@ class ERes2NetV2Encoder(BaseEncoder):
         allow_hub_download: bool = False,
         freeze_encoder: bool = True,
         ckpt_name: str = "eres2netv2.ckpt",
+        unfreeze_last_n_blocks: int = 0,
     ):
         super().__init__()
         self.local_path = local_path
         self._output_dim = 192  # verified from official checkpoint (seg_1)
         self._frozen = freeze_encoder
+        self._unfreeze_last_n_blocks = max(0, int(unfreeze_last_n_blocks))
 
         from src.sv_arch import ERes2NetV2
 
@@ -965,6 +1005,8 @@ class ERes2NetV2Encoder(BaseEncoder):
 
         if freeze_encoder:
             self.freeze()
+        elif self._unfreeze_last_n_blocks > 0:
+            self.unfreeze_last_n_blocks(self._unfreeze_last_n_blocks)
         else:
             self.unfreeze()
 
@@ -1031,6 +1073,25 @@ class ERes2NetV2Encoder(BaseEncoder):
     def unfreeze(self) -> None:
         for param in self.model.parameters():
             param.requires_grad = True
+        self._frozen = False
+
+    def unfreeze_last_n_blocks(self, n: int = 2) -> None:
+        """Unfreeze the last ``n`` conv stages (``layer1..layer4``) of ERes2NetV2.
+
+        The trunk of the vendored ERes2NetV2 is four ``nn.Sequential`` stages
+        (``layer1..layer4``). Only the deepest ``n`` become trainable; the stem
+        (``conv1``/``bn1``), downsampling, AFF fusion, pooling and embedding
+        projection stay frozen — the few-shot-safe fine-tune mode for ERes2NetV2.
+        """
+        self.freeze()
+        children = dict(self.model.named_children())
+        layer_names = [nm for nm in children if nm.startswith("layer")]
+        n = max(1, min(int(n), len(layer_names)))
+        targets = set(layer_names[-n:])
+        for nm, m in children.items():
+            if nm in targets:
+                for p in m.parameters():
+                    p.requires_grad = True
         self._frozen = False
 
 
@@ -1298,6 +1359,7 @@ def create_encoder(config: dict) -> BaseEncoder:
             allow_hub_download=enc_cfg.get("allow_hub_download", False),
             freeze_encoder=enc_cfg.get("freeze_encoder", True),
             revision=enc_cfg.get("revision", "v1.0.2"),
+            unfreeze_last_n_blocks=enc_cfg.get("unfreeze_last_n_blocks", 0),
         )
     elif encoder_type == "eres2net":
         return ERes2NetV2Encoder(
@@ -1305,6 +1367,7 @@ def create_encoder(config: dict) -> BaseEncoder:
             allow_hub_download=enc_cfg.get("allow_hub_download", False),
             freeze_encoder=enc_cfg.get("freeze_encoder", True),
             ckpt_name=enc_cfg.get("ckpt_name", "eres2netv2.ckpt"),
+            unfreeze_last_n_blocks=enc_cfg.get("unfreeze_last_n_blocks", 0),
         )
     elif encoder_type == "titanet":
         return TitaNetEncoder(

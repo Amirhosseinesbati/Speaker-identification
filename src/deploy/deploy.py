@@ -31,6 +31,14 @@ try:
 except Exception:
     pass  # Not all Python versions/terminals support reconfigure
 
+# Ensure the project root is importable even when this file is run directly as
+# a script (deploy_app.py invokes it by absolute path, not via `python -m`).
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.deploy import offer_selector
+
 
 # ─────────────────────────────────────────────────────────
 #  Config Loader
@@ -196,6 +204,59 @@ def run_cmd(command: str, return_output: bool = False, silent_error: bool = Fals
 
 
 # ─────────────────────────────────────────────────────────
+#  Server Selection (filters → top-N → retry)
+# ─────────────────────────────────────────────────────────
+
+def _parse_bool(raw: str) -> bool:
+    """Env-style boolean: true/1/yes/on → True, anything else → False."""
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def load_selector() -> dict:
+    """
+    Load the server-selection filters from environment variables.
+
+    The Streamlit Cloud tab (deploy_app.py) sets these before launching; the
+    defaults mirror configs/default_config.yaml → mlops.vast.selector. A set
+    value always wins; unset/empty means "use the default" (0 / "" = no filter).
+    """
+    sel = dict(offer_selector.DEFAULTS)
+    env_map = {
+        "VAST_POOL_SIZE": ("pool_size", int),
+        "VAST_RETRY_COUNT": ("retry_count", int),
+        "VAST_MIN_RELIABILITY": ("min_reliability", float),
+        "VAST_MIN_INET_DOWN_MBS": ("min_inet_down_mbps", float),
+        "VAST_MAX_INET_DOWN_MBS": ("max_inet_down_mbps", float),
+        "VAST_MIN_INET_UP_MBS": ("min_inet_up_mbps", float),
+        "VAST_MAX_INET_UP_MBS": ("max_inet_up_mbps", float),
+        "VAST_MIN_CPU_CORES": ("min_cpu_cores", float),
+        "VAST_MAX_CPU_CORES": ("max_cpu_cores", float),
+        "VAST_MIN_CPU_RAM_GB": ("min_cpu_ram_gb", float),
+        "VAST_MAX_CPU_RAM_GB": ("max_cpu_ram_gb", float),
+        "VAST_MIN_DISK_GB": ("min_disk_gb", float),
+        "VAST_MAX_DISK_GB": ("max_disk_gb", float),
+        "VAST_MIN_DURATION_DAYS": ("min_duration_days", float),
+        "VAST_MAX_DURATION_DAYS": ("max_duration_days", float),
+        "VAST_MIN_PRICE": ("min_price_per_hour", float),
+        "VAST_MAX_PRICE": ("max_price_per_hour", float),
+        "VAST_MIN_PCIE_BW": ("min_pcie_bw_gbps", float),
+        "VAST_MAX_PCIE_BW": ("max_pcie_bw_gbps", float),
+        "VAST_MIN_GPU_FRAC": ("min_gpu_frac", float),
+        "VAST_BLOCKED_COUNTRIES": ("blocked_countries", str),
+        "VAST_PICK_BEST": ("pick_best", _parse_bool),
+    }
+    for env_key, (key, cast) in env_map.items():
+        raw = os.getenv(env_key)
+        if raw is None or raw.strip() == "":
+            continue
+        try:
+            sel[key] = cast(raw.strip())
+        except ValueError:
+            print(f"   ⚠ Ignoring invalid {env_key}={raw!r}")
+    return sel
+
+
+# ─────────────────────────────────────────────────────────
 #  Main Deployment Flow
 # ─────────────────────────────────────────────────────────
 
@@ -209,8 +270,8 @@ def main():
 
     # ── Load config ──
     config = load_environment()
-    print(f"🔍 Searching for cheapest {config['GPU_TARGET']} "
-          f"(CUDA ≥ {config['MIN_CUDA_VERSION']}) "
+    print(f"🔍 Searching {config['GPU_TARGET']} offers "
+          f"(CUDA ≥ {config['MIN_CUDA_VERSION']}, quality-ranked) "
           f"for pipeline: {config['TARGET_PIPELINE']}...")
 
     # ── Forward the active encoder selection to the instance ──
@@ -226,72 +287,61 @@ def main():
     # ── Authenticate Vast.ai ──
     run_cmd(f"vastai set api-key {config['VAST_API_KEY']}", silent_error=True)
 
-    # ── Search for cheapest GPU ──
-    # cuda_vers = the host machine's max supported CUDA version (driver-derived).
-    # We require it >= MIN_CUDA_VERSION because uv.lock's torch is a CUDA 13.x
-    # build; renting an older-driver host would make training fall back to CPU
-    # or crash (setup_vast.sh verifies this and aborts).
+    # ── Search & rank offers ──
+    # Hard numeric gates go into the query string (reliability, internet, CPU,
+    # RAM, disk, duration, price); the CLI also keeps verified=true/rentable=true
+    # by default. cuda_vers stays untouched — uv.lock's torch is a CUDA 13.x
+    # build, so we still require the host driver to support it (setup_vast.sh
+    # Phase 2.5 aborts otherwise). The fetched pool is then re-checked and
+    # scored in Python, so an unsupported query field can never slip through.
+    selector = load_selector()
+    query = offer_selector.build_search_query(
+        config["GPU_TARGET"], config["MIN_CUDA_VERSION"], selector)
+    pool_size = int(selector["pool_size"])
     search_cmd = (
-        f'vastai search offers "gpu_name={config["GPU_TARGET"]} num_gpus=1 '
-        f'cuda_vers>={config["MIN_CUDA_VERSION"]}" '
-        f"-o dph --raw"
+        f'vastai search offers "{query}" '
+        f"-o dph --limit {pool_size} --raw"
     )
     raw_json = run_cmd(search_cmd, return_output=True)
 
     try:
         offers = json.loads(raw_json)
-        if not offers:
-            print(f"❌ No {config['GPU_TARGET']} instances available!")
-            print("   Try a different GPU or check Vast.ai availability.")
-            sys.exit(1)
-
-        instance_id = str(offers[0]["id"])
-        price = offers[0].get("dph_total", 0.0)
-        print(f"✅ Found instance #{instance_id} — ${float(price):.3f}/hour")
-
-    except (json.JSONDecodeError, KeyError, IndexError) as e:
+    except json.JSONDecodeError as e:
         print(f"❌ Failed to parse Vast.ai offers: {e}")
+        print(f"   Raw output: {raw_json[:300]}")
         sys.exit(1)
 
-    # ── Build environment string for the remote instance ──
-    # Include ALL settings so setup_vast.sh knows what the user chose
-    env_vars = " ".join(
-        f"-e {k}={v}"
-        for k, v in {
-            "VAST_API_KEY": config["VAST_API_KEY"],
-            "INSTANCE_ID": instance_id,
-            "DAGSHUB_TOKEN": config["DAGSHUB_TOKEN"],
-            "DAGSHUB_USERNAME": config["DAGSHUB_USERNAME"],
-            "DAGSHUB_REPO_NAME": config["DAGSHUB_REPO_NAME"],
-            "DAGSHUB_TRACKING_URI": config["DAGSHUB_TRACKING_URI"],
-            "GIT_REPO_URL": config["GIT_REPO_URL"],
-            "GIT_BRANCH": config["GIT_BRANCH"],
-            "GPU_TARGET": config["GPU_TARGET"],
-            "TARGET_PIPELINE": config["TARGET_PIPELINE"],
-            "MIN_CUDA_VERSION": config["MIN_CUDA_VERSION"],
-            "DISK_SIZE_GB": os.getenv("DISK_SIZE_GB", ""),
-            "EXPERIMENT_PROFILES": config.get("EXPERIMENT_PROFILES", ""),
-            "HPO_STUDY": config.get("HPO_STUDY", ""),
-            "HPO_TRIALS": config.get("HPO_TRIALS", ""),
-            "HPO_EPOCHS": config.get("HPO_EPOCHS", ""),
-            "HPO_BASE_PROFILE": config.get("HPO_BASE_PROFILE", ""),
-            "FREEZE_ENCODER": config["FREEZE_ENCODER"],
-            "UNFREEZE_LAST_N_BLOCKS": config["UNFREEZE_LAST_N_BLOCKS"],
-            "FREEZE_FEATURE_EXTRACTOR": config["FREEZE_FEATURE_EXTRACTOR"],
-            "ENCODER_TYPE": config.get("ENCODER_TYPE", ""),
-            "ALLOW_HUB_DOWNLOAD": config.get("ALLOW_HUB_DOWNLOAD", ""),
-            "LOCAL_PATH_ECAPA": config.get("LOCAL_PATH_ECAPA", ""),
-            "LOCAL_PATH_CAMPP": config.get("LOCAL_PATH_CAMPP", ""),
-            "LOCAL_PATH_ERES2NET": config.get("LOCAL_PATH_ERES2NET", ""),
-            "LOCAL_PATH_TITANET": config.get("LOCAL_PATH_TITANET", ""),
-            "LOCAL_PATH_WAVLM": config.get("LOCAL_PATH_WAVLM", ""),
-            "KAGGLE_USERNAME": config["KAGGLE_USERNAME"],
-            "KAGGLE_KEY": config["KAGGLE_KEY"],
-        }.items()
-        if v
-    )
+    # The vastai CLI returns exit code 0 AND a dict {"error": true, ...} when
+    # the query itself is rejected (e.g. an invalid search key). Distinguish
+    # that from a normal list of offers before ranking.
+    if isinstance(offers, dict):
+        print(f"❌ Vast.ai search error: {offers.get('msg', offers)}")
+        print(f"   Query: {query}")
+        sys.exit(1)
+    if not isinstance(offers, list):
+        print(f"❌ Unexpected search response: {str(offers)[:200]}")
+        sys.exit(1)
 
-    # ── Read config to get disk size & image ──
+    # pick_best on → quality-ranked (best candidate first); off → cheapest
+    # offer that still passes the configured gates.
+    mode = "best" if selector["pick_best"] else "cheapest"
+    ranked = offer_selector.rank_offers(offers, selector, mode=mode)
+
+    if not ranked:
+        print(f"❌ No {config['GPU_TARGET']} instance passes the selection filters!")
+        print(f"   Query: {query}")
+        print("   → Loosen a filter in the Cloud tab (reliability / internet / "
+              "CPU / price) or check availability.")
+        sys.exit(1)
+
+    candidates = ranked[:int(selector["retry_count"])]
+    how = "quality score" if mode == "best" else "cheapest price"
+    print(f"🔍 {len(ranked)} offer(s) pass the filters — "
+          f"trying top {len(candidates)} by {how}:")
+    for i, off in enumerate(candidates, 1):
+        print(f"   {i}. {offer_selector.describe_offer(off)}")
+
+    # ── Read config to get disk size & image (offer-independent) ──
     try:
         import yaml
         with open("configs/default_config.yaml") as f:
@@ -305,30 +355,75 @@ def main():
         disk_size = int(os.getenv("DISK_SIZE_GB", 60))
         image = "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel"
 
-    # ── Create the instance with onstart script ──
-    print(f"🚀 Creating instance with {disk_size}GB disk...")
-    create_cmd = (
-        f'vastai create instance {instance_id} '
-        f'--image "{image}" '
-        f'--disk {disk_size} '
-        f'--env "{env_vars}" '
-        f'--onstart setup_vast.sh '
-        f'--raw'
-    )
+    # ── Create the instance with onstart script, trying candidates in order ──
+    # Build the env string per candidate (INSTANCE_ID differs per offer).
+    def build_env_vars(offer_id: str) -> str:
+        return " ".join(
+            f"-e {k}={v}"
+            for k, v in {
+                "VAST_API_KEY": config["VAST_API_KEY"],
+                "INSTANCE_ID": offer_id,
+                "DAGSHUB_TOKEN": config["DAGSHUB_TOKEN"],
+                "DAGSHUB_USERNAME": config["DAGSHUB_USERNAME"],
+                "DAGSHUB_REPO_NAME": config["DAGSHUB_REPO_NAME"],
+                "DAGSHUB_TRACKING_URI": config["DAGSHUB_TRACKING_URI"],
+                "GIT_REPO_URL": config["GIT_REPO_URL"],
+                "GIT_BRANCH": config["GIT_BRANCH"],
+                "GPU_TARGET": config["GPU_TARGET"],
+                "TARGET_PIPELINE": config["TARGET_PIPELINE"],
+                "MIN_CUDA_VERSION": config["MIN_CUDA_VERSION"],
+                "DISK_SIZE_GB": os.getenv("DISK_SIZE_GB", ""),
+                "EXPERIMENT_PROFILES": config.get("EXPERIMENT_PROFILES", ""),
+                "HPO_STUDY": config.get("HPO_STUDY", ""),
+                "HPO_TRIALS": config.get("HPO_TRIALS", ""),
+                "HPO_EPOCHS": config.get("HPO_EPOCHS", ""),
+                "HPO_BASE_PROFILE": config.get("HPO_BASE_PROFILE", ""),
+                "FREEZE_ENCODER": config["FREEZE_ENCODER"],
+                "UNFREEZE_LAST_N_BLOCKS": config["UNFREEZE_LAST_N_BLOCKS"],
+                "FREEZE_FEATURE_EXTRACTOR": config["FREEZE_FEATURE_EXTRACTOR"],
+                "ENCODER_TYPE": config.get("ENCODER_TYPE", ""),
+                "ALLOW_HUB_DOWNLOAD": config.get("ALLOW_HUB_DOWNLOAD", ""),
+                "LOCAL_PATH_ECAPA": config.get("LOCAL_PATH_ECAPA", ""),
+                "LOCAL_PATH_CAMPP": config.get("LOCAL_PATH_CAMPP", ""),
+                "LOCAL_PATH_ERES2NET": config.get("LOCAL_PATH_ERES2NET", ""),
+                "LOCAL_PATH_TITANET": config.get("LOCAL_PATH_TITANET", ""),
+                "LOCAL_PATH_WAVLM": config.get("LOCAL_PATH_WAVLM", ""),
+                "KAGGLE_USERNAME": config["KAGGLE_USERNAME"],
+                "KAGGLE_KEY": config["KAGGLE_KEY"],
+            }.items()
+            if v
+        )
 
-    create_output = run_cmd(create_cmd, return_output=True)
-    print(f"  Instance creation response: {create_output[:200]}...")
+    instance_id = None
+    for off in candidates:
+        print(f"🚀 Creating instance {offer_selector.describe_offer(off)} ...")
+        create_cmd = (
+            f'vastai create instance {off["id"]} '
+            f'--image "{image}" '
+            f'--disk {disk_size} '
+            f'--env "{build_env_vars(str(off["id"]))}" '
+            f'--onstart setup_vast.sh '
+            f'--raw'
+        )
+        create_output = run_cmd(create_cmd, return_output=True, silent_error=True)
+        print(f"  Instance creation response: {create_output[:200]}...")
+        try:
+            response = json.loads(create_output or "{}")
+        except json.JSONDecodeError:
+            response = {}
+        if isinstance(response, dict) and response.get("error"):
+            print(f"  ⚠ {response.get('msg', 'unknown error')} — trying next offer.")
+            continue
+        instance_id = (str(response.get("new_instance", off["id"]))
+                       if isinstance(response, dict) else str(off["id"]))
+        break
 
-    # ── Check for errors ──
-    try:
-        response = json.loads(create_output)
-        if response.get("error"):
-            print(f"\n❌ Vast.ai Error: {response.get('msg', 'Unknown error')}")
-            sys.exit(1)
-        new_instance_id = response.get("new_instance", instance_id)
-        print(f"\n🎉 Instance #{new_instance_id} is being provisioned!")
-    except json.JSONDecodeError:
-        print(f"\n🎉 Instance creation initiated!")
+    if instance_id is None:
+        print(f"❌ All {len(candidates)} candidate offers failed to rent.")
+        print("   Re-run with looser filters — Vast.ai availability changes fast.")
+        sys.exit(1)
+    new_instance_id = instance_id
+    print(f"\n🎉 Instance #{new_instance_id} is being provisioned!")
 
     print(f"   GPU:        {config['GPU_TARGET']}")
     print(f"   Pipeline:   {config['TARGET_PIPELINE']}")

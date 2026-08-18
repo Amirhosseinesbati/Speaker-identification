@@ -228,12 +228,14 @@ def _encoder_save_config(encoder_type: str, old_enc: dict, ft_mode: str,
             "model_id": "iic/speech_campplus_sv_en_voxceleb_16k",
             "revision": "v1.0.2",
             "freeze_encoder": ft_mode == "Frozen",
+            "unfreeze_last_n_blocks": int(unfreeze_n) if ft_mode == "Partial (last N)" else 0,
             "local_path": "weights/campp",
         }
     elif encoder_type == "eres2net":
         new_enc = {
             "ckpt_name": "eres2netv2.ckpt",
             "freeze_encoder": ft_mode == "Frozen",
+            "unfreeze_last_n_blocks": int(unfreeze_n) if ft_mode == "Partial (last N)" else 0,
             "local_path": "weights/eres2net",
         }
     else:  # titanet
@@ -340,22 +342,27 @@ with tab_cfg:
             "Encoder", _ENC_OPTS,
             index=_ENC_OPTS.index(mc.get("encoder_type", "wavlm")))
 
-        # Fine-tune mode: Frozen / Partial (last N, ECAPA) / Full
+        # Fine-tune mode: Frozen / Partial (last N) / Full.
+        # Partial (last N) is supported by ecapa / campp / eres2net (their
+        # encoders implement unfreeze_last_n_blocks); wavlm/titanet are
+        # Frozen/Full only.
         cur_freeze = _enc_freeze()
         cur_blocks = _enc_unfreeze_blocks()
         ft_options = ["Frozen", "Full"]
-        if encoder_type == "ecapa":
+        if encoder_type in ("ecapa", "campp", "eres2net"):
             ft_options = ["Frozen", "Partial (last N)", "Full"]
         if cur_freeze:
             ft_idx = 0
-        elif encoder_type == "ecapa" and cur_blocks > 0:
+        elif encoder_type in ("ecapa", "campp", "eres2net") and cur_blocks > 0:
             ft_idx = 1
         else:
             ft_idx = len(ft_options) - 1
         ft_mode = st.radio(
             "Fine-tune mode", ft_options, index=ft_idx, horizontal=True,
-            help="Frozen: encoder weights fixed. Partial (ECAPA): only the last N "
-                 "SE-Res2Blocks are trainable. Full: all encoder parameters trainable.",
+            help="Frozen: encoder weights fixed. Partial: only the last N trunk "
+                 "blocks are trainable (ECAPA SE-Res2Blocks / CAM++ dense-TDNN "
+                 "blocks / ERes2NetV2 conv stages). Full: all encoder parameters "
+                 "trainable.",
         )
         unfreeze_n = 2
         if ft_mode == "Partial (last N)":
@@ -526,6 +533,12 @@ with tab_cfg:
         patience = st.number_input("Early stop patience", 1, 50,
                                    int(config["training"].get("early_stopping_patience", 10)),
                                    help="Early stopping / checkpoint selection on val Macro-F1.")
+        freeze_epochs = st.number_input(
+            "Progressive unfreeze after N epochs", 0, 200,
+            int(config["training"].get("freeze_epochs", 0)),
+            help="Two-phase fine-tune: keep the encoder frozen for the first N "
+                 "epochs (heads only), then restore the configured fine-tune mode. "
+                 "0 = off (single-phase).")
         st.subheader("📈 Schedule & Precision")
         c1s, c2s = st.columns(2)
         with c1s:
@@ -534,6 +547,11 @@ with tab_cfg:
                 index=0 if config["training"].get("schedule", "cosine") == "cosine" else 1)
             warmup_ratio = st.slider("Warmup ratio", 0.0, 0.4,
                                      float(config["training"].get("warmup_ratio", 0.1)), 0.01)
+            min_lr_ratio = st.slider(
+                "Min LR ratio", 0.0, 0.5,
+                float(config["training"].get("min_lr_ratio", 0.05)), 0.01,
+                help="Cosine schedule floor = LR × this ratio. Higher keeps the "
+                     "encoder adapting longer during fine-tuning (vs decaying to ~0).")
         with c2s:
             amp_dtype = st.selectbox(
                 "AMP dtype", ["fp16", "bf16"],
@@ -568,6 +586,26 @@ with tab_cfg:
                                 float(loss_spk.get("weight", config["training"].get("speaker_loss_weight", 0.7))), 0.05)
         sm_val = st.number_input("Label smoothing", 0.0, 0.5,
                                  float(loss_spk.get("label_smoothing", config["training"].get("label_smoothing", 0.1))), 0.05)
+        # Prototypical loss (EMA centroids) — aligns training with the
+        # nearest-centroid readout the decision layer uses at inference.
+        proto_cfg = (config["training"].get("loss", {}).get("proto", {}) or {})
+        proto_on = st.checkbox(
+            "Prototypical loss (EMA centroids)",
+            value=bool(proto_cfg.get("enabled", False)),
+            help="Adds an AM-softmax term pulling each known embedding toward its "
+                 "per-class EMA centroid. Ties training to the centroid readout.",
+        )
+        proto_w = float(proto_cfg.get("weight", 0.1))
+        proto_scale = float(proto_cfg.get("scale", 30.0))
+        proto_margin = float(proto_cfg.get("margin", 0.2))
+        proto_decay = float(proto_cfg.get("decay", 0.9))
+        if proto_on:
+            pc1, pc2 = st.columns(2)
+            proto_w = pc1.number_input("Proto weight", 0.0, 1.0, proto_w, 0.05)
+            proto_scale = pc2.number_input("Proto scale", 1.0, 64.0, proto_scale, 1.0)
+            pc1, pc2 = st.columns(2)
+            proto_margin = pc1.number_input("Proto margin", 0.0, 1.0, proto_margin, 0.05)
+            proto_decay = pc2.number_input("Proto EMA decay", 0.5, 0.999, proto_decay, 0.01)
 
     st.subheader("💾 Save")
     exp_name = st.text_input(
@@ -677,8 +715,10 @@ with tab_cfg:
         config["training"]["weight_decay"] = wd
         config["training"]["max_grad_norm"] = grad_norm
         config["training"]["early_stopping_patience"] = int(patience)
+        config["training"]["freeze_epochs"] = int(freeze_epochs)
         config["training"]["schedule"] = schedule_type
         config["training"]["warmup_ratio"] = float(warmup_ratio)
+        config["training"]["min_lr_ratio"] = float(min_lr_ratio)
         config["training"]["amp_dtype"] = amp_dtype
         config["training"]["ema_enabled"] = bool(ema_on)
         config["training"]["ema_decay"] = float(ema_decay)
@@ -697,6 +737,14 @@ with tab_cfg:
         config["training"]["ood_loss_weight"] = float(ood_w)
         config["training"]["speaker_loss_weight"] = float(spk_w)
         config["training"]["label_smoothing"] = float(sm_val)
+        # Prototypical loss block (kept in sync with training.loss.proto).
+        proto_block = (config["training"].setdefault("loss", {})
+                       .setdefault("proto", {}))
+        proto_block["enabled"] = bool(proto_on)
+        proto_block["weight"] = float(proto_w)
+        proto_block["scale"] = float(proto_scale)
+        proto_block["margin"] = float(proto_margin)
+        proto_block["decay"] = float(proto_decay)
         exp_name = (exp_name or "").strip()
         if exp_name:
             save_profile(exp_name, config)
@@ -806,6 +854,65 @@ with tab_cloud:
         hpo_trials = hc2.number_input("Trials", 1, 200, 30, key="c_hpo_trials")
         hpo_epochs = hc3.number_input("Epochs/trial", 1, 200, 30, key="c_hpo_epochs")
 
+    # ── Server selection filters ──
+    # Values default to 0 / "" = no filtering. Numeric gates have a min AND max
+    # twin (0 = open). Hidden gates (upload, RAM, disk, duration, PCIe, GPU
+    # fraction, price) keep defaults in src/deploy/offer_selector.DEFAULTS and
+    # configs/default_config.yaml → mlops.vast.selector; override via VAST_* env
+    # vars if ever needed. CUDA is controlled by Min CUDA above, NOT here.
+    with st.expander("🔍 Server selection filters", expanded=False):
+        st.caption("A failed rental automatically retries the next candidate.")
+        sel_cfg = config.get("mlops", {}).get("vast", {}).get("selector", {})
+        pick_best = st.checkbox(
+            "🎯 Best candidate (quality-ranked)",
+            value=bool(sel_cfg.get("pick_best", True)),
+            key="sel_pick_best",
+            help="ON: ranks the available hosts by reliability → internet → CPU "
+                 "and takes the best. OFF: takes the cheapest host that passes "
+                 "the filters below.",
+        )
+        pool_n = int(sel_cfg.get("pool_size", 50))
+        if pick_best:
+            pool_n = st.number_input(
+                "🔎 Search among top N cheapest offers", 5, 200, pool_n, 5,
+                key="sel_pool",
+                help="Fetch the N cheapest offers that pass the filters and pick "
+                     "the best of those N (e.g. 5 = best of the 5 cheapest, "
+                     "20 = best of the 20 cheapest).",
+            )
+        min_rel = st.slider("Min reliability", 0.0, 1.0,
+                            float(sel_cfg.get("min_reliability", 0.0)), 0.01,
+                            key="sel_rel",
+                            help="0 = no filter. 0.95+ excludes machines that go "
+                                 "down mid-run (min only — higher is always better).")
+        c1, c2 = st.columns(2)
+        with c1:
+            min_cores = st.number_input("Min CPU cores", 0, 64,
+                                        int(sel_cfg.get("min_cpu_cores", 0)),
+                                        key="sel_cores")
+        with c2:
+            max_cores = st.number_input("Max CPU cores", 0, 128,
+                                        int(sel_cfg.get("max_cpu_cores", 0)),
+                                        key="sel_max_cores",
+                                        help="0 = no max.")
+        c1, c2 = st.columns(2)
+        with c1:
+            min_down = st.number_input("Min download (MB/s)", 0, 10000,
+                                       int(sel_cfg.get("min_inet_down_mbps", 0)), 25,
+                                       key="sel_down")
+        with c2:
+            max_down = st.number_input("Max download (MB/s)", 0, 10000,
+                                       int(sel_cfg.get("max_inet_down_mbps", 0)), 25,
+                                       key="sel_max_down",
+                                       help="0 = no max. A max filters out hosts "
+                                            "with suspiciously high advertised speeds.")
+        blocked = st.text_input("Blocked countries (ISO, comma-sep)",
+                                value=str(sel_cfg.get("blocked_countries", "")),
+                                key="sel_blocked",
+                                help="e.g. US,HK — matches the country code in the "
+                                     "offer's region, so 'US' blocks 'California, US' "
+                                     "too. Empty = no country filter.")
+
     if not (PROJECT_ROOT / ".env").exists():
         st.warning("⚠️ `.env` missing — copy from `.env.example`")
 
@@ -824,6 +931,16 @@ with tab_cloud:
         os.environ["FREEZE_FEATURE_EXTRACTOR"] = str(ft_mode == "Frozen").lower()  # compat
         os.environ["DISK_SIZE_GB"] = str(disk_gb)
         os.environ["MIN_CUDA_VERSION"] = str(min_cuda)
+        # Server-selection filters (the gates shown in the 🔍 expander; the
+        # rest keep their defaults in deploy.py / mlops.vast.selector)
+        os.environ["VAST_PICK_BEST"] = str(pick_best).lower()
+        os.environ["VAST_POOL_SIZE"] = str(pool_n)
+        os.environ["VAST_MIN_RELIABILITY"] = str(min_rel)
+        os.environ["VAST_MIN_CPU_CORES"] = str(min_cores)
+        os.environ["VAST_MAX_CPU_CORES"] = str(max_cores)
+        os.environ["VAST_MIN_INET_DOWN_MBS"] = str(min_down)
+        os.environ["VAST_MAX_INET_DOWN_MBS"] = str(max_down)
+        os.environ["VAST_BLOCKED_COUNTRIES"] = str(blocked)
         os.environ["EXPERIMENT_PROFILES"] = (
             " ".join(queue_profiles) if queue_profiles else "")
         if run_mode.startswith("HPO"):

@@ -75,3 +75,39 @@ def test_build_cell_config_does_not_mutate_base(base):
     snapshot = copy.deepcopy(base)
     em.build_cell_config(base, "campp", "full", 42)
     assert base == snapshot
+
+
+def test_full_ft_recipe_applies_aggressive_augmentation_and_ft_settings(base):
+    cfg = em.build_cell_config(base, "campp", "full_ft", 42, scheme="single")
+    # aggressive augmentation stack
+    assert cfg["augmentation"]["waveform"]["time_stretch"]["p"] == 0.9
+    assert cfg["augmentation"]["domain"]["musan"]["noise_p"] == 0.8
+    assert cfg["augmentation"]["domain"]["musan"]["music_p"] == 0.5
+    assert cfg["augmentation"]["domain"]["rirs_reverb"]["p"] == 0.6
+    assert cfg["augmentation"]["domain"]["mp3_codec_roundtrip"]["p"] == 0.5
+    # fine-tune training settings
+    assert cfg["training"]["encoder_lr"] == 1e-5
+    assert cfg["training"]["weight_decay"] == 3e-4
+    assert cfg["training"]["label_smoothing"] == 0.1
+    assert cfg["audio"]["num_train_windows"] == 8
+
+
+def test_frozen_ft_keeps_encoder_frozen_but_applies_augmentation(base):
+    cfg = em.build_cell_config(base, "campp", "frozen_ft", 42)
+    assert cfg["model"]["encoder_config"]["campp"]["freeze_encoder"] is True
+    assert cfg["augmentation"]["waveform"]["time_stretch"]["p"] == 0.9
+
+
+def test_partial_ft_sets_unfreeze_blocks_for_campp_and_eres2net(base):
+    campp = em.build_cell_config(base, "campp", "partial_ft", 42)
+    assert campp["model"]["encoder_config"]["campp"]["freeze_encoder"] is False
+    assert campp["model"]["encoder_config"]["campp"]["unfreeze_last_n_blocks"] == 2
+    eres2net = em.build_cell_config(base, "eres2net", "partial_ft", 42)
+    assert eres2net["model"]["encoder_config"]["eres2net"]["unfreeze_last_n_blocks"] == 2
+
+
+def test_two_phase_ft_sets_freeze_epochs(base):
+    cfg = em.build_cell_config(base, "campp", "two_phase_ft", 42)
+    assert cfg["training"]["freeze_epochs"] == 20
+    # single-phase recipes leave freeze_epochs unset
+    assert em.build_cell_config(base, "campp", "full_ft", 42)["training"].get("freeze_epochs", 0) == 0

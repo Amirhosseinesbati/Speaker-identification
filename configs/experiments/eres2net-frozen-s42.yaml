@@ -1,0 +1,10 @@
+_meta:
+  name: eres2net-frozen-s42
+  base: default_config.yaml
+  created: '2026-08-18T18:10:25'
+  base_git: 38ede0a
+data:
+  split:
+    scheme: single
+model:
+  encoder_type: eres2net
