@@ -74,7 +74,7 @@ hardware:
       mixed_precision: true
       num_workers: 0
     vastai:
-      batch_size: 32
+      batch_size: 64
       description: RTX 3090 / 4090 / A5000 (24GB+ VRAM)
       device: cuda
       mixed_precision: true
