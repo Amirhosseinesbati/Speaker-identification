@@ -6,6 +6,7 @@ the ``PrototypicalLoss`` — all CPU-only, no GPU / no real encoder required.
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -18,7 +19,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.training_utils import EMA, apply_encoder_finetune_mode, encoder_will_train  # noqa: E402
+from src.training_utils import (  # noqa: E402
+    EMA,
+    apply_encoder_finetune_mode,
+    build_scheduler,
+    encoder_will_train,
+)
 from src.train import PrototypicalLoss  # noqa: E402
 
 
@@ -159,6 +165,59 @@ def test_ema_update_after_extend_stays_aligned():
     assert torch.allclose(
         sd["encoder.blocks.3.weight"], ema._shadow["encoder.blocks.3.weight"]
     )
+
+
+# ── build_scheduler (per-group cosine floor) ──
+
+def _two_group_optimizer():
+    """Encoder group (lr=1e-5) below the head's cosine floor (1.5e-5) — the
+    exact configuration that used to invert the encoder's schedule."""
+    encoder = nn.Linear(4, 4)
+    head = nn.Linear(4, 4)
+    return torch.optim.AdamW([
+        {"params": list(encoder.parameters()), "lr": 1e-5},
+        {"params": list(head.parameters()), "lr": 3e-4},
+    ])
+
+
+def test_scheduler_encoder_lr_never_rises_after_warmup():
+    """Regression: eta_min was ``learning_rate * min_lr_ratio`` (one absolute
+    floor for every group), so encoder_lr=1e-5 < 1.5e-5 annealed UPWARD. Each
+    group must anneal down to its own ``base_lr * min_lr_ratio``."""
+    optimizer = _two_group_optimizer()
+    cfg = {"schedule": "cosine", "warmup_ratio": 0.1, "min_lr_ratio": 0.05,
+           "learning_rate": 3e-4, "epochs": 200}
+    scheduler = build_scheduler(optimizer, cfg, cfg["epochs"])
+    warmup_epochs = int(round(cfg["epochs"] * cfg["warmup_ratio"]))  # 20
+
+    enc_lrs = []
+    head_lrs = []
+    for _ in range(1, cfg["epochs"] + 1):
+        scheduler.step()
+        enc_lrs.append(optimizer.param_groups[0]["lr"])
+        head_lrs.append(optimizer.param_groups[1]["lr"])
+
+    # From the end of warmup on, the encoder LR must not rise (was inverted).
+    enc_after_warmup = enc_lrs[warmup_epochs - 1]
+    assert all(lr <= enc_after_warmup + 1e-12 for lr in enc_lrs[warmup_epochs - 1:])
+    # Each group ends at its own floor: encoder 5e-7, head 1.5e-5.
+    assert math.isclose(enc_lrs[-1], 1e-5 * 0.05, rel_tol=1e-6)
+    assert math.isclose(head_lrs[-1], 3e-4 * 0.05, rel_tol=1e-6)
+    # The head anneals monotonically after warmup (it ramps up during it).
+    assert all(b <= a + 1e-12
+               for a, b in zip(head_lrs[warmup_epochs - 1:],
+                               head_lrs[warmup_epochs - 1:][1:]))
+
+
+def test_scheduler_no_warmup_per_group_floor():
+    optimizer = _two_group_optimizer()
+    cfg = {"schedule": "cosine", "warmup_ratio": 0.0, "min_lr_ratio": 0.05,
+           "learning_rate": 3e-4, "epochs": 100}
+    scheduler = build_scheduler(optimizer, cfg, cfg["epochs"])
+    for _ in range(1, cfg["epochs"] + 1):
+        scheduler.step()
+    assert math.isclose(optimizer.param_groups[0]["lr"], 1e-5 * 0.05, rel_tol=1e-6)
+    assert math.isclose(optimizer.param_groups[1]["lr"], 3e-4 * 0.05, rel_tol=1e-6)
 
 
 # ── PrototypicalLoss ──

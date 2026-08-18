@@ -14,6 +14,7 @@ Contents:
 
 from __future__ import annotations
 
+import math
 from typing import Callable, Optional, Tuple
 
 import torch
@@ -124,7 +125,8 @@ def build_scheduler(
 
     Supported ``training.schedule`` values:
       - ``"cosine"`` (default): linear warmup over ``warmup_ratio`` of epochs,
-        then cosine anneal to ``learning_rate * min_lr_ratio``.
+        then cosine anneal; each param group anneals to its own
+        ``base_lr * min_lr_ratio``.
       - ``"cosine_warm_restarts"``: the legacy 3-epoch warmup + warm-restarts
         (kept for backward compatibility with existing checkpoints).
 
@@ -133,8 +135,6 @@ def build_scheduler(
     schedule = str(train_cfg.get("schedule", "cosine")).lower().strip()
     warmup_ratio = float(train_cfg.get("warmup_ratio", 0.0))
     min_lr_ratio = float(train_cfg.get("min_lr_ratio", 0.0))
-    head_lr = float(train_cfg.get("learning_rate", 1e-4))
-    eta_min = head_lr * min_lr_ratio
 
     if schedule == "cosine_warm_restarts":
         warmup_epochs = max(1, int(train_cfg.get("warmup_epochs", 3)))
@@ -150,13 +150,37 @@ def build_scheduler(
     if warmup_epochs > 0:
         warmup = torch.optim.lr_scheduler.LinearLR(
             optimizer, start_factor=0.1, total_iters=warmup_epochs)
-        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=max(1, num_epochs - warmup_epochs), eta_min=eta_min)
+        cosine = _cosine_to_min_lr(
+            optimizer, T_max=max(1, num_epochs - warmup_epochs),
+            min_lr_ratio=min_lr_ratio)
         return torch.optim.lr_scheduler.SequentialLR(
             optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs])
 
-    return torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=max(1, num_epochs), eta_min=eta_min)
+    return _cosine_to_min_lr(
+        optimizer, T_max=max(1, num_epochs), min_lr_ratio=min_lr_ratio)
+
+
+def _cosine_to_min_lr(
+    optimizer: torch.optim.Optimizer,
+    T_max: int,
+    min_lr_ratio: float,
+) -> torch.optim.lr_scheduler.LRScheduler:
+    """Cosine anneal with a PER-GROUP floor at ``base_lr * min_lr_ratio``.
+
+    ``CosineAnnealingLR`` takes one absolute ``eta_min`` for every param
+    group. The scheduler was building that floor from the HEAD LR only, so an
+    encoder group whose ``encoder_lr`` sat below ``learning_rate * min_lr_ratio``
+    annealed UPWARD toward the floor (inverted cosine). Scaling the whole
+    schedule by a per-epoch factor keeps each group proportional to its own
+    base LR and is mathematically identical to ``CosineAnnealingLR`` when a
+    single group's floor equals ``base_lr * min_lr_ratio``.
+    """
+
+    def lr_lambda(last_epoch: int) -> float:
+        factor = (1.0 + math.cos(math.pi * last_epoch / T_max)) / 2.0
+        return min_lr_ratio + (1.0 - min_lr_ratio) * factor
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 # ═══════════════════════════════════════════════════════════
