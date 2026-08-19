@@ -704,6 +704,14 @@ with tab_cfg:
             help="Trained checkpoint whose ArcFace space is clustered — the SAME "
                  "space the shipped decision layer uses.",
         )
+        force_cache = st.checkbox(
+            "Re-extract embeddings (new model space)", value=False,
+            key="cluster_force",
+            help="The embedding cache is keyed by checkpoint name — tick this the "
+                 "FIRST time you cluster a new/retrained model that overwrote "
+                 "<enc>_best.pt, otherwise the clusters would be built in the OLD "
+                 "model's space.",
+        )
         if r2.button("🔨 Rebuild clusters", type="primary",
                      use_container_width=True, key="cluster_rebuild",
                      disabled=cr_running):
@@ -711,6 +719,8 @@ with tab_cfg:
                    "--k", str(cluster_k_val),
                    "--checkpoint", (cluster_ckpt or "checkpoints/campp_best.pt").strip(),
                    "--device", "auto"]
+            if force_cache:
+                cmd.append("--force-cache")
             cr = LocalRunner(cmd, str(PROJECT_ROOT))
             cr.start()
             st.session_state.cluster_runner = cr

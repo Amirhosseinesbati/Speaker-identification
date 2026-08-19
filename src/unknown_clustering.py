@@ -26,6 +26,11 @@ flags that default to OFF (legacy 447-way behaviour preserved exactly).
         pseudo-label map + cluster centroids. No val artifacts required, so it
         runs on a fresh instance before training.
 
+        --force-cache: re-extract the train embeddings when a cache exists.
+        The cache is keyed by checkpoint NAME — a NEW model that overwrites
+        <enc>_best.pt would otherwise be clustered in the OLD model's space.
+        Pass it the FIRST time you cluster a new/retrained checkpoint.
+
     python -m src.unknown_clustering phase1 --k 554
         Phase 1 — build 554 cluster centroids in the TRAINED campp ArcFace
         space (the same space as the shipped decision layer) and compare val
@@ -291,6 +296,7 @@ def build_cluster_map(
     device: str = "auto",
     seed: int = 42,
     method: str = "kmeans",
+    force_cache: bool = False,
 ) -> dict:
     """Cluster the unknown TRAIN files into ``k_clusters`` pseudo-identities.
 
@@ -313,6 +319,12 @@ def build_cluster_map(
         device:          "auto" | "cpu" | "cuda".
         seed:            kmeans RNG seed (deterministic map rebuilds).
         method:          "kmeans" (default) | "agglomerative".
+        force_cache:     re-extract the train embeddings even when a cache
+                         exists. The cache is keyed by checkpoint NAME, so a
+                         NEW model that overwrites <enc>_best.pt would
+                         otherwise be clustered in the OLD model's space —
+                         pass this the first time you cluster a new/retrained
+                         checkpoint.
 
     Returns:
         dict with everything phase1's val comparison needs:
@@ -327,10 +339,13 @@ def build_cluster_map(
     print("=" * 60)
     print(f"  Build cluster map — k={k_clusters} ({method})")
     print("=" * 60)
-    print(f"  Checkpoint: {checkpoint_path} | device: {dev}")
+    print(f"  Checkpoint: {checkpoint_path} | device: {dev}"
+          f"{' | FORCE re-extract embeddings' if force_cache else ''}")
 
     # ── Train-space embeddings (same as the shipped decision layer) ──
-    embs, labels, files = _extract_train_embs(checkpoint_path, dev)
+    embs, labels, files = _extract_train_embs(
+        checkpoint_path, dev, force=force_cache,
+    )
     unk_mask = labels == 0
     unk_embs = embs[unk_mask]
     unk_files = [f for f, m in zip(files, unk_mask) if m]
@@ -399,11 +414,12 @@ def run_build(
     device: str = "auto",
     seed: int = 42,
     method: str = "kmeans",
+    force_cache: bool = False,
 ) -> dict:
     """Build-only entry point (no val comparison) — the UI/CI rebuild path."""
     out = build_cluster_map(
         checkpoint_path, k_clusters=k_clusters, device=device, seed=seed,
-        method=method,
+        method=method, force_cache=force_cache,
     )
     print(f"\n  ✅ Cluster map ready: k={k_clusters} → "
           f"{int((out['cluster_sizes'] > 0).sum())} non-empty pseudo-identities. "
@@ -730,6 +746,7 @@ def run_phase1(
     checkpoint_path: str,
     k_clusters: int = 554,
     device: str = "auto",
+    force_cache: bool = False,
 ) -> dict:
     """Phase 1 — 447-centroid vs 1000-centroid decision layer on val."""
     import torch
@@ -747,21 +764,37 @@ def run_phase1(
 
     # ── Train-space embeddings, known-quality, cluster map + centroids ──
     # (shared build path with the `build` subcommand / UI rebuild).
-    b = build_cluster_map(checkpoint_path, k_clusters=k_clusters, device=device)
+    b = build_cluster_map(
+        checkpoint_path, k_clusters=k_clusters, device=device,
+        force_cache=force_cache,
+    )
     embs, labels = b["embs"], b["labels"]
     unk_embs, unk_files = b["unk_embs"], b["unk_files"]
     kq, coh = b["known_quality"], b["coherence"]
     cluster_map, c_cent, c_sizes = b["cluster_map"], b["centroids"], b["cluster_sizes"]
     ckpt_key = b["ckpt_key"]
 
-    # ── Val artifacts (same split, trained space) ──
-    val_emb = np.load(DATA_PROCESSED / "val_emb_campp.npy").astype(np.float32)
-    val_lab = np.load(DATA_PROCESSED / "val_labels.npy").astype(np.int64)
-    val_head = np.load(DATA_PROCESSED / "val_probs_campp.npy").astype(np.float64)
+    # ── Val artifacts for THIS checkpoint's encoder (same split, trained
+    # space). Must be re-dumped for the checkpoint under test —
+    # scripts/dump_val_artifacts.py + scripts/build_centroids.py — otherwise a
+    # stale artifact from an older model would be compared here.
+    def _need(path: Path) -> Path:
+        if not path.exists():
+            raise FileNotFoundError(
+                f"{path} missing. Run `uv run --no-sync python "
+                f"scripts/dump_val_artifacts.py --checkpoints {checkpoint_path}` "
+                f"and `uv run --no-sync python scripts/build_centroids.py "
+                f"--checkpoints {checkpoint_path}` for the checkpoint under test."
+            )
+        return path
+
+    val_emb = np.load(_need(DATA_PROCESSED / f"val_emb_{ckpt_key}.npy")).astype(np.float32)
+    val_lab = np.load(_need(DATA_PROCESSED / "val_labels.npy")).astype(np.int64)
+    val_head = np.load(_need(DATA_PROCESSED / f"val_probs_{ckpt_key}.npy")).astype(np.float64)
     assert val_emb.shape[0] == len(val_lab)
 
     # ── Known centroids (shipped) ──
-    known_cent = np.load(DATA_PROCESSED / "centroids_campp.npz")
+    known_cent = np.load(_need(DATA_PROCESSED / f"centroids_{ckpt_key}.npz"))
     known_ids = known_cent["speaker_ids"].astype(np.int64)
     known_cents = known_cent["centroids"].astype(np.float32)
 
@@ -860,11 +893,23 @@ def main() -> int:
                     choices=["kmeans", "agglomerative"])
     bd.add_argument("--seed", type=int, default=42)
     bd.add_argument("--device", default="auto", help="auto | cpu | cuda")
+    bd.add_argument(
+        "--force-cache", action="store_true",
+        help="Re-extract the train embeddings even when a cache exists. Use "
+             "the FIRST time you cluster a new/retrained checkpoint that "
+             "overwrites <enc>_best.pt — the cache is keyed by checkpoint "
+             "name, so without this a new model would be clustered in the "
+             "OLD model's embedding space.",
+    )
 
     p1 = sub.add_parser("phase1", help="Phase 1 — 1000-centroid decision layer on val")
     p1.add_argument("--checkpoint", default="checkpoints/campp_best.pt")
     p1.add_argument("--k", type=int, default=554)
     p1.add_argument("--device", default="auto", help="auto | cpu | cuda")
+    p1.add_argument(
+        "--force-cache", action="store_true",
+        help="Re-extract the train embeddings (see `build --help`).",
+    )
 
     cp = sub.add_parser("compare", help="2×2 val comparison: legacy vs cluster model")
     cp.add_argument("--legacy-checkpoint", default="checkpoints/campp_best.pt")
@@ -877,10 +922,11 @@ def main() -> int:
         run_validate(encoder=args.encoder, k_unknown=args.k_unknown)
     elif args.cmd == "build":
         run_build(checkpoint_path=args.checkpoint, k_clusters=args.k,
-                  device=args.device, seed=args.seed, method=args.method)
+                  device=args.device, seed=args.seed, method=args.method,
+                  force_cache=args.force_cache)
     elif args.cmd == "phase1":
         run_phase1(checkpoint_path=args.checkpoint, k_clusters=args.k,
-                   device=args.device)
+                   device=args.device, force_cache=args.force_cache)
     elif args.cmd == "compare":
         run_compare(legacy_checkpoint=args.legacy_checkpoint,
                     cluster_checkpoint=args.cluster_checkpoint,
