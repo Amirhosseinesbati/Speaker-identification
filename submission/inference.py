@@ -464,15 +464,20 @@ def score_ensemble(
         c_weights = c_weights / (c_weights.sum() + 1e-12)
 
         c_probs_list, max_cos_list = [], []
-        # With cluster centroids merged in, the per-model centroid matrix is
-        # 1001-wide; collapse the 554 cluster columns back into unknown (the
-        # max_cosine stays over ALL centroids for the tau gate).
-        cent_cols = num_classes + num_unknown_clusters
+        # The per-model centroid matrix may be WIDER than the competition
+        # output: submission/load_centroids merges the 554 unknown-cluster
+        # centroids whenever centroids_unknown_<enc>.npz ships next to the
+        # known ones, regardless of the checkpoint's own head width. Size the
+        # matrix from the actual speaker ids and collapse the cluster tail
+        # into unknown when it is, so a legacy 447-way checkpoint + merged
+        # centroids (the current shipped hybrid) works exactly like a cluster
+        # checkpoint. The max_cosine stays over ALL centroids for the tau gate.
         for mi in all_model_embs:
             cent, sids = centroids[encoder_names[mi]]
+            cent_cols = int(sids.max()) + 1
             cp, mc = centroid_probs_matrix(
                 all_model_embs[mi], cent, sids, cent_cols, kappa)
-            if num_unknown_clusters > 0:
+            if cent_cols > num_classes:
                 cp = _collapse_centroid_probs(cp, num_classes)
             c_probs_list.append(cp)
             max_cos_list.append(mc)

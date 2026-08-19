@@ -141,8 +141,27 @@ def load_decision_artifacts(data_dir: Optional[Path] = None) -> dict:
         probs.append(np.load(data_dir / f"val_probs_{enc}.npy").astype(np.float64))
         emb.append(np.load(data_dir / f"val_emb_{enc}.npy").astype(np.float32))
         z = np.load(data_dir / f"centroids_{enc}.npz")
-        cent.append(z["centroids"].astype(np.float32))
-        sids.append(z["speaker_ids"].astype(np.int64))
+        cents = z["centroids"].astype(np.float32)
+        speaker_ids = z["speaker_ids"].astype(np.int64)
+        # Closed-set 1000-class experiment: merge the unknown-cluster centroids
+        # exactly like inference (submission/inference.load_centroids), so the
+        # tuned decision knobs match the centroid matrix the leaderboard
+        # actually applies. Without this, a shipped centroids_unknown_<enc>.npz
+        # silently retunes knobs for a different (447-only) matrix.
+        cluster_path = data_dir / f"centroids_unknown_{enc}.npz"
+        if cluster_path.exists():
+            cd = np.load(cluster_path)
+            cluster_cents = cd["centroids"].astype(np.float32)
+            num_known = int(cents.shape[0])
+            k = int(cluster_cents.shape[0])
+            cluster_ids = np.arange(num_known + 1, num_known + 1 + k,
+                                    dtype=np.int64)
+            cents = np.vstack([cents, cluster_cents])
+            speaker_ids = np.concatenate([speaker_ids, cluster_ids])
+            print(f"[diag] {enc}: merged {k} unknown-cluster centroids "
+                  f"({cents.shape[0]} total) for decision tuning")
+        cent.append(cents)
+        sids.append(speaker_ids)
 
     labels = np.load(data_dir / "val_labels.npy").astype(np.int64)
     return {
@@ -162,7 +181,9 @@ def tune_decision_bundle(artifacts: dict, num_classes: int = NUM_CLASSES) -> dic
     Returns the decision-bundle dict written to ``decision_config.json``.
     """
     from src.metrics import macro_f1_score
-    from submission.inference import centroid_probs_matrix
+    from submission.inference import (
+        centroid_probs_matrix, _collapse_centroid_probs,
+    )
 
     weights = artifacts["weights"]
     n_models = len(artifacts["encoder_names"])
@@ -179,10 +200,16 @@ def tune_decision_bundle(artifacts: dict, num_classes: int = NUM_CLASSES) -> dic
     def ensemble_centroid(kappa: float):
         per_probs, per_mc = [], []
         for i in range(n_models):
+            cent, sids = artifacts["centroids"][i], artifacts["speaker_ids"][i]
+            # The centroid matrix may be wider than the competition output
+            # (unknown-cluster centroids merged in, matching inference) — size
+            # from the actual speaker ids and collapse the tail into unknown.
+            cent_cols = int(sids.max()) + 1
             cp, mc = centroid_probs_matrix(
-                artifacts["emb"][i], artifacts["centroids"][i],
-                artifacts["speaker_ids"][i], num_classes, kappa,
+                artifacts["emb"][i], cent, sids, cent_cols, kappa,
             )
+            if cent_cols > num_classes:
+                cp = _collapse_centroid_probs(cp, num_classes)
             per_probs.append(cp)
             per_mc.append(mc)
         ens_probs = np.tensordot(weights, np.stack(per_probs), axes=(0, 0))
