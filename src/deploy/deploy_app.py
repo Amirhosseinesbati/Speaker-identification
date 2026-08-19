@@ -175,6 +175,38 @@ config = (
 )
 
 
+def _cluster_status_readout(path: Optional[str] = None) -> Optional[dict]:
+    """Current cluster map status: file count, distinct k, phase1 coherence.
+
+    Reads the configured map path (falling back to the committed
+    ``submission/unknown_clusters.json``) plus the last ``phase1`` diagnostics
+    when present. Returns None when no map exists anywhere.
+    """
+    import json as _json
+
+    p = Path(path) if path else None
+    if p is None or not p.exists():
+        p = PROJECT_ROOT / "data" / "processed" / "unknown_clusters.json"
+    if not p.exists():
+        p = PROJECT_ROOT / "submission" / "unknown_clusters.json"
+    if not p.exists():
+        return None
+    try:
+        m = _json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    out = {"path": str(p), "files": len(m), "clusters": len(set(m.values()))}
+    phase1 = PROJECT_ROOT / "data" / "processed" / "unknown_cluster_phase1_results.json"
+    if phase1.exists():
+        try:
+            out["coherence"] = _json.loads(
+                phase1.read_text(encoding="utf-8")
+            ).get("unknown_coherence", {})
+        except Exception:
+            pass
+    return out
+
+
 def _enc_val(key, default=None):
     mc = config.get("model", {})
     enc = mc.get("encoder_type", "wavlm")
@@ -285,6 +317,8 @@ with st.sidebar:
     )
     ft_label = ("Frozen" if freeze
                 else (f"Partial (last {blocks})" if blocks and blocks > 0 else "Full"))
+    cluster_k = int(mc.get("num_unknown_clusters", 0) or 0)
+    cluster_label = f"ON (k={cluster_k})" if cluster_k > 0 else "OFF"
     st.markdown(f"""
     | Param | Value |
     |-------|-------|
@@ -292,6 +326,7 @@ with st.sidebar:
     | Pooling | `{pool}` |
     | Head | {head_label} |
     | Fine-tune | `{ft_label}` |
+    | Cluster mode | `{cluster_label}` |
     | Duration | `{dur}s` |
     | Windows | train `{nwin}` / eval `{mwin}` (hop `{ehop}`) |
     | OOD ratio | `{oodr}` |
@@ -607,6 +642,84 @@ with tab_cfg:
             proto_margin = pc1.number_input("Proto margin", 0.0, 1.0, proto_margin, 0.05)
             proto_decay = pc2.number_input("Proto EMA decay", 0.5, 0.999, proto_decay, 0.01)
 
+    st.divider()
+    st.subheader("🧬 Cluster Mode (closed-set 1000-class)")
+    st.caption("Recover the 554 collapsed 'unknown' identities by clustering the "
+               "unlabelled unknown train files (src/unknown_clustering.py) and train a "
+               "(446+k)-way head whose cluster columns are summed back into 'unknown' at "
+               "output — the competition output stays 447-way. Composes with every "
+               "fine-tune strategy above: Frozen / Partial (last N) / Full / staged "
+               "(progressive freeze_epochs).")
+    cluster_on = st.checkbox(
+        "Enable cluster mode", value=cluster_k > 0, key="cluster_on",
+        help="ON: the collapsed 'unknown' identities are trained as pseudo-classes "
+             "(the 1000-class experiment). OFF: legacy 447-way behaviour.",
+    )
+    cluster_k_val = int(cluster_k or 554)
+    cluster_path = str(config.get("model", {}).get(
+        "unknown_cluster_path", "data/processed/unknown_clusters.json"))
+    if cluster_on:
+        c1, c2 = st.columns(2)
+        cluster_k_val = int(c1.number_input(
+            "Number of clusters (k)", 1, 2000, cluster_k_val, 10, key="cluster_k",
+            help="554 = the true unknown-speaker count. More splits real identities "
+                 "into sub-clusters — safe (the output collapse sums every cluster "
+                 "column into unknown) but each pseudo-class gets smaller/noisier.",
+        ))
+        cluster_path = c2.text_input(
+            "Cluster map path", value=cluster_path, key="cluster_path",
+        )
+        if cluster_k_val > 554:
+            st.warning(f"⚠️ k={cluster_k_val} > 554 — the true unknown-speaker count. "
+                       f"Real identities will be split across clusters; the output is "
+                       f"still 447-way, but pseudo-classes have fewer training files.")
+
+        status = _cluster_status_readout(cluster_path)
+        if status:
+            if status["clusters"] != cluster_k_val:
+                st.warning(f"⚠️ Map at {status['path']} has k={status['clusters']} but "
+                           f"the config requests k={cluster_k_val}. Rebuild below (or "
+                           f"Save) to align — training refuses this mismatch.")
+            else:
+                st.success(f"✓ Map ready: {status['files']:,} files → "
+                           f"k={status['clusters']} ({status['path']})")
+            coh = status.get("coherence")
+            if coh:
+                st.caption(f"Coherence (last phase1): intra-cos "
+                           f"{coh.get('mean_intra_cosine', 0):.4f} | inter-cos "
+                           f"{coh.get('mean_inter_cosine', 0):.4f} | margin "
+                           f"{coh.get('margin', 0):+.4f}")
+        else:
+            st.warning("⚠️ No cluster map found anywhere — click 🔨 Rebuild clusters "
+                       "below to create one.")
+
+        if "cluster_runner" not in st.session_state:
+            st.session_state.cluster_runner = None
+        cr = st.session_state.cluster_runner
+        cr_running = cr is not None and cr.running and not cr.finished
+        r1, r2 = st.columns([3, 1])
+        cluster_ckpt = r1.text_input(
+            "Checkpoint (embedding space)", value="checkpoints/campp_best.pt",
+            key="cluster_ckpt",
+            help="Trained checkpoint whose ArcFace space is clustered — the SAME "
+                 "space the shipped decision layer uses.",
+        )
+        if r2.button("🔨 Rebuild clusters", type="primary",
+                     use_container_width=True, key="cluster_rebuild",
+                     disabled=cr_running):
+            cmd = [sys.executable, "-m", "src.unknown_clustering", "build",
+                   "--k", str(cluster_k_val),
+                   "--checkpoint", (cluster_ckpt or "checkpoints/campp_best.pt").strip(),
+                   "--device", "auto"]
+            cr = LocalRunner(cmd, str(PROJECT_ROOT))
+            cr.start()
+            st.session_state.cluster_runner = cr
+            st.rerun()
+        _render_local_runner("cluster_runner", "Cluster rebuild")
+        st.caption("After rebuilding at a new k, click 💾 Save so "
+                   "model.num_unknown_clusters matches the map (a mismatch is a hard "
+                   "error at train time, not a silent mislabelled run).")
+
     st.subheader("💾 Save")
     exp_name = st.text_input(
         "Experiment name", value="", key="exp_name",
@@ -745,6 +858,9 @@ with tab_cfg:
         proto_block["scale"] = float(proto_scale)
         proto_block["margin"] = float(proto_margin)
         proto_block["decay"] = float(proto_decay)
+        # Closed-set cluster mode (UI knob): k when enabled, 0 = legacy off.
+        config["model"]["num_unknown_clusters"] = int(cluster_k_val) if cluster_on else 0
+        config["model"]["unknown_cluster_path"] = cluster_path
         exp_name = (exp_name or "").strip()
         if exp_name:
             save_profile(exp_name, config)
