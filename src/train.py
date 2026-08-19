@@ -362,11 +362,12 @@ class PrototypicalLoss(nn.Module):
         cos = emb @ self.prototypes.T  # (N, num_classes)
         cos = cos.clamp(-1.0 + 1e-7, 1.0 - 1e-7)
 
-        # AM-softmax subtractive margin on the target class.
-        cos = cos.clone()
-        cos.scatter_(1, lab.unsqueeze(1), cos.gather(1, lab.unsqueeze(1)) - self.margin)
-
-        logits = self.scale * cos
+        # AM-softmax subtractive margin on the target class. The margin value
+        # is gathered from the SAME tensor the scatter writes into, so the
+        # scatter must be out-of-place — an in-place scatter_ bumped the tensor
+        # to version 1 while the gather's backward still needed version 0.
+        target_cos = cos.gather(1, lab.unsqueeze(1)) - self.margin
+        logits = self.scale * cos.scatter(1, lab.unsqueeze(1), target_cos)
         return F.cross_entropy(logits, lab)
 
 

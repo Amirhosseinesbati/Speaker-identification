@@ -233,6 +233,22 @@ def test_prototypical_loss_functional():
     assert pl.prototypes.shape == (10, 8)
 
 
+def test_prototypical_loss_backward():
+    """Regression: forward scattered the AM-softmax margin IN-PLACE into the
+    same tensor the margin was gathered from, so backward needed it at two
+    versions at once (RuntimeError: ... modified by an inplace operation).
+    The loss must be differentiable."""
+    pl = PrototypicalLoss(num_classes=10, embedding_dim=8,
+                          scale=10.0, margin=0.1, decay=0.9)
+    x = torch.randn(8, 8, requires_grad=True)
+    emb = F.normalize(x, dim=1)  # non-leaf; gradient lands on x
+    labels = torch.tensor([1, 1, 2, 3, 4, 5, 6, 7])  # no unknown → all contribute
+    loss = pl(emb, labels)
+    loss.backward()
+    assert x.grad is not None
+    assert torch.isfinite(x.grad).all()
+
+
 def test_prototypical_loss_all_unknown_is_zero():
     pl = PrototypicalLoss(num_classes=10, embedding_dim=8)
     emb = F.normalize(torch.randn(4, 8), dim=1)
