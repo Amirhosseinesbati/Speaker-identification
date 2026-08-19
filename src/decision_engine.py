@@ -51,6 +51,7 @@ def dump_val_checkpoint(checkpoint_path: str, device: torch.device) -> dict:
     """
     from src.data_pipeline import (
         prepare_clean_split, SpeakerDataset, split_args_from_config,
+        load_unknown_cluster_map,
     )
     from src.model_factory import create_model_from_config
 
@@ -67,6 +68,13 @@ def dump_val_checkpoint(checkpoint_path: str, device: torch.device) -> dict:
     audio_cfg = config["audio"]
     data_cfg = config["data"]
 
+    # A cluster-mode checkpoint (num_unknown_clusters > 0) trained on a
+    # pseudo-identity-aware split: rebuild the SAME split (with the cluster
+    # map) so val labels live in the checkpoint's internal space and the
+    # partition matches training exactly.
+    num_unknown_clusters = int(model.num_unknown_clusters)
+    cluster_map = load_unknown_cluster_map(config) if num_unknown_clusters > 0 else None
+
     _, val_df, _ = prepare_clean_split(
         labels_path=data_cfg["labels_path"],
         audio_dir=data_cfg["audio_dir"],
@@ -75,6 +83,7 @@ def dump_val_checkpoint(checkpoint_path: str, device: torch.device) -> dict:
         unknown_val_ratio=0.2,
         min_valid_duration=audio_cfg.get("min_valid_duration", 1.0),
         **split_args_from_config(config),
+        unknown_cluster_map=cluster_map,
     )
 
     ds = SpeakerDataset(
@@ -86,9 +95,9 @@ def dump_val_checkpoint(checkpoint_path: str, device: torch.device) -> dict:
     )
 
     # Competition output width (predict_proba_and_embed already collapses any
-    # pseudo-identity cluster columns into unknown).
-    num_unknown_clusters = int(model.num_unknown_clusters)
-    num_classes = len(class_map) - num_unknown_clusters
+    # pseudo-identity cluster columns into unknown). ``model.num_output_classes``
+    # is always the fixed 447 — safer than deriving it from class_map width.
+    num_classes = int(model.num_output_classes)
     emb_dim = getattr(model.head_speaker, "embedding_dim", 192)
     probs = np.zeros((len(ds), num_classes), dtype=np.float32)
     embs = np.zeros((len(ds), emb_dim), dtype=np.float32)
@@ -105,6 +114,11 @@ def dump_val_checkpoint(checkpoint_path: str, device: torch.device) -> dict:
     DATA.mkdir(parents=True, exist_ok=True)
     np.save(DATA / f"val_probs_{key}.npy", probs)
     np.save(DATA / f"val_emb_{key}.npy", embs)
+    # Every downstream consumer (decision tuning, ensemble calibration) works
+    # in the fixed competition space: pseudo-cluster ids (> 446) are the
+    # aggregated "unknown" (class 0).
+    if num_unknown_clusters > 0:
+        labels = np.where(labels > num_classes - 1, 0, labels)
     np.save(DATA / "val_labels.npy", labels)
     return {"encoder": key, "probs_shape": list(probs.shape),
             "emb_shape": list(embs.shape)}

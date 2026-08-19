@@ -69,6 +69,19 @@ def create_model_from_config(
     head_type = model_cfg.get("speaker_head_type", "linear")
 
     # ── 5. Assemble ──
+    # Closed-set 1000-class experiment (default 0 = legacy 447-way). The
+    # speaker-head width is the SOURCE OF TRUTH for how many pseudo-identity
+    # cluster columns exist: whatever sits beyond the competition-known
+    # speakers is a cluster column. Deriving it here (instead of trusting the
+    # raw config value) keeps the collapse math exact even when a few
+    # clusters' files are dropped by the corruption/duplicate filter (the
+    # class map shrinks) or the map was rebuilt at a different k — the model
+    # always outputs the fixed 447-way competition vector.
+    num_unknown_clusters = int(model_cfg.get("num_unknown_clusters", 0))
+    if num_unknown_clusters > 0:
+        comp_known = int(model_cfg.get("competition_num_known", 446))
+        num_unknown_clusters = max(0, int(num_known_speakers) - comp_known)
+
     model = TwoHeadedSpeakerModel(
         encoder=encoder,
         pooling=pooling,
@@ -76,8 +89,7 @@ def create_model_from_config(
         ood_head=ood_head,
         num_known_speakers=num_known_speakers,
         encoder_name=encoder_name,
-        # Closed-set 1000-class experiment (default 0 = legacy 447-way).
-        num_unknown_clusters=int(model_cfg.get("num_unknown_clusters", 0)),
+        num_unknown_clusters=num_unknown_clusters,
     )
 
     return model

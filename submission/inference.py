@@ -354,7 +354,9 @@ def score_ensemble(
     # predict_proba_and_embed already collapses the cluster columns into
     # unknown, so every per-model prob vector is 447-wide.
     num_unknown_clusters = int(models[0][0].num_unknown_clusters)
-    num_classes = len(class_map) - num_unknown_clusters
+    # Competition output width — always the fixed 447 regardless of the
+    # internal head width (cluster columns are collapsed by the model).
+    num_classes = int(models[0][0].num_output_classes)
     n_models = len(models)
 
     encoder_names = [Path(c).name.replace("_best.pt", "") for c in checkpoint_path]

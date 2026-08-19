@@ -720,6 +720,12 @@ def train(config_path: str = "configs/default_config.yaml"):
     print(f"\n  [2/4] Building model ({num_known} known speakers)...")
     from src.model_factory import create_model_from_config
     model = create_model_from_config(config, num_known_speakers=num_known)
+    # The model derives the EFFECTIVE cluster count from the head width (the
+    # class map may hold fewer pseudo classes than the requested k when some
+    # clusters' files were dropped by the corruption filter). All downstream
+    # width math (Macro-F1 num_classes, collapse) must use that value, not the
+    # raw config — otherwise the 447-way output contract drifts.
+    num_unknown_clusters = int(model.num_unknown_clusters)
     model = model.to(device)
     model.print_summary()
 

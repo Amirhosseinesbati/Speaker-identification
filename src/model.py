@@ -59,6 +59,12 @@ class TwoHeadedSpeakerModel(nn.Module):
         # files. The competition output stays 1 + 446 = 447 classes — the
         # cluster columns are summed into column 0 (unknown) at output time.
         self.num_unknown_clusters = int(num_unknown_clusters)
+        if self.num_unknown_clusters > self.num_known_speakers:
+            raise ValueError(
+                f"num_unknown_clusters={self.num_unknown_clusters} exceeds "
+                f"num_known_speakers={self.num_known_speakers} — a speaker head "
+                f"cannot collapse more cluster columns than it has outputs."
+            )
 
     @property
     def num_output_classes(self) -> int:

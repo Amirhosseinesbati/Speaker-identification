@@ -221,25 +221,15 @@ def prepare_data(
     split_scheme = str(split_cfg.get("scheme", "single")).lower()
 
     # Closed-set 1000-class experiment: pseudo-identity map for unknown files.
-    model_cfg = config.get("model", {}) or {}
-    num_unknown_clusters = int(model_cfg.get("num_unknown_clusters", 0))
-    unknown_cluster_map = None
-    if num_unknown_clusters > 0:
-        import json as _json
-
-        map_path = model_cfg.get(
-            "unknown_cluster_path", "data/processed/unknown_clusters.json",
-        )
-        if not os.path.exists(map_path):
-            raise FileNotFoundError(
-                f"model.num_unknown_clusters={num_unknown_clusters} but cluster "
-                f"map not found: {map_path}. Run "
-                "`python -m src.unknown_clustering phase1` first."
-            )
-        with open(map_path, "r", encoding="utf-8") as f:
-            unknown_cluster_map = {k: int(v) for k, v in _json.load(f).items()}
+    # load_unknown_cluster_map validates the requested k against the map's
+    # distinct cluster ids (k/rebuild mismatch = hard error) and falls back to
+    # the committed submission copy when data/processed is absent.
+    from src.data_pipeline import load_unknown_cluster_map
+    unknown_cluster_map = load_unknown_cluster_map(config)
+    if unknown_cluster_map is not None:
         print(f"  🧬 Unknown clusters: {len(unknown_cluster_map)} files → "
-              f"{num_unknown_clusters} pseudo-identities ({map_path})")
+              f"{len(set(unknown_cluster_map.values()))} pseudo-identities "
+              f"({config.get('model', {}).get('unknown_cluster_path', 'data/processed/unknown_clusters.json')})")
 
     train_df, val_df, class_map = prepare_clean_split(
         labels_path=labels_path,
@@ -461,6 +451,10 @@ def train_model(
     num_known = len(class_map) - 1
     from src.model_factory import create_model_from_config
     model = create_model_from_config(config, num_known_speakers=num_known)
+    # Effective cluster count derived from the head width (the class map may
+    # hold fewer pseudo classes than the requested k when some clusters' files
+    # were dropped by the corruption filter) — the width math below must use it.
+    num_unknown_clusters = int(model.num_unknown_clusters)
     checkpoint = torch.load(model_checkpoint_path, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)
@@ -730,9 +724,11 @@ def evaluate_model(
 
     # Load model
     num_known = len(class_map) - 1
-    num_unknown_clusters = int(config.get("model", {}).get("num_unknown_clusters", 0))
     from src.model_factory import create_model_from_config
     model = create_model_from_config(config, num_known_speakers=num_known)
+    # Effective cluster count from the head width — the metric width math
+    # (num_classes) below must use it, not the raw config value.
+    num_unknown_clusters = int(model.num_unknown_clusters)
     checkpoint = torch.load(best_model_path, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)

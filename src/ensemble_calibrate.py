@@ -67,11 +67,19 @@ def collect_val_logits(
     from torch.utils.data import DataLoader
     from src.data_pipeline import (
         prepare_clean_split, SpeakerDataset, split_args_from_config,
+        load_unknown_cluster_map,
     )
     from src.train import forward_multi_window
 
     audio_cfg = config["audio"]
     data_cfg = config["data"]
+
+    # A cluster-mode model (num_unknown_clusters > 0) trained on a
+    # pseudo-identity-aware split: rebuild the SAME split (with the cluster
+    # map) so the val partition matches training and the labels live in the
+    # model's internal space.
+    num_unknown_clusters = int(getattr(model, "num_unknown_clusters", 0))
+    cluster_map = load_unknown_cluster_map(config) if num_unknown_clusters > 0 else None
 
     _, val_df, class_map = prepare_clean_split(
         labels_path=data_cfg["labels_path"],
@@ -81,6 +89,7 @@ def collect_val_logits(
         unknown_val_ratio=0.2,
         min_valid_duration=audio_cfg.get("min_valid_duration", 1.0),
         **split_args_from_config(config),
+        unknown_cluster_map=cluster_map,
     )
 
     ds = SpeakerDataset(
@@ -101,10 +110,19 @@ def collect_val_logits(
             all_spk.append(spk.cpu())
             all_lbl.append(labels.cpu())
 
+    labels_t = torch.cat(all_lbl)
+    # Competition-space ground truth: pseudo-cluster ids (> 446) are the
+    # aggregated "unknown" (class 0) — every downstream metric works in the
+    # fixed 447-way output space.
+    if num_unknown_clusters > 0:
+        labels_t = torch.where(
+            labels_t > int(model.num_output_classes) - 1,
+            torch.zeros_like(labels_t), labels_t,
+        )
     return {
         "ood": torch.cat(all_ood),
         "spk": torch.cat(all_spk),
-        "labels": torch.cat(all_lbl),
+        "labels": labels_t,
         "num_classes": len(class_map),
     }
 
@@ -222,12 +240,14 @@ def main(checkpoints: List[str], config_path: str, batch_size: int,
         print(f"\n  Loading {ckpt_name}...")
         model, _, class_map = load_checkpoint_model(ckpt, device, config_path)
         num_unknown_clusters = int(model.num_unknown_clusters)
-        num_classes = len(class_map) - num_unknown_clusters
+        # Competition output width — the model already collapses any
+        # pseudo-identity cluster columns, so every model scores in the fixed
+        # 447-way space regardless of its internal head width.
+        num_classes = int(model.num_output_classes)
         enc_name = getattr(model, "encoder_name", Path(ckpt).stem)
         encoder_names.append(enc_name)
 
         val = collect_val_logits(model, device, first_cfg, batch_size=batch_size)
-        num_classes = val["num_classes"] - num_unknown_clusters
         m = evaluate_macro_f1(
             val["ood"], val["spk"], val["labels"], num_classes=num_classes,
             num_unknown_clusters=num_unknown_clusters,
@@ -369,12 +389,27 @@ def main(checkpoints: List[str], config_path: str, batch_size: int,
     print("  Temperature Calibration (on averaged logits)")
     print(f"{'─' * 60}")
 
-    # Average logits (for temperature calibration — per-model logit averaging)
-    ens_ood = sum(all_oods) / n_models  # type: ignore[operator]
-    ens_spk = sum(all_spks) / n_models  # type: ignore[operator]
-    cal = calibrate_temperature(
-        ens_ood, ens_spk, torch.from_numpy(labels), num_classes=num_classes,
-    )
+    # Average logits (per-model logit averaging). Only valid when every model
+    # shares the same speaker-logit width — a mixed legacy (446) + cluster
+    # (1000) ensemble cannot be logit-averaged and falls back to T=1.0 (the
+    # prob-level fusion above already handles mixed ensembles).
+    spk_widths = {int(s.shape[1]) for s in all_spks}
+    ood_widths = {int(o.shape[1]) for o in all_oods}
+    if len(spk_widths) == 1 and len(ood_widths) == 1:
+        ens_ood = sum(all_oods) / n_models  # type: ignore[operator]
+        ens_spk = sum(all_spks) / n_models  # type: ignore[operator]
+        cal = calibrate_temperature(
+            ens_ood, ens_spk, torch.from_numpy(labels), num_classes=num_classes,
+            num_unknown_clusters=num_unknown_clusters,
+        )
+    else:
+        print("  ⚠ Mixed speaker-head widths in the ensemble — skipping "
+              "logit-level temperature calibration (T stays 1.0).")
+        cal = {
+            "best_temperature": 1.0,
+            "macro_f1_at_best_t": fusion_results["average"]["macro_f1"],
+            "macro_f1_at_t1": fusion_results["average"]["macro_f1"],
+        }
     print(f"  Best temperature: {cal['best_temperature']:.2f} "
           f"(Macro-F1 {cal['macro_f1_at_best_t']:.4f} vs "
           f"T=1.0 {cal['macro_f1_at_t1']:.4f})")

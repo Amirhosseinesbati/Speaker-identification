@@ -110,6 +110,62 @@ def apply_unknown_cluster_labels(
     }
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def load_unknown_cluster_map(config: dict) -> Optional[Dict[str, int]]:
+    """Load + validate the pseudo-identity cluster map (closed-set 1000-class).
+
+    Called wherever the train/val split is built when
+    ``model.num_unknown_clusters > 0``. Returns ``None`` (legacy 447-way) when
+    cluster mode is off.
+
+    Validation is the precision guarantee for the UI's k knob: the requested k
+    must equal the number of DISTINCT cluster ids in the map. Changing k in the
+    config without rebuilding the map would silently misalign the speaker-head
+    width with the collapse columns (the 447-way output contract breaks), so it
+    is a hard error with rebuild instructions instead.
+
+    When the configured map path is absent, falls back to the committed
+    ``submission/unknown_clusters.json`` (a fresh Vast.ai instance clones the
+    repo but has no ``data/processed`` — the committed map is the durable copy).
+    """
+    model_cfg = config.get("model", {}) or {}
+    k = int(model_cfg.get("num_unknown_clusters", 0))
+    if k <= 0:
+        return None
+
+    import json
+
+    map_path = Path(str(model_cfg.get(
+        "unknown_cluster_path", "data/processed/unknown_clusters.json",
+    )))
+    if not map_path.exists():
+        fallback = _PROJECT_ROOT / "submission" / "unknown_clusters.json"
+        if fallback.exists():
+            print(f"  ⚠ {map_path} missing — using committed {fallback}")
+            map_path = fallback
+        else:
+            raise FileNotFoundError(
+                f"model.num_unknown_clusters={k} but cluster map not found: "
+                f"{map_path}. Run `python -m src.unknown_clustering build "
+                f"--k {k}` (or the UI: Config → Cluster Mode → Rebuild) first."
+            )
+
+    with open(map_path, "r", encoding="utf-8") as f:
+        cluster_map = {file: int(cid) for file, cid in json.load(f).items()}
+    n_clusters = len(set(cluster_map.values()))
+    if n_clusters != k:
+        raise ValueError(
+            f"model.num_unknown_clusters={k} but the cluster map {map_path} "
+            f"contains {n_clusters} distinct cluster ids. Rebuild the map at "
+            f"the requested k: `python -m src.unknown_clustering build "
+            f"--k {k} --checkpoint <ckpt>` (or the UI: Config → Cluster Mode "
+            f"→ Rebuild clusters)."
+        )
+    return cluster_map
+
+
 def find_duplicate_groups(
     labels_df: pd.DataFrame,
     audio_dir: str,
@@ -1213,27 +1269,15 @@ def get_dataloaders(
     split_scheme = str(split_cfg.get("scheme", "single")).lower()
 
     # Closed-set 1000-class experiment: pseudo-identity map for unknown files.
-    model_cfg = config.get("model", {}) or {}
-    num_unknown_clusters = int(model_cfg.get("num_unknown_clusters", 0))
-    unknown_cluster_map = None
-    if num_unknown_clusters > 0:
-        import json
-
-        map_path = model_cfg.get(
-            "unknown_cluster_path", "data/processed/unknown_clusters.json",
-        )
-        if os.path.exists(map_path):
-            with open(map_path, "r", encoding="utf-8") as f:
-                unknown_cluster_map = {k: int(v) for k, v in json.load(f).items()}
-            print(f"  🧬 Unknown clusters: {len(unknown_cluster_map)} files → "
-                  f"{num_unknown_clusters} pseudo-identities "
-                  f"({map_path})")
-        else:
-            raise FileNotFoundError(
-                f"model.num_unknown_clusters={num_unknown_clusters} but cluster "
-                f"map not found: {map_path}. Run "
-                "`python -m src.unknown_clustering phase1` first."
-            )
+    # load_unknown_cluster_map validates the requested k against the map's
+    # distinct cluster ids (a k/rebuild mismatch is a hard error, not a silent
+    # mislabelled run) and falls back to the committed submission copy when
+    # data/processed is absent (fresh Vast.ai instance).
+    unknown_cluster_map = load_unknown_cluster_map(config)
+    if unknown_cluster_map is not None:
+        print(f"  🧬 Unknown clusters: {len(unknown_cluster_map)} files → "
+              f"{len(set(unknown_cluster_map.values()))} pseudo-identities "
+              f"({config.get('model', {}).get('unknown_cluster_path', 'data/processed/unknown_clusters.json')})")
 
     train_df, val_df, class_map = prepare_labels(
         labels_path=labels_path,
@@ -1283,6 +1327,9 @@ def get_dataloaders(
     # label-0 pool is (nearly) empty and the balanced sampler would over-sample
     # the same few files — fall back to a plain shuffle instead.
     train_labels = train_df["label"].values
+    num_unknown_clusters = (
+        len(set(unknown_cluster_map.values())) if unknown_cluster_map else 0
+    )
     if num_unknown_clusters > 0:
         sampler = None
         print("\n  🧬 1000-class mode: uniform batch sampling "
