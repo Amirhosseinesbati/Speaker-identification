@@ -5,7 +5,7 @@ _meta:
   base_git: unknown
 # Closed-set 1000-class experiment: recover the 554 collapsed "unknown"
 # identities by clustering the unlabelled unknown train files
-# (src/unknown_clustering.py phase1) and train a 1000-way head.
+# (src/unknown_clustering.py build --k 554) and train a 1000-way head.
 # Output stays 447-way — the cluster columns are summed into unknown.
 model:
   num_unknown_clusters: 554
