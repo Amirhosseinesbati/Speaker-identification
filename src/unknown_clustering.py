@@ -19,6 +19,13 @@ flags that default to OFF (legacy 447-way behaviour preserved exactly).
         unknown clusters are. Uses the existing frozen-embedding caches
         (data/processed/embeddings_train_<enc>.npy) when present.
 
+    python -m src.unknown_clustering build --k 554 --checkpoint checkpoints/campp_best.pt
+        Build — the UI/CI rebuild path. Clusters the unknown TRAIN files at a
+        chosen k (any k in [1, #unknown-train-files]; 554 = the true speaker
+        count, more = sub-clusters of real identities) and writes the
+        pseudo-label map + cluster centroids. No val artifacts required, so it
+        runs on a fresh instance before training.
+
     python -m src.unknown_clustering phase1 --k 554
         Phase 1 — build 554 cluster centroids in the TRAINED campp ArcFace
         space (the same space as the shipped decision layer) and compare val
@@ -272,6 +279,136 @@ def run_validate(encoder: str = "campp", k_unknown: int = 554) -> dict:
     out.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\n  ✓ Results saved to {out}")
     return report
+
+
+# ─────────────────────────────────────────────────────────
+#  Cluster-map build (shared by `build` and `phase1`)
+# ─────────────────────────────────────────────────────────
+
+def build_cluster_map(
+    checkpoint_path: str,
+    k_clusters: int = 554,
+    device: str = "auto",
+    seed: int = 42,
+    method: str = "kmeans",
+) -> dict:
+    """Cluster the unknown TRAIN files into ``k_clusters`` pseudo-identities.
+
+    This is the single build path for the closed-set 1000-class experiment: it
+    produces the pseudo-label map (``data/processed/unknown_clusters.json``)
+    and the cluster centroids (``centroids_unknown_<enc>.npz``) that Phase-2
+    training and the decision layer consume. Embeddings come from the
+    checkpoint's ArcFace space (cached), so the map lives in the exact space
+    the shipped decision layer uses.
+
+    ``k_clusters`` is the requested k — the UI knob. Any value in
+    ``[1, #unknown-train-files]`` is allowed; k > the true speaker count splits
+    real identities into sub-clusters, which is safe because the collapse sums
+    every cluster column into unknown at output time (finer granularity may
+    help the head, at the cost of smaller/noisier pseudo classes).
+
+    Args:
+        checkpoint_path: trained checkpoint whose ArcFace space is clustered.
+        k_clusters:      requested number of pseudo-identities.
+        device:          "auto" | "cpu" | "cuda".
+        seed:            kmeans RNG seed (deterministic map rebuilds).
+        method:          "kmeans" (default) | "agglomerative".
+
+    Returns:
+        dict with everything phase1's val comparison needs:
+        embs/labels/files/unk_mask/unk_embs/unk_files/known_quality/
+        cluster_ids/coherence/cluster_map/centroids/cluster_sizes/ckpt_key.
+    """
+    import torch
+
+    dev = torch.device("cuda" if (device == "auto" and torch.cuda.is_available())
+                       else torch.device(device))
+
+    print("=" * 60)
+    print(f"  Build cluster map — k={k_clusters} ({method})")
+    print("=" * 60)
+    print(f"  Checkpoint: {checkpoint_path} | device: {dev}")
+
+    # ── Train-space embeddings (same as the shipped decision layer) ──
+    embs, labels, files = _extract_train_embs(checkpoint_path, dev)
+    unk_mask = labels == 0
+    unk_embs = embs[unk_mask]
+    unk_files = [f for f, m in zip(files, unk_mask) if m]
+    n_unknown = int(unk_mask.sum())
+    if k_clusters > n_unknown:
+        raise ValueError(
+            f"k_clusters={k_clusters} exceeds the {n_unknown} unknown train "
+            f"files — clusters cannot be denser than the data. Lower k (the "
+            f"true unknown-speaker count is ~554) or add more unknown files."
+        )
+    print(f"  Train embeddings: {embs.shape} "
+          f"(known {int((~unk_mask).sum()):,} / unknown {n_unknown:,})")
+
+    # ── Known-speaker validation in this space (diagnostic) ──
+    known_embs = embs[~unk_mask]
+    known_true = labels[~unk_mask]
+    num_known_out = 446
+    kq = cluster_quality(known_true, cluster_kmeans(known_embs, num_known_out))
+    print(f"  Known clustering (trained space): ARI={kq['ari']:.4f} "
+          f"purity={kq['purity']:.4f}")
+
+    # ── Cluster the unknown train files ──
+    if str(method).lower().startswith("agglo"):
+        pred_u = cluster_agglomerative(unk_embs, k_clusters)
+    else:
+        pred_u = cluster_kmeans(unk_embs, k_clusters, seed=seed)
+    sizes = np.bincount(pred_u, minlength=k_clusters)
+    coh = cluster_coherence(unk_embs, pred_u)
+    print(f"  Unknown clustering ({method}): {int((sizes > 0).sum())}/{k_clusters} "
+          f"non-empty | sizes min {int(sizes.min())} / mean {sizes.mean():.2f} / "
+          f"max {int(sizes.max())}")
+    print(f"    intra-cos={coh['mean_intra_cosine']:.4f} "
+          f"inter-cos={coh['mean_inter_cosine']:.4f} "
+          f"margin={coh['margin']:+.4f}")
+
+    # ── Persist the pseudo-label map + cluster centroids (Phase 2 reuse) ──
+    cluster_map = {f: int(c) for f, c in zip(unk_files, pred_u)}
+    CLUSTER_MAP_PATH.write_text(
+        json.dumps(cluster_map, indent=0, ensure_ascii=False), encoding="utf-8",
+    )
+    print(f"  ✓ Cluster map saved: {CLUSTER_MAP_PATH} ({len(cluster_map)} files)")
+
+    c_cent, c_sizes = build_centroids(unk_embs, pred_u)
+    ckpt_key = Path(checkpoint_path).name.replace("_best.pt", "")
+    np.savez_compressed(
+        DATA_PROCESSED / f"centroids_unknown_{ckpt_key}.npz",
+        centroids=c_cent, cluster_sizes=c_sizes,
+        cluster_ids=np.arange(k_clusters, dtype=np.int64),
+    )
+    print(f"  ✓ Cluster centroids saved: centroids_unknown_{ckpt_key}.npz "
+          f"({int((c_sizes > 0).sum())} non-empty)")
+
+    return {
+        "embs": embs, "labels": labels, "files": files,
+        "unk_mask": unk_mask, "unk_embs": unk_embs, "unk_files": unk_files,
+        "known_quality": kq, "cluster_ids": pred_u, "coherence": coh,
+        "cluster_map": cluster_map, "centroids": c_cent,
+        "cluster_sizes": c_sizes, "ckpt_key": ckpt_key,
+        "num_known_out": num_known_out,
+    }
+
+
+def run_build(
+    checkpoint_path: str = "checkpoints/campp_best.pt",
+    k_clusters: int = 554,
+    device: str = "auto",
+    seed: int = 42,
+    method: str = "kmeans",
+) -> dict:
+    """Build-only entry point (no val comparison) — the UI/CI rebuild path."""
+    out = build_cluster_map(
+        checkpoint_path, k_clusters=k_clusters, device=device, seed=seed,
+        method=method,
+    )
+    print(f"\n  ✅ Cluster map ready: k={k_clusters} → "
+          f"{int((out['cluster_sizes'] > 0).sum())} non-empty pseudo-identities. "
+          f"Set model.num_unknown_clusters={k_clusters} in the config to train.")
+    return out
 
 
 # ─────────────────────────────────────────────────────────
@@ -608,44 +745,14 @@ def run_phase1(
     print(f"  Checkpoint: {checkpoint_path} | clusters k={k_clusters} | "
           f"device: {dev}")
 
-    # ── Train-space embeddings (same as the shipped decision layer) ──
-    embs, labels, files = _extract_train_embs(checkpoint_path, dev)
-    unk_mask = labels == 0
-    unk_embs = embs[unk_mask]
-    unk_files = [f for f, m in zip(files, unk_mask) if m]
-    print(f"  Train embeddings: {embs.shape} "
-          f"(known {int((~unk_mask).sum()):,} / unknown {int(unk_mask.sum()):,})")
-
-    # ── Known-speaker validation in this space ──
-    known_embs = embs[~unk_mask]
-    known_true = labels[~unk_mask]
-    kq = cluster_quality(known_true, cluster_kmeans(known_embs, num_known_out))
-    print(f"  Known clustering (trained space): ARI={kq['ari']:.4f} "
-          f"purity={kq['purity']:.4f}")
-
-    # ── Cluster the unknown train files ──
-    pred_u = cluster_kmeans(unk_embs, k_clusters)
-    coh = cluster_coherence(unk_embs, pred_u)
-    print(f"  Unknown clustering: intra-cos={coh['mean_intra_cosine']:.4f} "
-          f"inter-cos={coh['mean_inter_cosine']:.4f} "
-          f"margin={coh['margin']:+.4f}")
-
-    # ── Persist the pseudo-label map + cluster centroids (Phase 2 reuse) ──
-    cluster_map = {f: int(c) for f, c in zip(unk_files, pred_u)}
-    CLUSTER_MAP_PATH.write_text(
-        json.dumps(cluster_map, indent=0, ensure_ascii=False), encoding="utf-8",
-    )
-    print(f"  ✓ Cluster map saved: {CLUSTER_MAP_PATH} ({len(cluster_map)} files)")
-
-    c_cent, c_sizes = build_centroids(unk_embs, pred_u)
-    ckpt_key = Path(checkpoint_path).name.replace("_best.pt", "")
-    np.savez_compressed(
-        DATA_PROCESSED / f"centroids_unknown_{ckpt_key}.npz",
-        centroids=c_cent, cluster_sizes=c_sizes,
-        cluster_ids=np.arange(k_clusters, dtype=np.int64),
-    )
-    print(f"  ✓ Cluster centroids saved: centroids_unknown_{ckpt_key}.npz "
-          f"({int((c_sizes > 0).sum())} non-empty)")
+    # ── Train-space embeddings, known-quality, cluster map + centroids ──
+    # (shared build path with the `build` subcommand / UI rebuild).
+    b = build_cluster_map(checkpoint_path, k_clusters=k_clusters, device=device)
+    embs, labels = b["embs"], b["labels"]
+    unk_embs, unk_files = b["unk_embs"], b["unk_files"]
+    kq, coh = b["known_quality"], b["coherence"]
+    cluster_map, c_cent, c_sizes = b["cluster_map"], b["centroids"], b["cluster_sizes"]
+    ckpt_key = b["ckpt_key"]
 
     # ── Val artifacts (same split, trained space) ──
     val_emb = np.load(DATA_PROCESSED / "val_emb_campp.npy").astype(np.float32)
@@ -739,6 +846,21 @@ def main() -> int:
                    choices=["ecapa", "wavlm", "campp", "eres2net", "titanet"])
     v.add_argument("--k-unknown", type=int, default=554)
 
+    bd = sub.add_parser(
+        "build",
+        help="Build the pseudo-identity cluster map + centroids at a chosen k "
+             "(the UI/CI rebuild path; no val comparison).",
+    )
+    bd.add_argument("--checkpoint", default="checkpoints/campp_best.pt")
+    bd.add_argument("--k", type=int, default=554,
+                    help="number of pseudo-identities (the UI knob; ~554 = the "
+                         "true unknown-speaker count, more splits real speakers "
+                         "into sub-clusters).")
+    bd.add_argument("--method", default="kmeans",
+                    choices=["kmeans", "agglomerative"])
+    bd.add_argument("--seed", type=int, default=42)
+    bd.add_argument("--device", default="auto", help="auto | cpu | cuda")
+
     p1 = sub.add_parser("phase1", help="Phase 1 — 1000-centroid decision layer on val")
     p1.add_argument("--checkpoint", default="checkpoints/campp_best.pt")
     p1.add_argument("--k", type=int, default=554)
@@ -753,6 +875,9 @@ def main() -> int:
 
     if args.cmd == "validate":
         run_validate(encoder=args.encoder, k_unknown=args.k_unknown)
+    elif args.cmd == "build":
+        run_build(checkpoint_path=args.checkpoint, k_clusters=args.k,
+                  device=args.device, seed=args.seed, method=args.method)
     elif args.cmd == "phase1":
         run_phase1(checkpoint_path=args.checkpoint, k_clusters=args.k,
                    device=args.device)
