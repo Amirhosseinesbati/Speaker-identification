@@ -100,13 +100,21 @@ def main() -> int:
         return 1
 
     # ── 4. silence check ──
-    print("[4/5] Silence check (0 bytes stdout + stderr) ...")
-    if proc.stdout or proc.stderr:
-        print("  FAIL: expected 0 bytes on both streams")
-        print("  stdout:", proc.stdout[:500])
+    # The package intentionally prints one-line "[diag] " diagnostics (the GPU
+    # probe in submission.py + the centroid-merge note in inference.py) — the
+    # first thing the leaderboard surfaces. EVERYTHING else must be silent so
+    # a real server error would be the first unexpected line.
+    print("[4/5] Silence check (only [diag] lines allowed on stdout) ...")
+    out_lines = proc.stdout.splitlines()
+    diag_lines = [ln for ln in out_lines if ln.startswith("[diag] ")]
+    unexpected = [ln for ln in out_lines if ln.strip() and not ln.startswith("[diag] ")]
+    if unexpected or proc.stderr:
+        print("  FAIL: unexpected output on stdout/stderr")
+        for ln in unexpected[:20]:
+            print("  stdout:", ln)
         print("  stderr:", proc.stderr[:500])
         return 1
-    print("      OK (completely silent)")
+    print(f"      OK ({len(diag_lines)} [diag] line(s), no unexpected output)")
 
     # ── 5. CSV validation ──
     print("[5/5] Validating CSV ...")
