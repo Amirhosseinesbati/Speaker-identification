@@ -709,7 +709,10 @@ def train(config_path: str = "configs/default_config.yaml"):
     # ── DataLoaders ──
     print("\n  [1/4] Preparing DataLoaders...")
     train_loader, val_loader, class_map = get_dataloaders(config)
-    num_known = config.get("model", {}).get("competition_num_known", len(class_map) - 1)
+    # Head width = number of non-unknown classes in the (possibly cluster-
+    # extended) class map: 446 legacy, 1000 with the closed-set experiment.
+    num_known = len(class_map) - 1
+    num_unknown_clusters = int(config.get("model", {}).get("num_unknown_clusters", 0))
 
     # ── Model ──
     # NOTE: use the config-driven factory, NOT the legacy TwoHeadedWavLM
@@ -823,7 +826,9 @@ def train(config_path: str = "configs/default_config.yaml"):
         val_metrics = validate_epoch(model, val_loader, criterion, device)
         val_m = evaluate_macro_f1(
             val_metrics["ood_logits"], val_metrics["speaker_logits"],
-            val_metrics["labels"], num_classes=len(class_map),
+            val_metrics["labels"],
+            num_classes=len(class_map) - num_unknown_clusters,
+            num_unknown_clusters=num_unknown_clusters,
         )
         val_metrics["macro_f1"] = val_m["macro_f1"]
 

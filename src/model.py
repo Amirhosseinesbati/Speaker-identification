@@ -44,6 +44,7 @@ class TwoHeadedSpeakerModel(nn.Module):
         ood_head: nn.Module,
         num_known_speakers: int,
         encoder_name: str = "unknown",
+        num_unknown_clusters: int = 0,
     ):
         super().__init__()
         self.encoder = encoder
@@ -52,6 +53,29 @@ class TwoHeadedSpeakerModel(nn.Module):
         self.head_ood = ood_head
         self.num_known_speakers = num_known_speakers
         self.encoder_name = encoder_name
+        # Closed-set 1000-class experiment: when > 0, the speaker head spans
+        # num_known_speakers = 446 known + `num_unknown_clusters` pseudo
+        # identities recovered by clustering the unlabelled unknown train
+        # files. The competition output stays 1 + 446 = 447 classes — the
+        # cluster columns are summed into column 0 (unknown) at output time.
+        self.num_unknown_clusters = int(num_unknown_clusters)
+
+    @property
+    def num_output_classes(self) -> int:
+        """Width of the competition output vector (447 for this problem)."""
+        return self.num_known_speakers - self.num_unknown_clusters + 1
+
+    def _collapse_probs(self, p_unknown: torch.Tensor, p_known_scaled: torch.Tensor) -> torch.Tensor:
+        """(B,1) unknown + (B, N) scaled known → (B, 1 + known_out).
+
+        With num_unknown_clusters=0 this is exactly the legacy concat. With
+        clusters, the cluster columns are summed into column 0.
+        """
+        if self.num_unknown_clusters > 0:
+            n_out_known = self.num_known_speakers - self.num_unknown_clusters
+            cluster_sum = p_known_scaled[:, n_out_known:].sum(dim=1, keepdim=True)
+            return torch.cat([p_unknown + cluster_sum, p_known_scaled[:, :n_out_known]], dim=1)
+        return torch.cat([p_unknown, p_known_scaled], dim=1)
 
     def forward(
         self,
@@ -189,8 +213,9 @@ class TwoHeadedSpeakerModel(nn.Module):
         p_unknown_expanded = p_unknown.expand(-1, self.num_known_speakers)
         p_known_scaled = (1.0 - p_unknown_expanded) * p_known
 
-        # Concatenate: (batch, 1 + N) = (batch, 447)
-        probs = torch.cat([p_unknown, p_known_scaled], dim=1)
+        # Concatenate: (batch, 1 + N) = (batch, 447); with clusters the 554
+        # pseudo-identity columns are summed into column 0 (unknown).
+        probs = self._collapse_probs(p_unknown, p_known_scaled)
 
         # Numerical safety
         probs = torch.clamp(probs, min=1e-7, max=1.0 - 1e-7)
@@ -233,7 +258,7 @@ class TwoHeadedSpeakerModel(nn.Module):
         p_unknown = torch.sigmoid(ood_logit)          # (W, 1)
         p_known = F.softmax(speaker_logits / max(float(temperature), 1e-6), dim=1)
         p_known_scaled = (1.0 - p_unknown.expand(-1, self.num_known_speakers)) * p_known
-        probs = torch.cat([p_unknown, p_known_scaled], dim=1)  # (W, 447)
+        probs = self._collapse_probs(p_unknown, p_known_scaled)  # (W, 447)
         probs = torch.clamp(probs, min=1e-7, max=1.0 - 1e-7)
         probs = probs / probs.sum(dim=1, keepdim=True)
         probs = probs.mean(dim=0)                     # (447,)
@@ -317,6 +342,7 @@ class TwoHeadedWavLM(TwoHeadedSpeakerModel):
             ood_head=ood_head,
             num_known_speakers=num_known_speakers,
             encoder_name=base_model,
+            num_unknown_clusters=model_cfg.get("num_unknown_clusters", 0),
         )
 
     # Keep old method signatures for backward compat

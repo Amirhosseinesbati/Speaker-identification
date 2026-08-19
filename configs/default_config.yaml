@@ -148,6 +148,12 @@ mlops:
 model:
   allow_hub_download: false
   competition_num_known: 446
+  # Closed-set 1000-class experiment (src/unknown_clustering.py): when > 0,
+  # the 554 collapsed "unknown" identities are recovered by clustering the
+  # unlabelled unknown train files and trained as pseudo-classes; the cluster
+  # columns are summed back into unknown at output time (output stays 447-way).
+  num_unknown_clusters: 0
+  unknown_cluster_path: data/processed/unknown_clusters.json
   encoder_config:
     campp:
       freeze_encoder: false

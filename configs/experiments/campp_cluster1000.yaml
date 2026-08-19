@@ -1,0 +1,27 @@
+_meta:
+  name: campp_cluster1000
+  base: default_config.yaml
+  created: '2026-08-19T00:00:00'
+  base_git: unknown
+# Closed-set 1000-class experiment: recover the 554 collapsed "unknown"
+# identities by clustering the unlabelled unknown train files
+# (src/unknown_clustering.py phase1) and train a 1000-way head.
+# Output stays 447-way — the cluster columns are summed into unknown.
+model:
+  num_unknown_clusters: 554
+  unknown_cluster_path: data/processed/unknown_clusters.json
+data:
+  split:
+    scheme: single   # must match the split the cluster map was built on (seed 42)
+    fold: 0
+    folds: 3
+    seed: 42
+training:
+  epochs: 40         # bounded first proof run; full 200-epoch run later if it wins
+hardware:
+  mode: local
+  profiles:
+    local:
+      batch_size: 16     # frozen campp is light — halves the 1660 Ti runtime
+logging:
+  checkpoint_dir: checkpoints/cluster1000   # never clobber the working campp_best.pt

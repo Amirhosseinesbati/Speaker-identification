@@ -78,6 +78,38 @@ def create_class_mapping(labels_df: pd.DataFrame) -> Dict[str, int]:
     return mapping
 
 
+def apply_unknown_cluster_labels(
+    labels_df: pd.DataFrame,
+    cluster_map: Optional[Dict[str, int]],
+) -> Tuple[pd.DataFrame, dict]:
+    """Rewrite 'unknown' rows to pseudo cluster ids for the closed-set 1000-class
+    experiment (see ``src/unknown_clustering.py``).
+
+    Files listed in ``cluster_map`` ({audio_file: cluster_id}) become
+    pseudo-speakers ``unknown_<n>`` (4-digit zero-padded). Because UUID strings
+    sort before "unknown_*" lexicographically, ``create_class_mapping`` assigns
+    them ids 447..1000 after the 446 known speakers. Files NOT in the map keep
+    the real ``unknown`` label (→ 0), i.e. they stay genuinely-OOD for the head.
+
+    Returns:
+        (labels_df copy, stats dict)
+    """
+    if not cluster_map:
+        return labels_df, {"n_rewritten": 0, "n_clusters": 0}
+
+    df = labels_df.copy()
+    unk = df["speaker_id"] == "unknown"
+    mapped = df.loc[unk, "audio_file"].map(cluster_map)
+    mask = unk & mapped.notna()
+    df.loc[mask, "speaker_id"] = "unknown_" + (
+        mapped[mask].astype(int).astype(str).str.zfill(4)
+    )
+    return df, {
+        "n_rewritten": int(mask.sum()),
+        "n_clusters": len(set(cluster_map.values())),
+    }
+
+
 def find_duplicate_groups(
     labels_df: pd.DataFrame,
     audio_dir: str,
@@ -537,18 +569,21 @@ def prepare_clean_split(
     split_scheme: str = "single",
     fold: int = 0,
     folds: int = 3,
+    unknown_cluster_map: Optional[Dict[str, int]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
     """
     Load, clean and leak-free split labels; write data/processed/split_report.json.
 
     Pipeline:
       1. Load & clean labels (drops exact CSV duplicate rows / NaN).
-      2. Scan durations (header-only) for every labelled file.
-      3. Detect corrupted (< min_valid_duration) / missing files.
-      4. Detect MD5-duplicate groups (incl. conflicting-label groups).
-      5. Leak-free split: ``single`` (default) or ``kfold`` (speaker-aware
+      2. (Optional) rewrite ``unknown`` rows to pseudo cluster ids
+         (``unknown_cluster_map`` — closed-set 1000-class experiment).
+      3. Scan durations (header-only) for every labelled file.
+      4. Detect corrupted (< min_valid_duration) / missing files.
+      5. Detect MD5-duplicate groups (incl. conflicting-label groups).
+      6. Leak-free split: ``single`` (default) or ``kfold`` (speaker-aware
          K-fold; returns the ``fold``-th split for OOF training).
-      6. Save cleaned labels and split_report.json (single scheme only).
+      7. Save cleaned labels and split_report.json (single scheme only).
 
     Returns:
         train_df, val_df, class_map
@@ -559,6 +594,13 @@ def prepare_clean_split(
     # Basic cleaning
     df = df.drop_duplicates().reset_index(drop=True)
     df = df.dropna(subset=["speaker_id", "audio_file"]).reset_index(drop=True)
+
+    # Closed-set 1000-class experiment: pseudo identities for unknown files.
+    if unknown_cluster_map:
+        df, cluster_stats = apply_unknown_cluster_labels(df, unknown_cluster_map)
+        print(f"  🧬 Unknown clusters applied: "
+              f"{cluster_stats['n_rewritten']} files → "
+              f"{cluster_stats['n_clusters']} pseudo-identities")
 
     # Create class mapping
     class_map = create_class_mapping(df)
@@ -636,6 +678,7 @@ def prepare_labels(
     split_scheme: str = "single",
     fold: int = 0,
     folds: int = 3,
+    unknown_cluster_map: Optional[Dict[str, int]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
     """
     Load, clean, split labels and create class mapping.
@@ -655,6 +698,7 @@ def prepare_labels(
             split_scheme=split_scheme,
             fold=fold,
             folds=folds,
+            unknown_cluster_map=unknown_cluster_map,
         )
 
     df = pd.read_csv(labels_path)
@@ -1167,6 +1211,30 @@ def get_dataloaders(
     # `data.split` selects single (legacy) vs speaker_aware_kfold (OOF, C5).
     split_cfg = data_cfg.get("split", {}) or {}
     split_scheme = str(split_cfg.get("scheme", "single")).lower()
+
+    # Closed-set 1000-class experiment: pseudo-identity map for unknown files.
+    model_cfg = config.get("model", {}) or {}
+    num_unknown_clusters = int(model_cfg.get("num_unknown_clusters", 0))
+    unknown_cluster_map = None
+    if num_unknown_clusters > 0:
+        import json
+
+        map_path = model_cfg.get(
+            "unknown_cluster_path", "data/processed/unknown_clusters.json",
+        )
+        if os.path.exists(map_path):
+            with open(map_path, "r", encoding="utf-8") as f:
+                unknown_cluster_map = {k: int(v) for k, v in json.load(f).items()}
+            print(f"  🧬 Unknown clusters: {len(unknown_cluster_map)} files → "
+                  f"{num_unknown_clusters} pseudo-identities "
+                  f"({map_path})")
+        else:
+            raise FileNotFoundError(
+                f"model.num_unknown_clusters={num_unknown_clusters} but cluster "
+                f"map not found: {map_path}. Run "
+                "`python -m src.unknown_clustering phase1` first."
+            )
+
     train_df, val_df, class_map = prepare_labels(
         labels_path=labels_path,
         output_path=data_cfg["processed_labels"],
@@ -1177,6 +1245,7 @@ def get_dataloaders(
         split_scheme=split_scheme,
         fold=int(split_cfg.get("fold", 0)),
         folds=int(split_cfg.get("folds", 3)),
+        unknown_cluster_map=unknown_cluster_map,
     )
 
     # Create datasets
@@ -1209,26 +1278,35 @@ def get_dataloaders(
     # Enforces a target OOD/known ratio in every batch so the OOD head always
     # sees enough positive (unknown) samples (a per-class WeightedRandomSampler
     # would give the unknown super-class ~1/447 of every batch → OOD collapse).
+    #
+    # Closed-set 1000-class mode: every file has a (pseudo-)class, so the
+    # label-0 pool is (nearly) empty and the balanced sampler would over-sample
+    # the same few files — fall back to a plain shuffle instead.
     train_labels = train_df["label"].values
-    ood_ratio = audio_cfg.get("ood_batch_ratio", 0.50)
-    balanced_indices = make_balanced_batch_sampler(
-        train_labels, batch_size, ood_ratio=ood_ratio, seed=42,
-    )
-    n_ood = max(1, int(round(batch_size * ood_ratio)))
-    print(f"\n  ⚖️  Batch balance: {n_ood} OOD + {batch_size - n_ood} known "
-          f"({ood_ratio:.0%} / {1 - ood_ratio:.0%})")
-    print(f"     OOD pool: {(train_labels == 0).sum():,} samples | "
-          f"Known pool: {(train_labels != 0).sum():,} samples "
-          f"across {len(class_map) - 1} speakers")
+    if num_unknown_clusters > 0:
+        sampler = None
+        print("\n  🧬 1000-class mode: uniform batch sampling "
+              "(no OOD/known balance)")
+    else:
+        ood_ratio = audio_cfg.get("ood_batch_ratio", 0.50)
+        balanced_indices = make_balanced_batch_sampler(
+            train_labels, batch_size, ood_ratio=ood_ratio, seed=42,
+        )
+        n_ood = max(1, int(round(batch_size * ood_ratio)))
+        print(f"\n  ⚖️  Batch balance: {n_ood} OOD + {batch_size - n_ood} known "
+              f"({ood_ratio:.0%} / {1 - ood_ratio:.0%})")
+        print(f"     OOD pool: {(train_labels == 0).sum():,} samples | "
+              f"Known pool: {(train_labels != 0).sum():,} samples "
+              f"across {len(class_map) - 1} speakers")
+        sampler = torch.utils.data.SubsetRandomSampler(
+            np.asarray(balanced_indices, dtype=np.int64)
+        )
 
-    sampler = torch.utils.data.SubsetRandomSampler(
-        np.asarray(balanced_indices, dtype=np.int64)
-    )
-    
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         sampler=sampler,
+        shuffle=sampler is None,
         num_workers=num_workers,
         pin_memory=True if hw_profile["device"] == "cuda" else False,
         drop_last=True,

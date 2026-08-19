@@ -1,13 +1,13 @@
 {
-  "fusion_method": "weighted_average",
-  "best_macro_f1": 0.9563,
-  "weights": [
-    1.0
-  ],
+  "fusion_method": "average",
+  "best_macro_f1": 0.8877384989417533,
   "encoder_names": [
     "campp"
   ],
   "checkpoints": [
     "campp_best.pt"
+  ],
+  "weights": [
+    1.0
   ]
 }

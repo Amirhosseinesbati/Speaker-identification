@@ -264,6 +264,25 @@ def build(skip_weights: bool) -> None:
         else:
             print(f"  ⚠ centroids_{enc}.npz missing — run scripts/build_centroids.py "
                   f"(decision layer falls back to plain argmax for {enc})")
+
+    # ── closed-set 1000-class experiment artifacts ──
+    # When a shipped checkpoint was trained with model.num_unknown_clusters>0,
+    # ship the pseudo-identity cluster map + cluster centroids so inference can
+    # (a) rebuild the exact class map and (b) run the 1000-centroid decision
+    # layer (inference.py merges centroids_unknown_<enc>.npz automatically).
+    cluster_map_src = ROOT / "data" / "processed" / "unknown_clusters.json"
+    if cluster_map_src.exists():
+        shutil.copy2(cluster_map_src, SUB / "unknown_clusters.json")
+        print("  ✓ unknown_clusters.json (1000-class experiment)")
+    shipped_cluster_centroids = 0
+    for enc in sorted(used_encoders):
+        src = ROOT / "data" / "processed" / f"centroids_unknown_{enc}.npz"
+        if src.exists():
+            shutil.copy2(src, cent_dst / src.name)
+            shipped_cluster_centroids += 1
+            print(f"  ✓ centroids/centroids_unknown_{enc}.npz")
+    if shipped_cluster_centroids == 0:
+        print("  ℹ no unknown-cluster centroids — legacy 447-way decision layer")
     if shipped_centroids == 0:
         print("  ⚠ no centroids shipped — decision layer disabled")
     else:

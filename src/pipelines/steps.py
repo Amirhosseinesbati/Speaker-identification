@@ -219,6 +219,28 @@ def prepare_data(
     # `data.split.seed` controls the RNG so the matrix can vary the partition.
     split_cfg = data_cfg.get("split", {}) or {}
     split_scheme = str(split_cfg.get("scheme", "single")).lower()
+
+    # Closed-set 1000-class experiment: pseudo-identity map for unknown files.
+    model_cfg = config.get("model", {}) or {}
+    num_unknown_clusters = int(model_cfg.get("num_unknown_clusters", 0))
+    unknown_cluster_map = None
+    if num_unknown_clusters > 0:
+        import json as _json
+
+        map_path = model_cfg.get(
+            "unknown_cluster_path", "data/processed/unknown_clusters.json",
+        )
+        if not os.path.exists(map_path):
+            raise FileNotFoundError(
+                f"model.num_unknown_clusters={num_unknown_clusters} but cluster "
+                f"map not found: {map_path}. Run "
+                "`python -m src.unknown_clustering phase1` first."
+            )
+        with open(map_path, "r", encoding="utf-8") as f:
+            unknown_cluster_map = {k: int(v) for k, v in _json.load(f).items()}
+        print(f"  🧬 Unknown clusters: {len(unknown_cluster_map)} files → "
+              f"{num_unknown_clusters} pseudo-identities ({map_path})")
+
     train_df, val_df, class_map = prepare_clean_split(
         labels_path=labels_path,
         audio_dir=audio_dir,
@@ -230,6 +252,7 @@ def prepare_data(
         split_scheme=split_scheme,
         fold=int(split_cfg.get("fold", 0)),
         folds=int(split_cfg.get("folds", 3)),
+        unknown_cluster_map=unknown_cluster_map,
     )
 
     print(f"  ✓ Train: {len(train_df)} samples | Val: {len(val_df)} samples")
@@ -267,7 +290,7 @@ def build_model(
     print("  [ZenML Step 2/4] Building Model")
     print("=" * 55)
 
-    num_known = config.get("model", {}).get("competition_num_known", len(class_map) - 1)
+    num_known = len(class_map) - 1
     from src.model_factory import create_model_from_config
     model = create_model_from_config(config, num_known_speakers=num_known)
 
@@ -404,16 +427,23 @@ def train_model(
     )
 
     train_labels = train_df["label"].values
-    ood_ratio = audio_cfg.get("ood_batch_ratio", 0.5)
-    balanced_indices = make_balanced_batch_sampler(
-        train_labels, hw_profile["batch_size"], ood_ratio=ood_ratio,
-    )
-    sampler = torch.utils.data.SubsetRandomSampler(balanced_indices)
+    num_unknown_clusters = int(config.get("model", {}).get("num_unknown_clusters", 0))
+    if num_unknown_clusters > 0:
+        # 1000-class mode: label-0 pool is ~empty — plain shuffle sampling.
+        sampler = None
+        print("  🧬 1000-class mode: uniform batch sampling (no OOD/known balance)")
+    else:
+        ood_ratio = audio_cfg.get("ood_batch_ratio", 0.5)
+        balanced_indices = make_balanced_batch_sampler(
+            train_labels, hw_profile["batch_size"], ood_ratio=ood_ratio,
+        )
+        sampler = torch.utils.data.SubsetRandomSampler(balanced_indices)
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=hw_profile["batch_size"],
         sampler=sampler,
+        shuffle=sampler is None,
         num_workers=hw_profile["num_workers"],
         pin_memory=(hw_profile["device"] == "cuda"),
         drop_last=True,
@@ -428,7 +458,7 @@ def train_model(
     )
 
     # ── Load model ──
-    num_known = config.get("model", {}).get("competition_num_known", len(class_map) - 1)
+    num_known = len(class_map) - 1
     from src.model_factory import create_model_from_config
     model = create_model_from_config(config, num_known_speakers=num_known)
     checkpoint = torch.load(model_checkpoint_path, map_location="cpu", weights_only=False)
@@ -536,7 +566,9 @@ def train_model(
         val_metrics = validate_epoch(model, val_loader, criterion, device)
         val_m = evaluate_macro_f1(
             val_metrics["ood_logits"], val_metrics["speaker_logits"],
-            val_metrics["labels"], num_classes=len(class_map),
+            val_metrics["labels"],
+            num_classes=len(class_map) - num_unknown_clusters,
+            num_unknown_clusters=num_unknown_clusters,
         )
         val_metrics["macro_f1"] = val_m["macro_f1"]
         val_metrics["ood_f1"] = val_m["ood_f1"]
@@ -697,7 +729,8 @@ def evaluate_model(
     )
 
     # Load model
-    num_known = config.get("model", {}).get("competition_num_known", len(class_map) - 1)
+    num_known = len(class_map) - 1
+    num_unknown_clusters = int(config.get("model", {}).get("num_unknown_clusters", 0))
     from src.model_factory import create_model_from_config
     model = create_model_from_config(config, num_known_speakers=num_known)
     checkpoint = torch.load(best_model_path, map_location="cpu", weights_only=False)
@@ -741,7 +774,9 @@ def evaluate_model(
 
     # ── Competition metric (plain argmax — exactly what the organizers score) ──
     argmax_metrics = evaluate_macro_f1(
-        all_ood, all_spk, all_lbl, num_classes=len(class_map),
+        all_ood, all_spk, all_lbl,
+        num_classes=len(class_map) - num_unknown_clusters,
+        num_unknown_clusters=num_unknown_clusters,
     )
 
     # ── Tune OOD threshold on validation (binary unknown-class F1) ──
@@ -767,8 +802,10 @@ def evaluate_model(
 
     # Macro-F1 at the tuned threshold (local OOD operating-point analysis)
     thr_metrics = evaluate_macro_f1(
-        all_ood, all_spk, all_lbl, num_classes=len(class_map),
+        all_ood, all_spk, all_lbl,
+        num_classes=len(class_map) - num_unknown_clusters,
         ood_threshold=best_threshold,
+        num_unknown_clusters=num_unknown_clusters,
     )
 
     tuned_ood_acc = ((ood_probs > best_threshold).astype(int) == ood_targets).mean()

@@ -245,6 +245,10 @@ def save_predictions(predictions: np.ndarray, output_path: str) -> None:
         writer.writerow(["audio_file", "speaker_id"])
         for fpath, pred in zip(_LAST_FILES, predictions):
             speaker = inverse.get(int(pred), "unknown")
+            # Closed-set cluster experiment: internal pseudo ids (unknown_<n>)
+            # are the aggregated "unknown" from the competition's point of view.
+            if isinstance(speaker, str) and speaker.startswith("unknown_"):
+                speaker = "unknown"
             writer.writerow([fpath.name, speaker])
 
 

@@ -76,6 +76,8 @@ def create_model_from_config(
         ood_head=ood_head,
         num_known_speakers=num_known_speakers,
         encoder_name=encoder_name,
+        # Closed-set 1000-class experiment (default 0 = legacy 447-way).
+        num_unknown_clusters=int(model_cfg.get("num_unknown_clusters", 0)),
     )
 
     return model

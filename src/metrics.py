@@ -108,6 +108,7 @@ def fused_probs_from_logits(
     ood_logits: torch.Tensor,
     speaker_logits: torch.Tensor,
     temperature: float = 1.0,
+    num_unknown_clusters: int = 0,
 ) -> torch.Tensor:
     """Fuse the two heads into a proper 447-way probability distribution.
 
@@ -115,10 +116,17 @@ def fused_probs_from_logits(
         p[0] = sigmoid(ood_logit)
         p[i] = (1 - p[0]) * softmax(speaker_logits / T)[i]
 
+    With ``num_unknown_clusters > 0`` (closed-set 1000-class experiment), the
+    speaker head is wider than the output: the last ``num_unknown_clusters``
+    columns are pseudo-identity clusters whose probability mass is summed into
+    column 0 (unknown) — the competition only ever sees the 447-way output.
+
     Args:
         ood_logits:     (batch, 1) raw OOD logits.
-        speaker_logits: (batch, 446) cosine/logit scores (no margin).
+        speaker_logits: (batch, N) cosine/logit scores (no margin).
         temperature:    softmax temperature for the speaker head (calibration).
+        num_unknown_clusters: width of the pseudo-identity tail to collapse
+                        into column 0 (0 = legacy 446-way speaker head).
 
     Returns:
         probs: (batch, 447) rows summing to 1.
@@ -128,7 +136,13 @@ def fused_probs_from_logits(
 
     num_known = speaker_logits.size(1)
     p_known_scaled = (1.0 - p_unknown.expand(-1, num_known)) * p_known
-    probs = torch.cat([p_unknown, p_known_scaled], dim=1)
+
+    if num_unknown_clusters > 0:
+        n_out_known = num_known - num_unknown_clusters
+        cluster_sum = p_known_scaled[:, n_out_known:].sum(dim=1, keepdim=True)
+        probs = torch.cat([p_unknown + cluster_sum, p_known_scaled[:, :n_out_known]], dim=1)
+    else:
+        probs = torch.cat([p_unknown, p_known_scaled], dim=1)
     probs = probs.clamp(min=1e-9)
     probs = probs / probs.sum(dim=1, keepdim=True)
     return probs
@@ -140,6 +154,7 @@ def predict_global_classes(
     speaker_logits: torch.Tensor,
     ood_threshold: Optional[float] = None,
     temperature: float = 1.0,
+    num_unknown_clusters: int = 0,
 ) -> np.ndarray:
     """Turn head logits into global class predictions (0..446).
 
@@ -151,7 +166,10 @@ def predict_global_classes(
     distribution is used. (Useful for local OOD operating-point analysis; the
     competition itself uses plain argmax, so keep None for reporting.)
     """
-    probs = fused_probs_from_logits(ood_logits, speaker_logits, temperature)
+    probs = fused_probs_from_logits(
+        ood_logits, speaker_logits, temperature,
+        num_unknown_clusters=num_unknown_clusters,
+    )
     preds = probs.argmax(dim=1).cpu().numpy()
 
     if ood_threshold is not None:
@@ -167,6 +185,7 @@ def calibrate_temperature(
     all_labels: torch.Tensor,
     num_classes: int = 447,
     temps: Optional[Sequence[float]] = None,
+    num_unknown_clusters: int = 0,
 ) -> Dict[str, float]:
     """Grid-search the speaker-softmax temperature that maximises Macro-F1.
 
@@ -180,6 +199,7 @@ def calibrate_temperature(
         all_labels:         (N,) global ids (0 = unknown)
         num_classes:        447
         temps:              temperature grid (default 0.5..2.0 step 0.1)
+        num_unknown_clusters: pseudo-identity tail width to collapse (default 0)
 
     Returns:
         {"best_temperature", "macro_f1_at_best_t", "macro_f1_at_t1"}
@@ -188,13 +208,15 @@ def calibrate_temperature(
         temps = np.arange(0.5, 2.01, 0.1)
 
     base = evaluate_macro_f1(
-        all_ood_logits, all_speaker_logits, all_labels, num_classes=num_classes,
+        all_ood_logits, all_speaker_logits, all_labels,
+        num_classes=num_classes, num_unknown_clusters=num_unknown_clusters,
     )
     best = {"temperature": 1.0, "macro_f1": base["macro_f1"]}
     for t in temps:
         m = evaluate_macro_f1(
             all_ood_logits, all_speaker_logits, all_labels,
             num_classes=num_classes, temperature=float(t),
+            num_unknown_clusters=num_unknown_clusters,
         )
         if m["macro_f1"] > best["macro_f1"]:
             best = {"temperature": float(t), "macro_f1": m["macro_f1"]}
@@ -218,6 +240,7 @@ def evaluate_macro_f1(
     num_classes: int = 447,
     ood_threshold: Optional[float] = None,
     temperature: float = 1.0,
+    num_unknown_clusters: int = 0,
 ) -> Dict[str, float]:
     """Compute the competition metric from concatenated validation outputs.
 
@@ -225,9 +248,14 @@ def evaluate_macro_f1(
         all_ood_logits:     (N, 1) OOD logits for the whole eval set.
         all_speaker_logits: (N, 446) speaker logits (no margin).
         all_labels:         (N,) global ground-truth ids (0 = unknown).
-        num_classes:        447.
+        num_classes:        447 (competition output width).
         ood_threshold:      optional forced-unknown threshold (see above).
         temperature:        speaker-softmax temperature.
+        num_unknown_clusters: pseudo-identity tail width to collapse into
+                        column 0 (default 0). When > 0, ``all_speaker_logits``
+                        is wider than 446 and the cluster columns are summed
+                        into unknown; ground-truth labels whose id exceeds the
+                        known range (cluster pseudo-labels) count as unknown.
 
     Returns:
         dict with:
@@ -239,9 +267,15 @@ def evaluate_macro_f1(
     from sklearn.metrics import accuracy_score, f1_score
 
     y_true = all_labels.cpu().numpy()
+    # Closed-set 1000-class: pseudo-cluster ground-truth ids (e.g. 447..1000)
+    # are the aggregated "unknown" from the competition's point of view.
+    if num_unknown_clusters > 0:
+        n_out_known = num_classes - 1
+        y_true = np.where(y_true > n_out_known, 0, y_true)
     y_pred = predict_global_classes(
         all_ood_logits, all_speaker_logits,
         ood_threshold=ood_threshold, temperature=temperature,
+        num_unknown_clusters=num_unknown_clusters,
     )
 
     macro_f1 = macro_f1_score(y_true, y_pred, num_classes=num_classes)

@@ -68,9 +68,11 @@ def load_model(
     config = checkpoint["config"]
     class_map = checkpoint["class_map"]
 
-    num_known = config.get("model", {}).get(
-        "competition_num_known", len(class_map) - 1,
-    )
+    # Head width = non-unknown classes in the checkpoint's class map (446
+    # legacy; 1000 when the closed-set cluster experiment is enabled — the
+    # model collapses the cluster columns internally, so the 447-way output
+    # contract is unchanged).
+    num_known = len(class_map) - 1
     model = create_model_from_config(config, num_known_speakers=num_known)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device).eval()
@@ -195,6 +197,12 @@ def load_centroids(
 ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
     """Load ``centroids_<enc>.npz`` for the given encoders.
 
+    When a ``centroids_unknown_<enc>.npz`` (554 pseudo-identity cluster
+    centroids from ``src/unknown_clustering.py``) sits next to it, the two are
+    merged into a 1000-way centroid matrix with speaker ids 1..1000 — the
+    ``centroid_probs_matrix`` caller then collapses the cluster columns back
+    into unknown.
+
     Returns:
         {encoder: (centroids (S, D), speaker_ids (S,))}
     """
@@ -205,8 +213,23 @@ def load_centroids(
         if not path.exists():
             continue
         data = np.load(path)
-        centroids[enc] = (data["centroids"].astype(np.float32),
-                          data["speaker_ids"].astype(np.int64))
+        cents = data["centroids"].astype(np.float32)
+        sids = data["speaker_ids"].astype(np.int64)
+
+        cluster_path = cdir / f"centroids_unknown_{enc}.npz"
+        if cluster_path.exists():
+            cdata = np.load(cluster_path)
+            cluster_cents = cdata["centroids"].astype(np.float32)
+            num_known = int(cents.shape[0])
+            k = int(cluster_cents.shape[0])
+            cluster_ids = np.arange(num_known + 1, num_known + 1 + k,
+                                    dtype=np.int64)
+            cents = np.vstack([cents, cluster_cents])
+            sids = np.concatenate([sids, cluster_ids])
+            print(f"[diag] {enc}: merged {k} unknown-cluster centroids "
+                  f"({cents.shape[0]} total)")
+
+        centroids[enc] = (cents, sids)
     return centroids
 
 
@@ -241,6 +264,19 @@ def centroid_probs_matrix(
         probs[:, int(sid)] = (1.0 - p_unknown) * known[:, j]
     probs /= (probs.sum(axis=1, keepdims=True) + 1e-12)
     return probs, max_cosine
+
+
+def _collapse_centroid_probs(probs: np.ndarray, num_classes: int) -> np.ndarray:
+    """(N, 1 + known + clusters) → (N, num_classes) for the 1000-class mode.
+
+    The pseudo-identity cluster columns are summed into column 0 (unknown),
+    exactly mirroring the trained model's ``predict_proba`` collapse, so the
+    centroid decision layer stays in the fixed 447-way output space.
+    """
+    out = np.zeros((probs.shape[0], num_classes), dtype=probs.dtype)
+    out[:, 0] = probs[:, 0] + probs[:, num_classes:].sum(axis=1)
+    out[:, 1:] = probs[:, 1:num_classes]
+    return out / (out.sum(axis=1, keepdims=True) + 1e-12)
 
 
 # ────────────────────────────────────────────────────────────────
@@ -313,7 +349,12 @@ def score_ensemble(
     if not models:
         raise RuntimeError("No checkpoints to run.")
     class_map = models[0][1]
-    num_classes = len(class_map)
+    # Competition output width: 447 legacy; with the closed-set cluster
+    # experiment the internal class map is wider (1001) but the model's
+    # predict_proba_and_embed already collapses the cluster columns into
+    # unknown, so every per-model prob vector is 447-wide.
+    num_unknown_clusters = int(models[0][0].num_unknown_clusters)
+    num_classes = len(class_map) - num_unknown_clusters
     n_models = len(models)
 
     encoder_names = [Path(c).name.replace("_best.pt", "") for c in checkpoint_path]
@@ -421,10 +462,16 @@ def score_ensemble(
         c_weights = c_weights / (c_weights.sum() + 1e-12)
 
         c_probs_list, max_cos_list = [], []
+        # With cluster centroids merged in, the per-model centroid matrix is
+        # 1001-wide; collapse the 554 cluster columns back into unknown (the
+        # max_cosine stays over ALL centroids for the tau gate).
+        cent_cols = num_classes + num_unknown_clusters
         for mi in all_model_embs:
             cent, sids = centroids[encoder_names[mi]]
             cp, mc = centroid_probs_matrix(
-                all_model_embs[mi], cent, sids, num_classes, kappa)
+                all_model_embs[mi], cent, sids, cent_cols, kappa)
+            if num_unknown_clusters > 0:
+                cp = _collapse_centroid_probs(cp, num_classes)
             c_probs_list.append(cp)
             max_cos_list.append(mc)
 

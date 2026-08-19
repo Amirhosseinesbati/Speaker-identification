@@ -58,7 +58,7 @@ def dump_val_checkpoint(checkpoint_path: str, device: torch.device) -> dict:
     ck = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config = ck["config"]
     class_map = ck["class_map"]
-    num_known = config.get("model", {}).get("competition_num_known", len(class_map) - 1)
+    num_known = len(class_map) - 1
 
     model = create_model_from_config(config, num_known_speakers=num_known)
     model.load_state_dict(ck["model_state_dict"])
@@ -85,7 +85,10 @@ def dump_val_checkpoint(checkpoint_path: str, device: torch.device) -> dict:
         max_eval_windows=audio_cfg.get("max_eval_windows", 8),
     )
 
-    num_classes = len(class_map)
+    # Competition output width (predict_proba_and_embed already collapses any
+    # pseudo-identity cluster columns into unknown).
+    num_unknown_clusters = int(model.num_unknown_clusters)
+    num_classes = len(class_map) - num_unknown_clusters
     emb_dim = getattr(model.head_speaker, "embedding_dim", 192)
     probs = np.zeros((len(ds), num_classes), dtype=np.float32)
     embs = np.zeros((len(ds), emb_dim), dtype=np.float32)

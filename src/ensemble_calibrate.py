@@ -152,9 +152,7 @@ def load_checkpoint_model(
         class_map = create_class_mapping(df)
         print(f"  ⚠ class_map not in checkpoint — rebuilt from {labels_path}")
 
-    num_known = config.get("model", {}).get(
-        "competition_num_known", len(class_map) - 1,
-    )
+    num_known = len(class_map) - 1
     model = create_model_from_config(config, num_known_speakers=num_known)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device).eval()
@@ -165,10 +163,17 @@ def load_checkpoint_model(
 #  Helper: convert logits → 447-way probability vector
 # ────────────────────────────────────────────────────────────────
 
-def logits_to_probs(ood_logits: torch.Tensor, spk_logits: torch.Tensor) -> np.ndarray:
+def logits_to_probs(
+    ood_logits: torch.Tensor,
+    spk_logits: torch.Tensor,
+    num_unknown_clusters: int = 0,
+) -> np.ndarray:
     """Fuse OOD + speaker logits into a 447-way probability vector (numpy)."""
     from src.metrics import fused_probs_from_logits
-    return fused_probs_from_logits(ood_logits, spk_logits, temperature=1.0).numpy()
+    return fused_probs_from_logits(
+        ood_logits, spk_logits, temperature=1.0,
+        num_unknown_clusters=num_unknown_clusters,
+    ).numpy()
 
 
 # ────────────────────────────────────────────────────────────────
@@ -216,14 +221,16 @@ def main(checkpoints: List[str], config_path: str, batch_size: int,
         ckpt_name = Path(ckpt).name
         print(f"\n  Loading {ckpt_name}...")
         model, _, class_map = load_checkpoint_model(ckpt, device, config_path)
-        num_classes = len(class_map)
+        num_unknown_clusters = int(model.num_unknown_clusters)
+        num_classes = len(class_map) - num_unknown_clusters
         enc_name = getattr(model, "encoder_name", Path(ckpt).stem)
         encoder_names.append(enc_name)
 
         val = collect_val_logits(model, device, first_cfg, batch_size=batch_size)
-        num_classes = val["num_classes"]
+        num_classes = val["num_classes"] - num_unknown_clusters
         m = evaluate_macro_f1(
             val["ood"], val["spk"], val["labels"], num_classes=num_classes,
+            num_unknown_clusters=num_unknown_clusters,
         )
         per_model.append({"checkpoint": ckpt_name, "encoder": enc_name, **m})
         print(f"  Model Macro-F1: {m['macro_f1']:.4f} "
@@ -231,7 +238,8 @@ def main(checkpoints: List[str], config_path: str, batch_size: int,
               f"[{enc_name}]")
 
         # Convert logits to probability vectors
-        probs = logits_to_probs(val["ood"], val["spk"])
+        probs = logits_to_probs(val["ood"], val["spk"],
+                                 num_unknown_clusters=num_unknown_clusters)
         all_probs.append(probs)
         all_oods.append(val["ood"])
         all_spks.append(val["spk"])
