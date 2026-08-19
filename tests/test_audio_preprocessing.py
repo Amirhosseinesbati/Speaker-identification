@@ -189,7 +189,10 @@ def test_zenml_convert_audio_step_uses_same_code(tmp_path, monkeypatch):
 
     result = convert_audio(config_path=str(cfg_path))
 
-    assert result["data"]["audio_dir"] == str(wav_dir)
-    assert result["data"]["labels_path"] == str(wav_dir.parent / "audio_wav_labels.csv")
+    # The step normalises backslashes to forward slashes (a Windows-authored
+    # config must work on the Linux Vast.ai instances) — compare against the
+    # normalised form.
+    assert result["data"]["audio_dir"] == str(wav_dir).replace("\\", "/")
+    assert result["data"]["labels_path"] == str(wav_dir.parent / "audio_wav_labels.csv").replace("\\", "/")
     assert len(list(wav_dir.glob("*.wav"))) == len(mp3s)
     assert (wav_dir.parent / "audio_wav_labels.csv").exists()
