@@ -285,6 +285,54 @@ echo "⬇️  Ensuring encoder weights are present (idempotent)..."
 uv run --no-sync python scripts/download_all_weights.py
 echo "   ✅ Encoder weights ready."
 
+# ============================================================================
+#  Phase 4.6: Sync the cluster map (closed-set 1000-class experiment)
+# ============================================================================
+# data/processed/* is gitignored, so a fresh clone has no
+# data/processed/unknown_clusters.json. When the config requests cluster mode
+# (model.num_unknown_clusters > 0), the committed submission/unknown_clusters.json
+# is the durable copy — copy it into data/processed/ where the data pipeline
+# (and its k-vs-map validation) expects it.
+echo ""
+echo "🧬  Syncing cluster map for closed-set 1000-class mode (if configured)..."
+uv run --no-sync python - <<'PYEOF'
+import json, os, shutil, yaml
+
+config_path = "configs/default_config.yaml"
+if not os.path.exists(config_path):
+    raise SystemExit("configs/default_config.yaml not found — skipping cluster sync")
+cfg = yaml.safe_load(open(config_path, encoding="utf-8"))
+k = int((cfg.get("model", {}) or {}).get("num_unknown_clusters", 0) or 0)
+if k <= 0:
+    print("   Cluster mode OFF (num_unknown_clusters=0) — nothing to sync.")
+    raise SystemExit(0)
+
+map_rel = str((cfg.get("model", {}) or {}).get(
+    "unknown_cluster_path", "data/processed/unknown_clusters.json"))
+dst = os.path.join("data", "processed", os.path.basename(map_rel))
+src = "submission/unknown_clusters.json"
+os.makedirs(os.path.dirname(dst), exist_ok=True)
+
+if os.path.exists(dst):
+    with open(dst, encoding="utf-8") as f:
+        existing = json.load(f)
+    if len({int(v) for v in existing.values()}) == k:
+        print(f"   ✓ data/processed cluster map already present at k={k} — skipping.")
+        raise SystemExit(0)
+
+if not os.path.exists(src):
+    raise SystemExit(
+        f"   ❌ Cluster mode requests k={k} but neither {dst} nor the committed "
+        f"{src} exists. Rebuild clusters (UI: Config → Cluster Mode → Rebuild, "
+        f"or `python -m src.unknown_clustering build --k {k}`) and commit the map."
+    )
+shutil.copy2(src, dst)
+with open(dst, encoding="utf-8") as f:
+    n = len({int(v) for v in json.load(f).values()})
+print(f"   ✓ Cluster map synced: submission/unknown_clusters.json → {dst} "
+      f"(k={n}, requested {k})")
+PYEOF
+
 echo "✅ Environment configured for DagsHub MLflow tracking."
 echo "   GPU: $GPU_TARGET | Encoder: ${ENCODER_TYPE:-<from config>} | Freeze: $FREEZE_ENCODER | Blocks: $UNFREEZE_BLOCKS | Pipeline: $TARGET_PIPELINE"
 
