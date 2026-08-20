@@ -1,0 +1,51 @@
+_meta:
+  name: campp-two_phase_ft-s42_onecenter_withcluster
+  base: default_config.yaml
+  created: '2026-08-20T19:39:01'
+  base_git: 0ff5bdd
+audio:
+  num_train_windows: 8
+augmentation:
+  domain:
+    mp3_codec_roundtrip:
+      p: 0.5
+    musan:
+      music_p: 0.5
+      noise_p: 0.8
+      snr_db:
+      - 0.0
+      - 15.0
+    rirs_reverb:
+      p: 0.6
+  waveform:
+    time_stretch:
+      p: 0.9
+      rate:
+      - 0.9
+      - 1.1
+data:
+  split:
+    scheme: single
+model:
+  num_unknown_clusters: 554
+  encoder_config:
+    eres2net:
+      freeze_encoder: false
+  speaker_head_config:
+    arcface:
+      margin: 0.3
+      scale: 32.0
+    arcface_subcenter:
+      embedding_dim: 256
+  speaker_head_type: arcface
+training:
+  early_stopping_patience: 20
+  encoder_lr: 1.0e-05
+  freeze_epochs: 20
+  label_smoothing: 0.1
+  loss:
+    proto:
+      weight: 0.2
+    speaker:
+      label_smoothing: 0.1
+  weight_decay: 0.0003
