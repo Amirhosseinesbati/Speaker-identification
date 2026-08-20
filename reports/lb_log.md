@@ -17,6 +17,7 @@
 |---|---|---|---|---|---|
 | 2026-08-14 | (baseline قبل از Phase 1) | 3 ckpt (campp/eres2net/titanet), argmax خام، بدون centroid/gate | — | ≥۶ تلاش قبلی همگی crash/timeout — score ثبت نشده | ? |
 | 2026-08-15 | تکمدله campp — `feature/single-model-submission` | campp_best.pt + centroids_campp.npz + decision (α=0.2, κ=24, τ=0, λ=1.05) | **f1_macro 0.9505** (acc 0.9451) | ✅ اولین submission موفق — بدون crash/timeout | ? |
+| 2026-08-19 | retrained campp — `feature/Improvement_of_recent_changes` (commit `4a47c98`) | campp_best.pt + centroids_campp.npz + centroids_unknown_campp.npz (554 خوشه) + decision (α=0.35, κ=24, τ=0, λ=0.5) | **f1_macro 0.9625** ✅ (acc 0.9631) | بهترین تاکنون — لایهٔ تصمیم 1000-centroid (روش کلسترینگ) روی مدل جدید | cuda_avail=True |
 
 ## TODO برای خواندن لاگ آخرین run
 
