@@ -1,8 +1,10 @@
 """
 Vast.ai GPU Deployment Script for Speaker-Identification.
 
-Rents the cheapest available GPU on Vast.ai, injects the setup_vast.sh
-bootstrap script, and runs the target pipeline remotely.
+Rents a GPU on Vast.ai, injects the setup_vast_onstart.sh launcher (a tiny
+script that clones the repo and runs the committed setup_vast.sh bootstrap —
+kept under the API's 16 KB onstart limit), and runs the target pipeline
+remotely.
 
 Usage:
     # From project root, after setting up .env:
@@ -262,9 +264,9 @@ def load_selector() -> dict:
 
 def main():
     # ── Check prerequisites ──
-    setup_script = Path("setup_vast.sh")
+    setup_script = Path("setup_vast_onstart.sh")
     if not setup_script.exists():
-        print(f"❌ setup_vast.sh not found in project root!")
+        print(f"❌ setup_vast_onstart.sh not found in project root!")
         print("   Make sure you're running from the project root directory.")
         sys.exit(1)
 
@@ -402,7 +404,7 @@ def main():
             f'--image "{image}" '
             f'--disk {disk_size} '
             f'--env "{build_env_vars(str(off["id"]))}" '
-            f'--onstart setup_vast.sh '
+            f'--onstart setup_vast_onstart.sh '
             f'--raw'
         )
         create_output = run_cmd(create_cmd, return_output=True, silent_error=True)

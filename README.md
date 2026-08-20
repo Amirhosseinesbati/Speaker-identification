@@ -705,8 +705,10 @@ python -m src.pipelines.run_pipeline --run train --no-mlflow   # partial, no tra
 
 ### 12.3 Remote GPU (Vast.ai) & UI
 
-- `src/deploy/deploy.py` rents a GPU on Vast.ai, pushes `setup_vast.sh`, and runs the
-  pipeline remotely. It forwards the encoder fine-tune choice (`FREEZE_ENCODER`,
+- `src/deploy/deploy.py` rents a GPU on Vast.ai, pushes `setup_vast_onstart.sh`
+  (a tiny launcher that clones the repo and runs the committed
+  `setup_vast.sh` — the full script is ~18 KB, above the API's 16 KB onstart
+  limit), and runs the pipeline remotely. It forwards the encoder fine-tune choice (`FREEZE_ENCODER`,
   `UNFREEZE_LAST_N_BLOCKS`) so the config edited on the remote matches the UI selection.
 - `src/deploy/deploy_app.py` is a Streamlit UI (`uv run --no-sync streamlit run
   src/deploy/deploy_app.py`) with four tabs:
@@ -791,7 +793,8 @@ Fixed random seeds in data splits (42), balanced sampler (42), and the EDA suite
 │   └── __init__.py
 ├── tests/
 │   └── test_audio_preprocessing.py  # deterministic MP3→WAV conversion tests
-├── setup_vast.sh                 # Vast.ai GPU instance bootstrap script
+├── setup_vast.sh                 # Vast.ai GPU instance bootstrap script (full)
+├── setup_vast_onstart.sh         # tiny onstart launcher (clones repo → runs setup_vast.sh)
 ├── setup_project.py              # project environment setup utility
 ├── pyproject.toml                # dependencies & project metadata
 ├── IMPLEMENTATION_PLAN.md        # full implementation spec & architecture reasoning
