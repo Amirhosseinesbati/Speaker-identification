@@ -267,8 +267,16 @@ def build_checkpoint_centroids(
     known_ids = labels[known_mask]
     D = embs.shape[1]
 
-    speakers = np.arange(1, num_known + 1)
-    centroids = np.zeros((num_known, D), dtype=np.float32)
+    # The centroid matrix spans ONLY the competition-known speakers (446).
+    # For a cluster-trained checkpoint the class map is wider (1000), but the
+    # 554 pseudo identities get their OWN centroids_unknown_<enc>.npz (built by
+    # src/unknown_clustering.py) which inference merges separately — including
+    # them here would double-count them at inference (load_centroids merges
+    # again). The train split is built WITHOUT the cluster map, so known_ids
+    # only ever contains the real 1..446 known classes.
+    num_known_out = int(config.get("model", {}).get("competition_num_known", 446))
+    speakers = np.arange(1, num_known_out + 1)
+    centroids = np.zeros((num_known_out, D), dtype=np.float32)
     for i, sid in enumerate(speakers):
         m = known_ids == sid
         if m.sum() == 0:
