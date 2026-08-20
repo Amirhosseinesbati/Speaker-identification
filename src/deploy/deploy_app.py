@@ -226,7 +226,8 @@ def _enc_unfreeze_blocks() -> int:
 
 
 def _encoder_save_config(encoder_type: str, old_enc: dict, ft_mode: str,
-                         unfreeze_n: int) -> dict:
+                         unfreeze_n: int,
+                         wavlm_variant: str = "microsoft/wavlm-large") -> dict:
     """
     Build the encoder_config dict the Save button writes (pure — testable).
 
@@ -235,6 +236,8 @@ def _encoder_save_config(encoder_type: str, old_enc: dict, ft_mode: str,
         old_enc: existing per-encoder config (mutated to drop stale keys)
         ft_mode: "Frozen" | "Partial (last N)" (ECAPA only) | "Full"
         unfreeze_n: number of blocks to unfreeze (partial ECAPA only)
+        wavlm_variant: HF model id of the WavLM variant (wavlm encoder only) —
+                       large (317M) / base-plus (94M, fits the 1GB zip) / base
 
     Returns:
         new_enc dict merged over old_enc by the caller.
@@ -248,10 +251,18 @@ def _encoder_save_config(encoder_type: str, old_enc: dict, ft_mode: str,
         }
         old_enc.pop("freeze_feature_extractor", None)  # stale key for ECAPA
     elif encoder_type == "wavlm":
+        # The submission zip has a 1GB cap: base-plus / base fit alongside the
+        # other encoders; large (~1.2GB of weights alone) does not.
+        _wavlm_paths = {
+            "microsoft/wavlm-large": "weights/wavlm_large",
+            "microsoft/wavlm-base-plus": "weights/wavlm_base_plus",
+            "microsoft/wavlm-base": "weights/wavlm_base",
+        }
+        variant = wavlm_variant or "microsoft/wavlm-large"
         new_enc = {
-            "base_model": "microsoft/wavlm-large",
+            "base_model": variant,
             "freeze_feature_extractor": ft_mode == "Frozen",
-            "local_path": "weights/wavlm_large",
+            "local_path": _wavlm_paths.get(variant, "weights/wavlm_large"),
         }
         old_enc.pop("freeze_encoder", None)
         old_enc.pop("unfreeze_last_n_blocks", None)
@@ -376,6 +387,28 @@ with tab_cfg:
         encoder_type = st.selectbox(
             "Encoder", _ENC_OPTS,
             index=_ENC_OPTS.index(mc.get("encoder_type", "wavlm")))
+
+        # WavLM variant (large / base-plus / base). The submission zip has a
+        # 1GB cap — base-plus (94M, 768-d) is the variant that fits alongside
+        # the other encoders; large (317M) is ~1.2GB of weights alone. After
+        # switching, run scripts/download_all_weights.py (it follows this
+        # choice) so weights/<variant_dir> exists locally / on Vast.
+        wavlm_variant = "microsoft/wavlm-large"
+        if encoder_type == "wavlm":
+            wavlm_opts = ["microsoft/wavlm-large", "microsoft/wavlm-base-plus",
+                          "microsoft/wavlm-base"]
+            cur_variant = str((config["model"].get("encoder_config", {})
+                               .get("wavlm", {}).get("base_model",
+                                                     "microsoft/wavlm-large")))
+            wavlm_variant = st.selectbox(
+                "WavLM variant", wavlm_opts,
+                index=wavlm_opts.index(cur_variant) if cur_variant in wavlm_opts else 0,
+                key="wavlm_variant",
+                help="base-plus (94M, 768-d) fits the 1GB submission zip with "
+                     "other encoders; large (317M) is the strongest but its "
+                     "weights alone are ~1.2GB. Run "
+                     "scripts/download_all_weights.py after switching.",
+            )
 
         # Fine-tune mode: Frozen / Partial (last N) / Full.
         # Partial (last N) is supported by ecapa / campp / eres2net (their
@@ -740,7 +773,8 @@ with tab_cfg:
         # ── Encoder config: MERGE with existing keys so partial fine-tune
         #    settings (e.g. unfreeze_last_n_blocks) are never silently dropped.
         old_enc = dict(config["model"].get("encoder_config", {}).get(encoder_type, {}))
-        new_enc = _encoder_save_config(encoder_type, old_enc, ft_mode, unfreeze_n)
+        new_enc = _encoder_save_config(encoder_type, old_enc, ft_mode, unfreeze_n,
+                                       wavlm_variant)
         config["model"]["encoder_type"] = encoder_type
         config["model"].setdefault("encoder_config", {})[encoder_type] = {**old_enc, **new_enc}
         config["model"]["pooling_type"] = pooling_type

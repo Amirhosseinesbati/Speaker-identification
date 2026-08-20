@@ -12,6 +12,11 @@ Layout produced (matches the offline inference convention):
     ├── eres2net/       ModelScope cache (pipeline-importable via MODELSCOPE_CACHE)
     ├── titanet/        titanet_large.nemo
     └── wavlm_large/    HF safetensors: config.json + model.safetensors + preprocessor_config.json
+        wavlm_base_plus/  (microsoft/wavlm-base-plus — the 1GB-zip-friendly variant)
+        wavlm_base/       (microsoft/wavlm-base)
+
+The WavLM variant downloaded is the ACTIVE config's
+``model.encoder_config.wavlm.base_model`` (the UI's WavLM-variant choice).
 
 Usage:
     uv run --no-sync python scripts/download_all_weights.py [--force]
@@ -27,6 +32,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEIGHTS_DIR = PROJECT_ROOT / "weights"
@@ -176,28 +182,62 @@ def download_titanet(force: bool = False) -> Path:
 
 
 def download_wavlm_large(force: bool = False) -> Path:
-    """
-    WavLM-Large (HuggingFace) — microsoft/wavlm-large.
+    """WavLM-Large (HuggingFace) — microsoft/wavlm-large (back-compat wrapper)."""
+    return download_wavlm(force=force, variant="microsoft/wavlm-large")
 
-    snapshots the model into weights/wavlm_large/. At inference:
-    WavLMModel.from_pretrained(<dir>, local_files_only=True) — no hub fetch.
+
+# WavLM variants: HF model id → (local weights dir, display label). The
+# submission zip has a 1 GB cap, so base-plus (94M, 768-d) is the variant that
+# fits alongside other encoders; large (317M, 1024-d) is ~1.2 GB of weights
+# alone.
+_WAVLM_VARIANTS = {
+    "microsoft/wavlm-large": ("wavlm_large", "WavLM-Large"),
+    "microsoft/wavlm-base-plus": ("wavlm_base_plus", "WavLM-Base-Plus"),
+    "microsoft/wavlm-base": ("wavlm_base", "WavLM-Base"),
+}
+
+
+def download_wavlm(force: bool = False, variant: Optional[str] = None) -> Path:
     """
-    target = WEIGHTS_DIR / "wavlm_large"
+    Download a WavLM variant into ``weights/<dir>`` (idempotent).
+
+    ``variant`` defaults to the ACTIVE config's
+    ``model.encoder_config.wavlm.base_model`` (the UI's WavLM-variant choice),
+    so the download script and the UI can never drift apart. At inference:
+    ``WavLMModel.from_pretrained(<dir>, local_files_only=True)`` — no hub fetch.
+    """
+    if variant is None:
+        try:
+            import yaml
+
+            cfg = yaml.safe_load(open(
+                PROJECT_ROOT / "configs" / "default_config.yaml", encoding="utf-8",
+            ))
+            variant = str((cfg.get("model", {})
+                           .get("encoder_config", {}).get("wavlm", {}) or {})
+                          .get("base_model", "microsoft/wavlm-large"))
+        except Exception:
+            variant = "microsoft/wavlm-large"
+    if variant not in _WAVLM_VARIANTS:
+        raise ValueError(
+            f"Unknown WavLM variant {variant!r} — expected one of "
+            f"{sorted(_WAVLM_VARIANTS)}"
+        )
+
+    dir_name, label = _WAVLM_VARIANTS[variant]
+    target = WEIGHTS_DIR / dir_name
     marker = target / "model.safetensors"
     if marker.exists() and not force:
-        print(_marker("WavLM-Large"))
+        print(_marker(label))
         return target
 
-    print("  ⬇️  Downloading WavLM-Large (microsoft/wavlm-large)...")
+    print(f"  ⬇️  Downloading {label} ({variant})...")
     target.mkdir(parents=True, exist_ok=True)
 
     from huggingface_hub import snapshot_download
 
-    snapshot_download(
-        "microsoft/wavlm-large",
-        local_dir=str(target),
-    )
-    _done("WavLM-Large", target)
+    snapshot_download(variant, local_dir=str(target))
+    _done(label, target)
     return target
 
 
@@ -228,7 +268,9 @@ def main() -> None:
     download_campp(force=args.force)
     download_eres2net(force=args.force)
     download_titanet(force=args.force)
-    download_wavlm_large(force=args.force)
+    # WavLM variant follows the active config (UI's WavLM-variant choice):
+    # large by default, base-plus / base when the config requests them.
+    download_wavlm(force=args.force)
 
     print("\n  All weights downloaded. Verify with:")
     print(f"    find {WEIGHTS_DIR} -type f | head -50")
