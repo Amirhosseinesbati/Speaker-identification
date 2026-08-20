@@ -38,6 +38,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Dump inference-consistent val artifacts")
     parser.add_argument("--checkpoints", nargs="*", default=None,
                         help="Checkpoint paths (default: all checkpoints/*_best.pt)")
+    parser.add_argument("--no-cluster-map", action="store_true",
+                        help="Evaluate on the NATIVE competition val split (ignore the "
+                             "pseudo-identity cluster map) — apples-to-apples with the "
+                             "legacy models' numbers.")
     args = parser.parse_args()
 
     checkpoints = args.checkpoints or sorted(str(p) for p in CKPT_DIR.glob("*_best.pt"))
@@ -49,10 +53,13 @@ def main() -> int:
     print("=" * 60)
     print("  Q2 — Dump inference-consistent val artifacts")
     print("=" * 60)
-    print(f"  Device: {device} | Checkpoints: {len(checkpoints)}")
+    print(f"  Device: {device} | Checkpoints: {len(checkpoints)} | "
+          f"cluster map: {'OFF' if args.no_cluster_map else 'ON'}")
 
     for ckpt in checkpoints:
-        info = dump_val_checkpoint(ckpt, device)
+        info = dump_val_checkpoint(
+            ckpt, device, use_cluster_map=not args.no_cluster_map,
+        )
         print(f"  ✓ {info['encoder']}: probs {info['probs_shape']} | "
               f"emb {info['emb_shape']}")
 

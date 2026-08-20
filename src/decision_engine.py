@@ -38,13 +38,21 @@ def encoder_key(checkpoint_path: str) -> str:
     return Path(checkpoint_path).name.replace("_best.pt", "")
 
 
-def dump_val_checkpoint(checkpoint_path: str, device: torch.device) -> dict:
+def dump_val_checkpoint(
+    checkpoint_path: str,
+    device: torch.device,
+    use_cluster_map: bool = True,
+) -> dict:
     """Dump inference-consistent val probs + ArcFace embeddings for one checkpoint.
 
     Reuses the EXACT forward path the submission uses
     (``model.predict_proba_and_embed`` — prob-averaged head probs + mean-then-L2
     normalised embedding). Respects the checkpoint's embedded ``data.split``
     (scheme/fold/seed) so a kfold-trained checkpoint validates on ITS fold.
+
+    ``use_cluster_map=False`` evaluates a cluster-trained model on the NATIVE
+    competition split (no pseudo-identity map) — the same split legacy models
+    were measured on, for an apples-to-apples head-to-head.
 
     Writes ``data/processed/val_probs_<enc>.npy``, ``val_emb_<enc>.npy`` and
     ``val_labels.npy``.
@@ -71,9 +79,13 @@ def dump_val_checkpoint(checkpoint_path: str, device: torch.device) -> dict:
     # A cluster-mode checkpoint (num_unknown_clusters > 0) trained on a
     # pseudo-identity-aware split: rebuild the SAME split (with the cluster
     # map) so val labels live in the checkpoint's internal space and the
-    # partition matches training exactly.
+    # partition matches training exactly. ``use_cluster_map=False`` instead
+    # evaluates on the native competition split (legacy comparison).
     num_unknown_clusters = int(model.num_unknown_clusters)
-    cluster_map = load_unknown_cluster_map(config) if num_unknown_clusters > 0 else None
+    cluster_map = (
+        load_unknown_cluster_map(config)
+        if (num_unknown_clusters > 0 and use_cluster_map) else None
+    )
 
     _, val_df, _ = prepare_clean_split(
         labels_path=data_cfg["labels_path"],
