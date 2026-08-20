@@ -216,7 +216,11 @@ def build_checkpoint_centroids(
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config = checkpoint.get("config") or load_config(str(CONFIG_PATH))
     class_map = checkpoint["class_map"]
-    num_known = config.get("model", {}).get("competition_num_known", len(class_map) - 1)
+    # Head width = non-unknown classes in the checkpoint's OWN class map
+    # (1000 for a cluster-trained model, 446 legacy) — reading
+    # competition_num_known here would build a 446-wide head for a 1000-class
+    # checkpoint and crash load_state_dict.
+    num_known = len(class_map) - 1
 
     model = create_model_from_config(config, num_known_speakers=num_known)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -375,7 +379,14 @@ def load_trained_val_probs(val_df: pd.DataFrame) -> np.ndarray | None:
     checkpoint = torch.load(ckpt, map_location="cpu", weights_only=False)
     config = checkpoint.get("config") or load_config(str(CONFIG_PATH))
     audio_cfg = config["audio"]
-    num_known = config.get("model", {}).get("competition_num_known", 446)
+    # Head width from the checkpoint's own class map (1000 cluster / 446
+    # legacy); fall back to competition_num_known only for old checkpoints
+    # that carry no class map.
+    class_map = checkpoint.get("class_map")
+    num_known = (
+        len(class_map) - 1 if class_map
+        else config.get("model", {}).get("competition_num_known", 446)
+    )
 
     model = create_model_from_config(config, num_known_speakers=num_known)
     model.load_state_dict(checkpoint["model_state_dict"])

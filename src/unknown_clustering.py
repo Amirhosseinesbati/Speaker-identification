@@ -470,7 +470,12 @@ def _extract_train_embs(
     ck = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config = ck["config"]
     class_map = ck["class_map"]
-    num_known = config.get("model", {}).get("competition_num_known", len(class_map) - 1)
+    # Head width = non-unknown classes in the checkpoint's OWN class map
+    # (1000 for a cluster-trained model, 446 legacy). Reading
+    # competition_num_known here would build a 446-wide head for a 1000-class
+    # checkpoint and crash load_state_dict — the class map is the source of
+    # truth (the factory then derives the effective cluster count from it).
+    num_known = len(class_map) - 1
 
     model = create_model_from_config(config, num_known_speakers=num_known)
     model.load_state_dict(ck["model_state_dict"])
