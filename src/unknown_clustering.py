@@ -648,7 +648,12 @@ def _val_probs_for_model(
         unknown_cluster_map=cluster_map,
     )
     val_df = val_df.copy()
-    val_df["label"] = val_df["speaker_id"].map(class_map).astype(int)
+    # Pseudo-identity speakers (unknown_XXXX) only exist in a cluster
+    # checkpoint's class map. When a LEGACY checkpoint is evaluated on a
+    # cluster-aware val split, its class map does not know them — from its
+    # point of view they are the aggregated unknown (label 0), which is also
+    # the competition's ground truth for them.
+    val_df["label"] = val_df["speaker_id"].map(class_map).fillna(0).astype(int)
 
     ds = SpeakerDataset(
         val_df, data_cfg["audio_dir"], sample_rate=audio_cfg["sample_rate"],
