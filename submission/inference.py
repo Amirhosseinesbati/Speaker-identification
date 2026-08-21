@@ -194,14 +194,17 @@ def _softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
 def load_centroids(
     centroids_dir: str,
     encoder_names: Sequence[str],
+    num_unknown_clusters: int = 0,
 ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
     """Load ``centroids_<enc>.npz`` for the given encoders.
 
-    When a ``centroids_unknown_<enc>.npz`` (554 pseudo-identity cluster
-    centroids from ``src/unknown_clustering.py``) sits next to it, the two are
-    merged into a 1000-way centroid matrix with speaker ids 1..1000 — the
+    When a ``centroids_unknown_<enc>.npz`` (pseudo-identity cluster centroids
+    from ``src/unknown_clustering.py``) sits next to it, the two are merged
+    into a wider centroid matrix with speaker ids 1..(446+k) — the
     ``centroid_probs_matrix`` caller then collapses the cluster columns back
-    into unknown.
+    into unknown. With ``num_unknown_clusters > 0`` the k-locked
+    ``centroids_unknown_<enc>_k<k>.npz`` file is preferred (several k
+    experiments can coexist in the package); the plain name is the fallback.
 
     Returns:
         {encoder: (centroids (S, D), speaker_ids (S,))}
@@ -217,6 +220,10 @@ def load_centroids(
         sids = data["speaker_ids"].astype(np.int64)
 
         cluster_path = cdir / f"centroids_unknown_{enc}.npz"
+        if num_unknown_clusters > 0:
+            k_path = cdir / f"centroids_unknown_{enc}_k{num_unknown_clusters}.npz"
+            if k_path.exists():
+                cluster_path = k_path
         if cluster_path.exists():
             cdata = np.load(cluster_path)
             cluster_cents = cdata["centroids"].astype(np.float32)

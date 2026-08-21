@@ -179,7 +179,8 @@ def _cluster_status_readout(path: Optional[str] = None) -> Optional[dict]:
     """Current cluster map status: file count, distinct k, phase1 coherence.
 
     Reads the configured map path (falling back to the committed
-    ``submission/unknown_clusters.json``) plus the last ``phase1`` diagnostics
+    ``submission/<basename>`` — maps are k-locked so each experiment's own
+    filename finds its committed copy) plus the last ``phase1`` diagnostics
     when present. Returns None when no map exists anywhere.
     """
     import json as _json
@@ -188,7 +189,7 @@ def _cluster_status_readout(path: Optional[str] = None) -> Optional[dict]:
     if p is None or not p.exists():
         p = PROJECT_ROOT / "data" / "processed" / "unknown_clusters.json"
     if not p.exists():
-        p = PROJECT_ROOT / "submission" / "unknown_clusters.json"
+        p = PROJECT_ROOT / "submission" / p.name
     if not p.exists():
         return None
     try:

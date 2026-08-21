@@ -28,6 +28,7 @@ data:
     scheme: single
 model:
   num_unknown_clusters: 1000
+  unknown_cluster_path: data/processed/unknown_clusters_k1000.json
   encoder_config:
     campp:
       unfreeze_last_n_blocks: 2

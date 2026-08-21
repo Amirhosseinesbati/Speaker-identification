@@ -161,7 +161,19 @@ def _load_centroids(checkpoint_paths: List[str]) -> Optional[dict]:
     if not cdir.exists():
         return None
     encoders = [_encoder_name(c) for c in checkpoint_paths]
-    centroids = load_centroids(str(cdir), encoders)
+    # Cluster mode: read the first checkpoint's embedded config so the k-locked
+    # centroids_unknown_<enc>_k<k>.npz is merged — the model's own k — not a
+    # different-k experiment's centroids that happens to be in the package.
+    num_unknown_clusters = 0
+    try:
+        ck = torch.load(checkpoint_paths[0], map_location="cpu", weights_only=False)
+        num_unknown_clusters = int(
+            (ck.get("config", {}).get("model", {}) or {})
+            .get("num_unknown_clusters", 0) or 0)
+    except Exception:
+        pass
+    centroids = load_centroids(str(cdir), encoders,
+                               num_unknown_clusters=num_unknown_clusters)
     return centroids or None
 
 

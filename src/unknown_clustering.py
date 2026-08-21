@@ -297,12 +297,12 @@ def build_cluster_map(
     seed: int = 42,
     method: str = "kmeans",
     force_cache: bool = False,
+    out_map_path: Optional[str] = None,
 ) -> dict:
     """Cluster the unknown TRAIN files into ``k_clusters`` pseudo-identities.
 
     This is the single build path for the closed-set 1000-class experiment: it
-    produces the pseudo-label map (``data/processed/unknown_clusters.json``)
-    and the cluster centroids (``centroids_unknown_<enc>.npz``) that Phase-2
+    produces the pseudo-label map and the cluster centroids that Phase-2
     training and the decision layer consume. Embeddings come from the
     checkpoint's ArcFace space (cached), so the map lives in the exact space
     the shipped decision layer uses.
@@ -312,6 +312,15 @@ def build_cluster_map(
     real identities into sub-clusters, which is safe because the collapse sums
     every cluster column into unknown at output time (finer granularity may
     help the head, at the cost of smaller/noisier pseudo classes).
+
+    Maps and centroids are K-LOCKED so several k experiments can coexist:
+    - map:   ``out_map_path`` (default data/processed/unknown_clusters.json);
+             the loader falls back to the committed ``submission/<basename>``
+             on a fresh instance, so give each experiment its own filename
+             (e.g. ``data/processed/unknown_clusters_k1000.json``).
+    - centroids: ``centroids_unknown_<enc>_k<k>.npz`` (immutable per-k record)
+             plus the plain ``centroids_unknown_<enc>.npz`` "active" alias
+             ONLY when building the default map (legacy consumers).
 
     Args:
         checkpoint_path: trained checkpoint whose ArcFace space is clustered.
@@ -325,6 +334,8 @@ def build_cluster_map(
                          otherwise be clustered in the OLD model's space —
                          pass this the first time you cluster a new/retrained
                          checkpoint.
+        out_map_path:    where to write the pseudo-label map (default
+                         data/processed/unknown_clusters.json).
 
     Returns:
         dict with everything phase1's val comparison needs:
@@ -383,19 +394,38 @@ def build_cluster_map(
 
     # ── Persist the pseudo-label map + cluster centroids (Phase 2 reuse) ──
     cluster_map = {f: int(c) for f, c in zip(unk_files, pred_u)}
-    CLUSTER_MAP_PATH.write_text(
+    actual_k = len(set(cluster_map.values()))
+    if actual_k != k_clusters:
+        raise ValueError(
+            f"clustering produced only {actual_k} non-empty clusters (requested "
+            f"{k_clusters}) — some clusters are empty at this k. Lower k "
+            f"(clusters cannot be denser than the data's natural grouping) and "
+            f"rebuild; the loader validation would reject this map anyway."
+        )
+    map_path = Path(out_map_path) if out_map_path else CLUSTER_MAP_PATH
+    map_path.parent.mkdir(parents=True, exist_ok=True)
+    map_path.write_text(
         json.dumps(cluster_map, indent=0, ensure_ascii=False), encoding="utf-8",
     )
-    print(f"  ✓ Cluster map saved: {CLUSTER_MAP_PATH} ({len(cluster_map)} files)")
+    print(f"  ✓ Cluster map saved: {map_path} "
+          f"({len(cluster_map)} files, k={actual_k})")
 
     c_cent, c_sizes = build_centroids(unk_embs, pred_u)
     ckpt_key = Path(checkpoint_path).name.replace("_best.pt", "")
-    np.savez_compressed(
-        DATA_PROCESSED / f"centroids_unknown_{ckpt_key}.npz",
-        centroids=c_cent, cluster_sizes=c_sizes,
-        cluster_ids=np.arange(k_clusters, dtype=np.int64),
-    )
-    print(f"  ✓ Cluster centroids saved: centroids_unknown_{ckpt_key}.npz "
+    centroids_paths = [
+        DATA_PROCESSED / f"centroids_unknown_{ckpt_key}_k{actual_k}.npz",
+    ]
+    if map_path == CLUSTER_MAP_PATH:
+        # Default map: keep the plain "active" alias for legacy consumers.
+        centroids_paths.append(DATA_PROCESSED / f"centroids_unknown_{ckpt_key}.npz")
+    for cp in centroids_paths:
+        np.savez_compressed(
+            cp,
+            centroids=c_cent, cluster_sizes=c_sizes,
+            cluster_ids=np.arange(actual_k, dtype=np.int64),
+        )
+    print(f"  ✓ Cluster centroids saved: "
+          f"{', '.join(p.name for p in centroids_paths)} "
           f"({int((c_sizes > 0).sum())} non-empty)")
 
     return {
@@ -405,6 +435,7 @@ def build_cluster_map(
         "cluster_map": cluster_map, "centroids": c_cent,
         "cluster_sizes": c_sizes, "ckpt_key": ckpt_key,
         "num_known_out": num_known_out,
+        "actual_k": actual_k, "map_path": str(map_path),
     }
 
 
@@ -415,15 +446,17 @@ def run_build(
     seed: int = 42,
     method: str = "kmeans",
     force_cache: bool = False,
+    out: Optional[str] = None,
 ) -> dict:
     """Build-only entry point (no val comparison) — the UI/CI rebuild path."""
     out = build_cluster_map(
         checkpoint_path, k_clusters=k_clusters, device=device, seed=seed,
-        method=method, force_cache=force_cache,
+        method=method, force_cache=force_cache, out_map_path=out,
     )
-    print(f"\n  ✅ Cluster map ready: k={k_clusters} → "
+    print(f"\n  ✅ Cluster map ready: k={out['actual_k']} → "
           f"{int((out['cluster_sizes'] > 0).sum())} non-empty pseudo-identities. "
-          f"Set model.num_unknown_clusters={k_clusters} in the config to train.")
+          f"Point model.unknown_cluster_path at {out['map_path']} and set "
+          f"model.num_unknown_clusters={out['actual_k']} in the config to train.")
     return out
 
 
@@ -902,6 +935,12 @@ def main() -> int:
     bd.add_argument("--method", default="kmeans",
                     choices=["kmeans", "agglomerative"])
     bd.add_argument("--seed", type=int, default=42)
+    bd.add_argument("--out", default=None,
+                    help="map output path (default data/processed/"
+                         "unknown_clusters.json). Give each k its own file, "
+                         "e.g. data/processed/unknown_clusters_k1000.json, and "
+                         "point model.unknown_cluster_path at it — several k "
+                         "experiments then coexist.")
     bd.add_argument("--device", default="auto", help="auto | cpu | cuda")
     bd.add_argument(
         "--force-cache", action="store_true",
@@ -933,7 +972,7 @@ def main() -> int:
     elif args.cmd == "build":
         run_build(checkpoint_path=args.checkpoint, k_clusters=args.k,
                   device=args.device, seed=args.seed, method=args.method,
-                  force_cache=args.force_cache)
+                  force_cache=args.force_cache, out=args.out)
     elif args.cmd == "phase1":
         run_phase1(checkpoint_path=args.checkpoint, k_clusters=args.k,
                    device=args.device, force_cache=args.force_cache)

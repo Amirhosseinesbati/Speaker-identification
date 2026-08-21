@@ -266,21 +266,25 @@ def build(skip_weights: bool) -> None:
                   f"(decision layer falls back to plain argmax for {enc})")
 
     # ── closed-set 1000-class experiment artifacts ──
-    # When a shipped checkpoint was trained with model.num_unknown_clusters>0,
-    # ship the pseudo-identity cluster map + cluster centroids so inference can
-    # (a) rebuild the exact class map and (b) run the 1000-centroid decision
-    # layer (inference.py merges centroids_unknown_<enc>.npz automatically).
-    cluster_map_src = ROOT / "data" / "processed" / "unknown_clusters.json"
-    if cluster_map_src.exists():
-        shutil.copy2(cluster_map_src, SUB / "unknown_clusters.json")
-        print("  ✓ unknown_clusters.json (1000-class experiment)")
+    # Ship EVERY pseudo-identity map + cluster centroid that exists. Maps and
+    # centroids are k-locked (unknown_clusters_k<k>.json /
+    # centroids_unknown_<enc>_k<k>.npz, plus the plain "active" aliases), so a
+    # shipped checkpoint finds its exact k's map + centroid space at eval time
+    # regardless of how many k experiments coexist in data/processed.
+    shipped_maps = 0
+    for cm_src in sorted((ROOT / "data" / "processed").glob("unknown_clusters*.json")):
+        shutil.copy2(cm_src, SUB / cm_src.name)
+        shipped_maps += 1
+        print(f"  ✓ {cm_src.name} (1000-class experiment)")
+    if shipped_maps == 0:
+        print("  ℹ no pseudo-identity maps — legacy 447-way model")
     shipped_cluster_centroids = 0
     for enc in sorted(used_encoders):
-        src = ROOT / "data" / "processed" / f"centroids_unknown_{enc}.npz"
-        if src.exists():
+        for src in sorted((ROOT / "data" / "processed").glob(
+                f"centroids_unknown_{enc}*.npz")):
             shutil.copy2(src, cent_dst / src.name)
             shipped_cluster_centroids += 1
-            print(f"  ✓ centroids/centroids_unknown_{enc}.npz")
+            print(f"  ✓ centroids/{src.name}")
     if shipped_cluster_centroids == 0:
         print("  ℹ no unknown-cluster centroids — legacy 447-way decision layer")
     if shipped_centroids == 0:

@@ -127,8 +127,10 @@ def load_unknown_cluster_map(config: dict) -> Optional[Dict[str, int]]:
     is a hard error with rebuild instructions instead.
 
     When the configured map path is absent, falls back to the committed
-    ``submission/unknown_clusters.json`` (a fresh Vast.ai instance clones the
-    repo but has no ``data/processed`` — the committed map is the durable copy).
+    ``submission/<map-basename>`` (a fresh Vast.ai instance clones the repo but
+    has no ``data/processed`` — the committed maps are the durable copies).
+    Maps are k-locked (``unknown_clusters_k<k>.json``), so each experiment's
+    own filename finds its own committed copy.
     """
     model_cfg = config.get("model", {}) or {}
     k = int(model_cfg.get("num_unknown_clusters", 0))
@@ -141,7 +143,7 @@ def load_unknown_cluster_map(config: dict) -> Optional[Dict[str, int]]:
         "unknown_cluster_path", "data/processed/unknown_clusters.json",
     )))
     if not map_path.exists():
-        fallback = _PROJECT_ROOT / "submission" / "unknown_clusters.json"
+        fallback = _PROJECT_ROOT / "submission" / map_path.name
         if fallback.exists():
             print(f"  ⚠ {map_path} missing — using committed {fallback}")
             map_path = fallback
@@ -149,7 +151,8 @@ def load_unknown_cluster_map(config: dict) -> Optional[Dict[str, int]]:
             raise FileNotFoundError(
                 f"model.num_unknown_clusters={k} but cluster map not found: "
                 f"{map_path}. Run `python -m src.unknown_clustering build "
-                f"--k {k}` (or the UI: Config → Cluster Mode → Rebuild) first."
+                f"--k {k} --out <path>` (or the UI: Config → Cluster Mode → "
+                f"Rebuild) first, and commit submission/{map_path.name}."
             )
 
     with open(map_path, "r", encoding="utf-8") as f:

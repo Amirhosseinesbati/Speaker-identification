@@ -132,6 +132,15 @@ def dump_val_checkpoint(
     if num_unknown_clusters > 0:
         labels = np.where(labels > num_classes - 1, 0, labels)
     np.save(DATA / "val_labels.npy", labels)
+    # Sidecar: the cluster k this checkpoint was trained with, so the decision
+    # tuner merges the SAME k-locked centroids_unknown_<enc>_k<k>.npz that the
+    # checkpoint's own inference would use (several k experiments coexist).
+    sidecar = DATA / f"val_{key}_cluster_k.json"
+    if num_unknown_clusters > 0:
+        sidecar.write_text(json.dumps({"num_unknown_clusters": num_unknown_clusters}),
+                           encoding="utf-8")
+    else:
+        sidecar.unlink(missing_ok=True)
     return {"encoder": key, "probs_shape": list(probs.shape),
             "emb_shape": list(embs.shape)}
 
@@ -158,9 +167,24 @@ def load_decision_artifacts(data_dir: Optional[Path] = None) -> dict:
         # Closed-set 1000-class experiment: merge the unknown-cluster centroids
         # exactly like inference (submission/inference.load_centroids), so the
         # tuned decision knobs match the centroid matrix the leaderboard
-        # actually applies. Without this, a shipped centroids_unknown_<enc>.npz
-        # silently retunes knobs for a different (447-only) matrix.
+        # actually applies. The k-locked centroids_unknown_<enc>_k<k>.npz (k
+        # from the val-dump sidecar) is preferred so a different-k experiment's
+        # centroids are never merged by mistake; the plain name is the fallback
+        # for artifacts dumped before the k-aware naming existed.
         cluster_path = data_dir / f"centroids_unknown_{enc}.npz"
+        sidecar = data_dir / f"val_{enc}_cluster_k.json"
+        cluster_k = 0
+        if sidecar.exists():
+            try:
+                cluster_k = int(json.loads(
+                    sidecar.read_text(encoding="utf-8")
+                ).get("num_unknown_clusters", 0) or 0)
+            except Exception:
+                cluster_k = 0
+        if cluster_k > 0:
+            k_path = data_dir / f"centroids_unknown_{enc}_k{cluster_k}.npz"
+            if k_path.exists():
+                cluster_path = k_path
         if cluster_path.exists():
             cd = np.load(cluster_path)
             cluster_cents = cd["centroids"].astype(np.float32)
