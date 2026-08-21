@@ -1,0 +1,47 @@
+_meta:
+  name: campp-two_phase_partial_ft-s42_onecenter_3
+  base: default_config.yaml
+  created: '2026-08-21T14:40:09'
+  base_git: 4cd550d
+audio:
+  num_train_windows: 8
+augmentation:
+  domain:
+    mp3_codec_roundtrip:
+      p: 0.5
+    musan:
+      music_p: 0.5
+      noise_p: 0.8
+      snr_db:
+      - 0.0
+      - 15.0
+    rirs_reverb:
+      p: 0.6
+  waveform:
+    time_stretch:
+      p: 0.9
+      rate:
+      - 0.9
+      - 1.1
+data:
+  split:
+    scheme: single
+model:
+  encoder_config:
+    campp:
+      unfreeze_last_n_blocks: 2
+  speaker_head_config:
+    arcface:
+      margin: 0.5
+      scale: 40.0
+  speaker_head_type: arcface
+training:
+  early_stopping_patience: 25
+  encoder_lr: 1.0e-05
+  freeze_epochs: 30
+  label_smoothing: 0.1
+  loss:
+    speaker:
+      label_smoothing: 0.1
+  schedule: cosine_warm_restarts
+  weight_decay: 0.0003
