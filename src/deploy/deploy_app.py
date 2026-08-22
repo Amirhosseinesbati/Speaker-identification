@@ -626,9 +626,10 @@ with tab_cfg:
                                      help="LR for unfrozen encoder blocks (fine-tune).")
         wd = st.number_input("Weight Decay", 0.0, 1e-2, config["training"]["weight_decay"], format="%.6f")
         grad_norm = st.number_input("Max Grad Norm", 0.1, 50.0, config["training"]["max_grad_norm"])
-        patience = st.number_input("Early stop patience", 1, 50,
+        patience = st.number_input("Early stop patience", 0, 50,
                                    int(config["training"].get("early_stopping_patience", 10)),
-                                   help="Early stopping / checkpoint selection on val Macro-F1.")
+                                   help="Early stopping / checkpoint selection on val Macro-F1. "
+                                        "0 = disabled (the two-phase cosine runs its full course).")
         freeze_epochs = st.number_input(
             "Progressive unfreeze after N epochs", 0, 200,
             int(config["training"].get("freeze_epochs", 0)),
