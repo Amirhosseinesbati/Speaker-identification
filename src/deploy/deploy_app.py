@@ -331,6 +331,8 @@ with st.sidebar:
                 else (f"Partial (last {blocks})" if blocks and blocks > 0 else "Full"))
     cluster_k = int(mc.get("num_unknown_clusters", 0) or 0)
     cluster_label = f"ON (k={cluster_k})" if cluster_k > 0 else "OFF"
+    ood_label = ("OFF (cluster)" if cluster_k > 0
+                 else ("ON" if mc.get("ood_head", True) else "OFF"))
     st.markdown(f"""
     | Param | Value |
     |-------|-------|
@@ -339,6 +341,7 @@ with st.sidebar:
     | Head | {head_label} |
     | Fine-tune | `{ft_label}` |
     | Cluster mode | `{cluster_label}` |
+    | OOD head | `{ood_label}` |
     | Duration | `{dur}s` |
     | Windows | train `{nwin}` / eval `{mwin}` (hop `{ehop}`) |
     | OOD ratio | `{oodr}` |
@@ -381,6 +384,27 @@ with tab_cfg:
     st.caption(f"Currently editing: **{st.session_state.loaded_profile_name}**")
 
     st.header("⚙️ Model Setup")
+
+    # ── Mode switch: cluster ON removes the OOD head + its controls ──
+    # (the pseudo-identity columns encode P(unknown) via the output collapse,
+    # so the binary OOD head is redundant in cluster mode — its BCE targets
+    # would be distorted too). OOD widgets below render only when OFF.
+    _cluster_k_cfg = int(mc.get("num_unknown_clusters", 0) or 0)
+    cluster_on = st.checkbox(
+        "🧬 Enable cluster mode (closed-set 1000-class — OOD head OFF)",
+        value=_cluster_k_cfg > 0, key="cluster_on",
+        help="ON: the collapsed 'unknown' identities are trained as pseudo-classes "
+             "(the 1000-class experiment) and the redundant binary OOD head is "
+             "removed (model.ood_head=false). OFF: legacy 447-way behaviour with "
+             "the OOD head.",
+    )
+    if cluster_on:
+        st.caption("Cluster mode: the OOD head is disabled and its controls are "
+                   "hidden — P(unknown) comes from the cluster-column collapse.")
+    else:
+        st.caption("Legacy mode: the binary OOD head is enabled — all OOD controls "
+                   "below are active.")
+
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("🧠 Encoder")
@@ -489,8 +513,11 @@ with tab_cfg:
                               float(config["audio"].get("eval_hop_ratio", 0.5)), 0.05)
         max_win = st.number_input("Max eval windows", 1, 32,
                                   int(config["audio"].get("max_eval_windows", 8)))
-        ood_ratio = st.slider("OOD batch ratio", 0.1, 0.9,
-                              float(config["audio"].get("ood_batch_ratio", 0.5)), 0.05)
+        if not cluster_on:
+            ood_ratio = st.slider("OOD batch ratio", 0.1, 0.9,
+                                  float(config["audio"].get("ood_batch_ratio", 0.5)), 0.05)
+        else:
+            ood_ratio = float(config["audio"].get("ood_batch_ratio", 0.5))
         st.subheader("🎲 Split")
         split_cfg = config["data"].get("split", {}) or {}
         split_scheme = st.selectbox(
@@ -645,12 +672,18 @@ with tab_cfg:
         if loss_type == "focal":
             focal_gamma = st.number_input("Focal γ", 0.0, 5.0,
                                           float(loss_spk.get("focal_gamma", 2.0)), 0.5)
-        ood_hidden = st.number_input("OOD head hidden dim", 0, 1024,
-                                     mc.get("ood_head_config",{}).get("hidden_dim",256), 64)
-        ood_pos_w = st.number_input("OOD pos_weight", 0.1, 10.0,
-                                    float(loss_ood.get("pos_weight", config["training"].get("ood_pos_weight", 1.0))), 0.1)
-        ood_w = st.number_input("OOD loss weight", 0.0, 1.0,
-                                float(loss_ood.get("weight", config["training"].get("ood_loss_weight", 0.3))), 0.05)
+        if not cluster_on:
+            # OOD controls are hidden in cluster mode (the OOD head is removed).
+            ood_hidden = st.number_input("OOD head hidden dim", 0, 1024,
+                                         mc.get("ood_head_config",{}).get("hidden_dim",256), 64)
+            ood_pos_w = st.number_input("OOD pos_weight", 0.1, 10.0,
+                                        float(loss_ood.get("pos_weight", config["training"].get("ood_pos_weight", 1.0))), 0.1)
+            ood_w = st.number_input("OOD loss weight", 0.0, 1.0,
+                                    float(loss_ood.get("weight", config["training"].get("ood_loss_weight", 0.3))), 0.05)
+        else:
+            ood_hidden = int(mc.get("ood_head_config", {}).get("hidden_dim", 256))
+            ood_pos_w = float(loss_ood.get("pos_weight", config["training"].get("ood_pos_weight", 1.0)))
+            ood_w = float(loss_ood.get("weight", config["training"].get("ood_loss_weight", 0.3)))
         spk_w = st.number_input("Speaker loss weight", 0.0, 1.0,
                                 float(loss_spk.get("weight", config["training"].get("speaker_loss_weight", 0.7))), 0.05)
         sm_val = st.number_input("Label smoothing", 0.0, 0.5,
@@ -684,11 +717,9 @@ with tab_cfg:
                "output — the competition output stays 447-way. Composes with every "
                "fine-tune strategy above: Frozen / Partial (last N) / Full / staged "
                "(progressive freeze_epochs).")
-    cluster_on = st.checkbox(
-        "Enable cluster mode", value=cluster_k > 0, key="cluster_on",
-        help="ON: the collapsed 'unknown' identities are trained as pseudo-classes "
-             "(the 1000-class experiment). OFF: legacy 447-way behaviour.",
-    )
+    # Toggle lives at the top of this tab (key="cluster_on") — it also controls
+    # whether the OOD head + its controls are shown.
+    cluster_on = st.session_state.get("cluster_on", cluster_k > 0)
     cluster_k_val = int(cluster_k or 554)
     cluster_path = str(config.get("model", {}).get(
         "unknown_cluster_path", "data/processed/unknown_clusters.json"))
@@ -788,7 +819,10 @@ with tab_cfg:
         if head_type == "arcface_subcenter":
             head_block["sub_centers"] = int(sub_centers)
         config["model"].setdefault("speaker_head_config", {})[head_type] = head_block
-        config["model"]["ood_head_config"]["hidden_dim"] = ood_hidden
+        # OOD head: explicit flag synced with the mode toggle — ON in legacy
+        # mode, OFF in cluster mode (the cluster collapse carries P(unknown)).
+        config["model"]["ood_head"] = not cluster_on
+        config["model"].setdefault("ood_head_config", {})["hidden_dim"] = ood_hidden
         config["audio"]["duration_seconds"] = audio_dur
         config["audio"]["min_valid_duration"] = min_dur
         config["audio"]["num_train_windows"] = int(num_win)
@@ -888,11 +922,12 @@ with tab_cfg:
         spk_block["focal_gamma"] = float(focal_gamma)
         spk_block["label_smoothing"] = float(sm_val)
         spk_block["weight"] = float(spk_w)
-        ood_block["type"] = "bce"
-        ood_block["pos_weight"] = float(ood_pos_w)
-        ood_block["weight"] = float(ood_w)
-        config["training"]["ood_pos_weight"] = float(ood_pos_w)
-        config["training"]["ood_loss_weight"] = float(ood_w)
+        if not cluster_on:
+            ood_block["type"] = "bce"
+            ood_block["pos_weight"] = float(ood_pos_w)
+            ood_block["weight"] = float(ood_w)
+            config["training"]["ood_pos_weight"] = float(ood_pos_w)
+            config["training"]["ood_loss_weight"] = float(ood_w)
         config["training"]["speaker_loss_weight"] = float(spk_w)
         config["training"]["label_smoothing"] = float(sm_val)
         # Prototypical loss block (kept in sync with training.loss.proto).
