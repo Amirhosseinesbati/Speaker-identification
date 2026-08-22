@@ -309,8 +309,30 @@ class SubCenterArcFaceHead(nn.Module):
 #  Head Factories
 # ═══════════════════════════════════════════════════════════
 
-def create_ood_head(config: dict, input_dim: int) -> OODHead:
-    """Build OOD head from config."""
+def ood_head_enabled(config: dict) -> bool:
+    """Whether the binary OOD head should be built for this config.
+
+    An explicit ``model.ood_head`` flag wins; otherwise the head stays ON —
+    this preserves backward compatibility for existing checkpoints (e.g. the
+    cluster-trained ``campp_best.pt`` whose state dict still carries
+    ``head_ood.*``) and for configs that predate the flag. New cluster
+    experiments (and the UI in cluster mode) set ``model.ood_head: false``
+    explicitly: in cluster mode the pseudo-identity columns already encode
+    P(unknown) (their softmax mass is summed into column 0 at output), so the
+    binary OOD head is redundant — and its BCE supervision would be distorted
+    (unknown files are relabeled to cluster ids, so the ``label==0`` target is
+    never positive for them).
+    """
+    model_cfg = config.get("model", {}) or {}
+    if "ood_head" in model_cfg:
+        return bool(model_cfg["ood_head"])
+    return True
+
+
+def create_ood_head(config: dict, input_dim: int) -> Optional[OODHead]:
+    """Build the OOD head from config — ``None`` when disabled (cluster mode)."""
+    if not ood_head_enabled(config):
+        return None
     ood_cfg = config["model"].get("ood_head_config", {})
     hidden_dim = ood_cfg.get("hidden_dim", 256)
     return OODHead(input_dim, hidden_dim)

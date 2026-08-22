@@ -122,7 +122,9 @@ def fused_probs_from_logits(
     column 0 (unknown) — the competition only ever sees the 447-way output.
 
     Args:
-        ood_logits:     (batch, 1) raw OOD logits.
+        ood_logits:     (batch, 1) raw OOD logits, or ``None`` when the OOD
+                        head is disabled (cluster mode) — P(unknown) then comes
+                        entirely from the pseudo-identity cluster collapse.
         speaker_logits: (batch, N) cosine/logit scores (no margin).
         temperature:    softmax temperature for the speaker head (calibration).
         num_unknown_clusters: width of the pseudo-identity tail to collapse
@@ -131,7 +133,11 @@ def fused_probs_from_logits(
     Returns:
         probs: (batch, 447) rows summing to 1.
     """
-    p_unknown = torch.sigmoid(ood_logits.float())  # (batch, 1)
+    if ood_logits is not None:
+        p_unknown = torch.sigmoid(ood_logits.float())  # (batch, 1)
+    else:
+        p_unknown = torch.zeros(speaker_logits.shape[0], 1,
+                                device=speaker_logits.device)
     p_known = torch.softmax(speaker_logits.float() / max(temperature, 1e-6), dim=1)
 
     num_known = speaker_logits.size(1)
@@ -172,7 +178,7 @@ def predict_global_classes(
     )
     preds = probs.argmax(dim=1).cpu().numpy()
 
-    if ood_threshold is not None:
+    if ood_threshold is not None and ood_logits is not None:
         p_unknown = torch.sigmoid(ood_logits.float()).squeeze(1).cpu().numpy()
         preds = np.where(p_unknown > ood_threshold, 0, preds)
     return preds

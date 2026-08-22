@@ -188,15 +188,24 @@ class TwoPartLoss(nn.Module):
         speaker_weight: float = 1.0,
         label_smoothing: float = 0.0,
         ood_pos_weight: float = 1.0,
+        use_ood: bool = True,
     ):
         super().__init__()
         self.ignore_index = ignore_index
         self.ood_weight = ood_weight
         self.speaker_weight = speaker_weight
+        self.use_ood = use_ood
 
-        self.bce_loss = nn.BCEWithLogitsLoss(
-            pos_weight=torch.tensor(ood_pos_weight, dtype=torch.float32)
+        # Cluster mode (use_ood=False): the OOD head does not exist and its BCE
+        # supervision would be distorted (unknown files are relabeled to cluster
+        # ids, so the label==0 target is never positive) — speaker-only loss.
+        self.bce_loss = (
+            nn.BCEWithLogitsLoss(
+                pos_weight=torch.tensor(ood_pos_weight, dtype=torch.float32)
+            ) if use_ood else None
         )
+        if not use_ood:
+            print(f"  🚫 OOD head disabled (cluster mode) — speaker-only loss")
 
         if use_focal:
             self.ce_loss = FocalLoss(
@@ -215,21 +224,23 @@ class TwoPartLoss(nn.Module):
 
     def forward(
         self,
-        ood_logits: torch.Tensor,     # (batch, 1)
-        speaker_logits: torch.Tensor,  # (batch, 446)
-        labels: torch.Tensor,          # (batch,)  — 0 for unknown, 1..446 for known
+        ood_logits: Optional[torch.Tensor],   # (batch, 1) | None (cluster mode)
+        speaker_logits: torch.Tensor,          # (batch, 446)
+        labels: torch.Tensor,                  # (batch,)  — 0 for unknown, 1..446 for known
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Returns:
             total_loss: scalar tensor
             loss_components: dict with individual loss values
         """
-        batch_size = labels.size(0)
-
-        # ── Loss 1: OOD Detection ──
+        # ── Loss 1: OOD Detection ── (skipped when the OOD head is disabled)
         # Target: 1 if label == 0 (unknown), else 0
-        ood_targets = (labels == 0).float().unsqueeze(1)  # (batch, 1)
-        loss_ood = self.bce_loss(ood_logits, ood_targets)
+        if self.use_ood and ood_logits is not None:
+            ood_targets = (labels == 0).float().unsqueeze(1)  # (batch, 1)
+            loss_ood = self.bce_loss(ood_logits, ood_targets)
+        else:
+            loss_ood = torch.zeros((), dtype=speaker_logits.dtype,
+                                   device=speaker_logits.device)
 
         # ── Loss 2: Known Speaker Classification ──
         # Create masked labels: for unknown samples, set to ignore_index
@@ -260,7 +271,7 @@ class TwoPartLoss(nn.Module):
 #  Config-driven Loss Factory
 # ─────────────────────────────────────────────────────────
 
-def build_criterion(train_cfg: dict) -> TwoPartLoss:
+def build_criterion(train_cfg: dict, use_ood: bool = True) -> TwoPartLoss:
     """Build the two-part loss from the ``training`` config (root cause R9/C4).
 
     Reads an optional ``training.loss`` block:
@@ -275,6 +286,9 @@ def build_criterion(train_cfg: dict) -> TwoPartLoss:
     Falls back to the flat legacy keys (``use_focal``, ``focal_gamma``,
     ``ood_loss_weight``, ``speaker_loss_weight``, ``label_smoothing``,
     ``ood_pos_weight``) so existing configs keep working unchanged.
+
+    ``use_ood=False`` (cluster mode) drops the OOD BCE term entirely — the
+    speaker head's pseudo-identity columns carry the unknown supervision.
     """
     loss_cfg = train_cfg.get("loss", {}) or {}
     speaker_cfg = loss_cfg.get("speaker", {}) or {}
@@ -296,6 +310,7 @@ def build_criterion(train_cfg: dict) -> TwoPartLoss:
             "label_smoothing", train_cfg.get("label_smoothing", 0.0))),
         ood_pos_weight=float(ood_cfg.get(
             "pos_weight", train_cfg.get("ood_pos_weight", 1.0))),
+        use_ood=use_ood,
     )
 
 
@@ -376,14 +391,20 @@ class PrototypicalLoss(nn.Module):
 # ─────────────────────────────────────────────────────────
 
 def compute_ood_accuracy(
-    ood_logits: torch.Tensor,
+    ood_logits: Optional[torch.Tensor],
     labels: torch.Tensor,
 ) -> float:
     """
     Compute OOD detection accuracy:
     - Correct if sigmoid(logit) > 0.5 AND label is 0 (unknown detected as unknown)
     - OR sigmoid(logit) <= 0.5 AND label is not 0 (known detected as known)
+
+    With the OOD head disabled (``ood_logits is None``, cluster mode) the
+    signal is a monotonic function of the speaker head only — return 0.0 so
+    the metric is clearly marked as unavailable instead of crashing.
     """
+    if ood_logits is None:
+        return 0.0
     probs = torch.sigmoid(ood_logits).squeeze(1)  # (batch,)
     predictions = (probs > 0.5).long()  # 1 = predicted unknown, 0 = predicted known
     targets = (labels == 0).long()       # 1 = actual unknown, 0 = actual known
@@ -413,16 +434,20 @@ def compute_speaker_accuracy(
 
 
 def tune_ood_threshold(
-    ood_logits: torch.Tensor,
+    ood_logits: Optional[torch.Tensor],
     labels: torch.Tensor,
-) -> float:
+) -> Optional[float]:
     """Tune a binary OOD threshold on the val set for the checkpoint.
 
     Mirrors the ZenML evaluate step: sweep 0.1..0.9 by unknown-class binary
     F1 (fallback to the median P(unknown) if the head collapsed). Persisted
     as ckpt['ood_threshold'] so --apply-ood-threshold works from plain
     `python -m src.train` too.
+
+    Returns ``None`` when the OOD head is disabled (cluster mode).
     """
+    if ood_logits is None:
+        return None
     from sklearn.metrics import f1_score
 
     ood_probs = torch.sigmoid(ood_logits.squeeze(1)).numpy()
@@ -481,9 +506,11 @@ def forward_multi_window(
     spk_sum = None
     for w in range(W):
         ood, spk = model(waveforms[:, w], labels=labels)
-        ood_sum = ood if ood_sum is None else ood_sum + ood
+        if ood is not None:  # OOD head disabled (cluster mode)
+            ood_sum = ood if ood_sum is None else ood_sum + ood
         spk_sum = spk if spk_sum is None else spk_sum + spk
-    return ood_sum / W, spk_sum / W
+    ood_logit = None if ood_sum is None else ood_sum / W
+    return ood_logit, spk_sum / W
 
 
 # ─────────────────────────────────────────────────────────
@@ -524,6 +551,8 @@ def train_epoch(
     total_loss = 0.0
     total_ood_acc = 0.0
     total_speaker_acc = 0.0
+    total_loss_ood = 0.0
+    total_loss_spk = 0.0
     num_batches = len(dataloader)
 
     progress_bar = tqdm(dataloader, desc="  Train", leave=False)
@@ -544,6 +573,8 @@ def train_epoch(
         step_loss = 0.0
         step_ood_acc = 0.0
         step_spk_acc = 0.0
+        step_loss_ood = 0.0
+        step_loss_spk = 0.0
         for w in range(W):
             wf = waveforms[:, w] if W > 1 else waveforms  # (B, 1, T)
             with autocast_fn():
@@ -570,6 +601,8 @@ def train_epoch(
             scaler.scale(loss / W).backward()
 
             step_loss += loss_dict["loss_total"]
+            step_loss_ood += loss_dict["loss_ood"]
+            step_loss_spk += loss_dict["loss_speaker"]
             step_ood_acc += compute_ood_accuracy(ood_logits, labels)
             spk_acc, _ = compute_speaker_accuracy(speaker_logits, labels)
             step_spk_acc += spk_acc
@@ -601,6 +634,8 @@ def train_epoch(
         total_loss += step_loss / W
         total_ood_acc += step_ood_acc / W
         total_speaker_acc += step_spk_acc / W
+        total_loss_ood += step_loss_ood / W
+        total_loss_spk += step_loss_spk / W
 
         # Update progress bar
         progress_bar.set_postfix({
@@ -611,6 +646,8 @@ def train_epoch(
 
     return {
         "loss": total_loss / num_batches,
+        "loss_ood": total_loss_ood / num_batches,
+        "loss_speaker": total_loss_spk / num_batches,
         "ood_acc": total_ood_acc / num_batches,
         "speaker_acc": total_speaker_acc / num_batches,
     }
@@ -658,7 +695,8 @@ def validate_epoch(
         speaker_acc, _ = compute_speaker_accuracy(speaker_logits, labels)
         total_speaker_acc += speaker_acc
 
-        all_ood_logits.append(ood_logits.cpu())
+        if ood_logits is not None:  # OOD head disabled (cluster mode)
+            all_ood_logits.append(ood_logits.cpu())
         all_speaker_logits.append(speaker_logits.cpu())
         all_labels.append(labels.cpu())
 
@@ -672,7 +710,7 @@ def validate_epoch(
         "loss": total_loss / num_batches,
         "ood_acc": total_ood_acc / num_batches,
         "speaker_acc": total_speaker_acc / num_batches,
-        "ood_logits": torch.cat(all_ood_logits),
+        "ood_logits": (torch.cat(all_ood_logits) if all_ood_logits else None),
         "speaker_logits": torch.cat(all_speaker_logits),
         "labels": torch.cat(all_labels),
     }
@@ -763,7 +801,8 @@ def train(config_path: str = "configs/default_config.yaml"):
         weight_decay=train_cfg["weight_decay"],
     )
     scheduler = build_scheduler(optimizer, train_cfg, train_cfg["epochs"])
-    criterion = build_criterion(train_cfg)
+    from src.heads import ood_head_enabled
+    criterion = build_criterion(train_cfg, use_ood=ood_head_enabled(config))
     amp_dtype = train_cfg.get("amp_dtype", "fp16")
     autocast_fn, scaler = build_amp(
         amp_enabled=hw_profile["mixed_precision"], amp_dtype=amp_dtype, device=device,

@@ -111,7 +111,12 @@ class TwoHeadedSpeakerModel(nn.Module):
         pooled = self.pooling(hidden_states)  # (batch, pooled_dim)
 
         # ── OOD Head ──
-        ood_logit = self.head_ood(pooled)  # (batch, 1)
+        # In cluster mode (num_unknown_clusters > 0) the head is disabled by
+        # default (model.ood_head=false): the pseudo-identity columns already
+        # encode P(unknown) via the collapse, and their BCE supervision would
+        # be distorted (unknown files are relabeled to cluster ids). The
+        # legacy 447-way path keeps the OOD head exactly as before.
+        ood_logit = self.head_ood(pooled) if self.head_ood is not None else None  # (batch, 1) | None
 
         # ── Speaker Head ──
         # ArcFace needs labels during training, Linear ignores them
@@ -202,15 +207,21 @@ class TwoHeadedSpeakerModel(nn.Module):
             ood_sum = spk_sum = None
             for w in range(W):
                 o, s = self.forward(waveforms[:, w], labels=None)
-                ood_sum = o if ood_sum is None else ood_sum + o
+                if o is not None:  # OOD head disabled (cluster mode)
+                    ood_sum = o if ood_sum is None else ood_sum + o
                 spk_sum = s if spk_sum is None else spk_sum + s
-            ood_logit = ood_sum / W
+            ood_logit = None if ood_sum is None else ood_sum / W
             speaker_logits = spk_sum / W
         else:
             ood_logit, speaker_logits = self.forward(waveforms, labels=None)
 
-        # P(unknown) = sigmoid(ood_logit)
-        p_unknown = torch.sigmoid(ood_logit)  # (batch, 1)
+        # P(unknown) = sigmoid(ood_logit); with the OOD head disabled the
+        # unknown mass comes entirely from the cluster collapse (p_unknown=0).
+        if ood_logit is not None:
+            p_unknown = torch.sigmoid(ood_logit)  # (batch, 1)
+        else:
+            p_unknown = torch.zeros(speaker_logits.shape[0], 1,
+                                    device=speaker_logits.device)
 
         # P(known_i) = softmax(speaker_logits / temperature)
         p_known = F.softmax(speaker_logits / max(float(temperature), 1e-6), dim=1)  # (batch, N)
@@ -253,7 +264,7 @@ class TwoHeadedSpeakerModel(nn.Module):
 
         hidden_states, _ = self.encoder(waveforms)
         pooled = self.pooling(hidden_states)          # (W, pooled_dim)
-        ood_logit = self.head_ood(pooled)             # (W, 1)
+        ood_logit = self.head_ood(pooled) if self.head_ood is not None else None  # (W, 1) | None
         speaker_logits = self.head_speaker(pooled)    # (W, N)
         if hasattr(self.head_speaker, "embedding_proj"):
             raw_emb = self.head_speaker.embedding_proj(pooled)  # (W, D)
@@ -261,7 +272,10 @@ class TwoHeadedSpeakerModel(nn.Module):
             raw_emb = pooled
 
         # Per-window probabilities → average (prob-averaging, existing TTA path).
-        p_unknown = torch.sigmoid(ood_logit)          # (W, 1)
+        if ood_logit is not None:
+            p_unknown = torch.sigmoid(ood_logit)      # (W, 1)
+        else:
+            p_unknown = torch.zeros(pooled.shape[0], 1, device=pooled.device)
         p_known = F.softmax(speaker_logits / max(float(temperature), 1e-6), dim=1)
         p_known_scaled = (1.0 - p_unknown.expand(-1, self.num_known_speakers)) * p_known
         probs = self._collapse_probs(p_unknown, p_known_scaled)  # (W, 447)

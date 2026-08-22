@@ -106,7 +106,8 @@ def collect_val_logits(
     with torch.no_grad():
         for windows, labels in tqdm(dl, desc="  Val logits", leave=False):
             ood, spk = forward_multi_window(model, windows.to(device), labels=None)
-            all_ood.append(ood.cpu())
+            if ood is not None:  # OOD head disabled (cluster mode)
+                all_ood.append(ood.cpu())
             all_spk.append(spk.cpu())
             all_lbl.append(labels.cpu())
 
@@ -120,7 +121,7 @@ def collect_val_logits(
             torch.zeros_like(labels_t), labels_t,
         )
     return {
-        "ood": torch.cat(all_ood),
+        "ood": torch.cat(all_ood) if all_ood else None,
         "spk": torch.cat(all_spk),
         "labels": labels_t,
         "num_classes": len(class_map),
