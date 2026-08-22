@@ -1,5 +1,5 @@
 _meta:
-  name: campp-two_phase_partial_ft-s42_onecenter_withcluster
+  name: campp-two_phase_partial_ft-s42_onecenter_withcluster_n3
   base: default_config.yaml
   created: '2026-08-20T13:12:05'
   base_git: ee67462
@@ -31,7 +31,7 @@ model:
   ood_head: false
   encoder_config:
     campp:
-      unfreeze_last_n_blocks: 2
+      unfreeze_last_n_blocks: 3
   speaker_head_config:
     arcface:
       margin: 0.3
