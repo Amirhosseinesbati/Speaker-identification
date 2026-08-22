@@ -134,11 +134,14 @@ def _discover_checkpoints() -> List[str]:
 
     checkpoints = []
     if order:
+        # Aligned to the fusion-weights vector: one entry per encoder name,
+        # None when that encoder's checkpoint was pruned (zero weight). The
+        # decision layer filters by weight>0 AND non-None, so a sparse
+        # multi-encoder fusion (e.g. campp + titanet) stays aligned.
         for enc in order:
             c = ckpt_dir / f"{enc}_best.pt"
-            if c.exists():
-                checkpoints.append(str(c))
-    if not checkpoints:  # fallback: any *_best.pt, alphabetically
+            checkpoints.append(str(c) if c.exists() else None)
+    if not any(checkpoints):  # fallback: any *_best.pt, alphabetically
         checkpoints = sorted(str(p) for p in ckpt_dir.glob("*_best.pt"))
     if not checkpoints:
         raise click.ClickException(
@@ -160,13 +163,16 @@ def _load_centroids(checkpoint_paths: List[str]) -> Optional[dict]:
     cdir = PKG_DIR / "centroids"
     if not cdir.exists():
         return None
-    encoders = [_encoder_name(c) for c in checkpoint_paths]
+    paths = [c for c in checkpoint_paths if c]
+    if not paths:
+        return None
+    encoders = [_encoder_name(c) for c in paths]
     # Cluster mode: read the first checkpoint's embedded config so the k-locked
     # centroids_unknown_<enc>_k<k>.npz is merged — the model's own k — not a
     # different-k experiment's centroids that happens to be in the package.
     num_unknown_clusters = 0
     try:
-        ck = torch.load(checkpoint_paths[0], map_location="cpu", weights_only=False)
+        ck = torch.load(paths[0], map_location="cpu", weights_only=False)
         num_unknown_clusters = int(
             (ck.get("config", {}).get("model", {}) or {})
             .get("num_unknown_clusters", 0) or 0)

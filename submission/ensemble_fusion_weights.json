@@ -1,13 +1,23 @@
 {
   "fusion_method": "average",
-  "best_macro_f1": 0.8877384989417533,
+  "best_macro_f1": 0.9653,
   "encoder_names": [
-    "campp"
+    "campp",
+    "ecapa",
+    "eres2net",
+    "titanet"
   ],
   "checkpoints": [
-    "campp_best.pt"
+    "campp_best.pt",
+    "ecapa_best.pt",
+    "eres2net_best.pt",
+    "titanet_best.pt"
   ],
   "weights": [
-    1.0
-  ]
+    0.8333,
+    0.0,
+    0.0,
+    0.1667
+  ],
+  "note": "campp(cluster) + titanet(legacy, weight 0.2 rel.) — prob-level fusion; tuned on leak-free native val (891)."
 }

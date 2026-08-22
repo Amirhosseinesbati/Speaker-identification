@@ -335,10 +335,11 @@ def score_ensemble(
     # ── Filter out zero-weight models (their output is multiplied by 0) ──
     if fusion_method == "weighted_average" and fusion_weights is not None:
         epsilon = 1e-8
-        active = [i for i, w in enumerate(fusion_weights) if w > epsilon]
+        active = [i for i, w in enumerate(fusion_weights)
+                  if w > epsilon and checkpoint_path[i] is not None]
         if len(active) < len(fusion_weights):
             skipped = len(fusion_weights) - len(active)
-            print(f"[diag] skipped {skipped} zero-weight model(s) — "
+            print(f"[diag] skipped {skipped} zero-weight/missing model(s) — "
                   f"{len(active)} remaining")
             checkpoint_path = [checkpoint_path[i] for i in active]
             fusion_weights = [fusion_weights[i] for i in active]
