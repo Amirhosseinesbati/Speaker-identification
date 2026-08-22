@@ -1,8 +1,8 @@
 _meta:
   name: campp-two_phase_partial_ft-s42_onecenter_withcluster
   base: default_config.yaml
-  created: '2026-08-20T13:12:05'
-  base_git: ee67462
+  created: '2026-08-22T20:31:44'
+  base_git: f01b8cb
 audio:
   num_train_windows: 8
 augmentation:
@@ -28,7 +28,6 @@ data:
     scheme: single
 model:
   num_unknown_clusters: 554
-  ood_head: false
   encoder_config:
     campp:
       unfreeze_last_n_blocks: 2
@@ -37,12 +36,15 @@ model:
       margin: 0.3
       scale: 32.0
   speaker_head_type: arcface
+  ood_head: false
 training:
-  encoder_lr: 1.0e-05
   early_stopping_patience: 0
+  encoder_lr: 1.0e-05
   freeze_epochs: 30
   label_smoothing: 0.1
   loss:
     speaker:
       label_smoothing: 0.1
+      weight: 1.0
+  speaker_loss_weight: 1.0
   weight_decay: 0.0003
