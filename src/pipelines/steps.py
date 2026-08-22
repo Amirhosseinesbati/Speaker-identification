@@ -54,6 +54,7 @@ from src.training_utils import (
     build_scheduler,
     encoder_will_train,
 )
+from src.heads import ood_head_enabled
 
 
 # ─────────────────────────────────────────────────────────
@@ -496,7 +497,7 @@ def train_model(
     # hardcoded 3-epoch warmup + warm-restarts is the "cosine_warm_restarts"
     # option for backward compatibility).
     scheduler = build_scheduler(optimizer, train_cfg, train_cfg["epochs"])
-    criterion = build_criterion(train_cfg)
+    criterion = build_criterion(train_cfg, use_ood=ood_head_enabled(config))
     amp_dtype = train_cfg.get("amp_dtype", "fp16")
     autocast_fn, scaler = build_amp(
         amp_enabled=hw_profile["mixed_precision"], amp_dtype=amp_dtype, device=device,
@@ -534,7 +535,10 @@ def train_model(
     best_val_f1 = -float("inf")
     best_epoch = -1
     patience_counter = 0
-    early_stop_patience = train_cfg.get("early_stopping_patience", 10)
+    early_stop_patience = int(train_cfg.get("early_stopping_patience", 10))
+    # <= 0 disables early stopping (two-phase cosine runs its full course)
+    if early_stop_patience <= 0:
+        print(f"  ⏸ Early stopping DISABLED (early_stopping_patience={early_stop_patience})")
     history = []
 
     for epoch in range(1, train_cfg["epochs"] + 1):
@@ -569,18 +573,30 @@ def train_model(
         val_metrics["known_acc"] = val_m["known_acc"]
         val_metrics["overall_acc"] = val_m["overall_acc"]
         scheduler.step()
-        current_lr = optimizer.param_groups[0]["lr"]
+        # Per-param-group LRs: group[0] is the encoder (progressive), the last
+        # group is the head. Log them separately so the MLflow LR chart is
+        # unambiguous (the old single "learning_rate" was group[0], i.e. the
+        # ENCODER lr under progressive unfreezing — misleading).
+        head_lr = optimizer.param_groups[-1]["lr"]
+        encoder_lr = optimizer.param_groups[0]["lr"] if len(optimizer.param_groups) > 1 else None
 
         # Log metrics per epoch
         _mlflow_log_metrics({
             "train_loss": train_metrics["loss"],
+            "train_loss_ood": train_metrics["loss_ood"],
+            "train_loss_speaker": train_metrics["loss_speaker"],
             "train_ood_acc": train_metrics["ood_acc"],
             "train_speaker_acc": train_metrics["speaker_acc"],
             "val_loss": val_metrics["loss"],
             "val_ood_acc": val_metrics["ood_acc"],
             "val_speaker_acc": val_metrics["speaker_acc"],
             "val_macro_f1": val_metrics["macro_f1"],
-            "learning_rate": current_lr,
+            "val_ood_f1": val_metrics["ood_f1"],
+            "val_known_acc": val_metrics["known_acc"],
+            "val_overall_acc": val_metrics["overall_acc"],
+            "learning_rate": head_lr,
+            "head_lr": head_lr,
+            "encoder_lr": encoder_lr if encoder_lr is not None else 0.0,
         }, step=epoch)
 
         # Print progress
@@ -625,7 +641,7 @@ def train_model(
             "epoch": epoch,
             **{f"train_{k}": v for k, v in train_metrics.items()},
             **{f"val_{k}": v for k, v in val_history.items()},
-            "lr": current_lr,
+            "lr": head_lr,
         })
 
         # Save latest checkpoint (BEFORE early stopping check)
@@ -639,8 +655,9 @@ def train_model(
         torch.save(latest_ckpt, checkpoint_dir / f"{encoder_type}_latest.pt")
         torch.save(latest_ckpt, checkpoint_dir / "latest_model.pt")
 
-        # Early stopping based on val Macro-F1 (no improvement for N epochs)
-        if patience_counter >= early_stop_patience:
+        # Early stopping based on val Macro-F1 (no improvement for N epochs).
+        # Disabled when early_stopping_patience <= 0.
+        if early_stop_patience > 0 and patience_counter >= early_stop_patience:
             print(f"\n  ⏹ Early stopping at epoch {epoch} "
                   f"(val_macro_f1 not improved for {early_stop_patience} epochs)")
             break
@@ -665,8 +682,18 @@ def train_model(
     _mlflow_log_params({
         "epochs": train_cfg["epochs"],
         "learning_rate": train_cfg["learning_rate"],
+        "encoder_lr": train_cfg.get("encoder_lr", 1e-5),
         "weight_decay": train_cfg["weight_decay"],
         "batch_size": hw_profile["batch_size"],
+        "freeze_epochs": train_cfg.get("freeze_epochs", 0),
+        "schedule": train_cfg.get("schedule", "cosine"),
+        "warmup_ratio": train_cfg.get("warmup_ratio", 0.0),
+        "min_lr_ratio": train_cfg.get("min_lr_ratio", 0.0),
+        "early_stopping_patience": train_cfg.get("early_stopping_patience", 10),
+        "encoder_type": encoder_type,
+        "num_unknown_clusters": num_unknown_clusters,
+        "ood_head": ood_head_enabled(config),
+        "speaker_head_type": config["model"].get("speaker_head_type", "linear"),
     })
     _mlflow_log_metrics(summary)
     _mlflow_log_artifact(final_best_path, artifact_path="models")
@@ -736,7 +763,7 @@ def evaluate_model(
 
     # Evaluate with threshold tuning (criterion mirrors training weights)
     train_cfg = config["training"]
-    criterion = build_criterion(train_cfg)
+    criterion = build_criterion(train_cfg, use_ood=ood_head_enabled(config))
     total_loss = 0.0
     total_ood_acc = 0.0
     total_speaker_acc = 0.0
@@ -760,11 +787,12 @@ def evaluate_model(
             speaker_acc, _ = compute_speaker_accuracy(speaker_logits, labels)
             total_speaker_acc += speaker_acc
 
-            all_ood_logits.append(ood_logits.cpu())
+            if ood_logits is not None:  # OOD head disabled (cluster mode)
+                all_ood_logits.append(ood_logits.cpu())
             all_speaker_logits.append(speaker_logits.cpu())
             all_labels.append(labels.cpu())
 
-    all_ood = torch.cat(all_ood_logits)
+    all_ood = torch.cat(all_ood_logits) if all_ood_logits else None
     all_spk = torch.cat(all_speaker_logits)
     all_lbl = torch.cat(all_labels)
 
@@ -776,41 +804,49 @@ def evaluate_model(
     )
 
     # ── Tune OOD threshold on validation (binary unknown-class F1) ──
-    ood_probs = torch.sigmoid(all_ood.squeeze(1)).numpy()
-    ood_targets = (all_lbl == 0).numpy().astype(int)
-
-    from sklearn.metrics import f1_score
-    best_threshold = 0.5
+    # (skipped when the OOD head is disabled — cluster mode)
+    best_threshold = None
     best_f1 = 0.0
-    for thr in np.arange(0.1, 0.9, 0.05):
-        preds = (ood_probs > thr).astype(int)
-        f1 = f1_score(ood_targets, preds, zero_division=0)
-        if f1 > best_f1:
-            best_f1 = f1
-            best_threshold = thr
+    if all_ood is not None:
+        ood_probs = torch.sigmoid(all_ood.squeeze(1)).numpy()
+        ood_targets = (all_lbl == 0).numpy().astype(int)
+
+        from sklearn.metrics import f1_score
+        best_threshold = 0.5
+        best_f1 = 0.0
+        for thr in np.arange(0.1, 0.9, 0.05):
+            preds = (ood_probs > thr).astype(int)
+            f1 = f1_score(ood_targets, preds, zero_division=0)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_threshold = thr
 
     # Fallback: if the OOD head collapsed (all F1 == 0), use the median positive
     # rate of the val set so a sane threshold is always persisted.
-    if best_f1 == 0.0:
+    if best_f1 == 0.0 and all_ood is not None:
         best_threshold = float(np.median(ood_probs))
         print(f"  ⚠ OOD head collapsed (F1=0) — falling back to median "
               f"P(unknown)={best_threshold:.3f}")
 
-    # Macro-F1 at the tuned threshold (local OOD operating-point analysis)
-    thr_metrics = evaluate_macro_f1(
-        all_ood, all_spk, all_lbl,
-        num_classes=len(class_map) - num_unknown_clusters,
-        ood_threshold=best_threshold,
-        num_unknown_clusters=num_unknown_clusters,
-    )
-
-    tuned_ood_acc = ((ood_probs > best_threshold).astype(int) == ood_targets).mean()
-
-    print(f"  🎯 OOD Threshold tuned: {best_threshold:.2f} (binary F1={best_f1:.4f})")
-    print(f"     Default (0.5): OOD Acc = {total_ood_acc/num_batches:.4f}")
-    print(f"     Tuned ({best_threshold:.2f}): OOD Acc = {tuned_ood_acc:.4f}")
-    print(f"     Macro-F1 (argmax):   {argmax_metrics['macro_f1']:.4f}")
-    print(f"     Macro-F1 (thr={best_threshold:.2f}): {thr_metrics['macro_f1']:.4f}")
+    if all_ood is not None:
+        # Macro-F1 at the tuned threshold (local OOD operating-point analysis)
+        thr_metrics = evaluate_macro_f1(
+            all_ood, all_spk, all_lbl,
+            num_classes=len(class_map) - num_unknown_clusters,
+            ood_threshold=best_threshold,
+            num_unknown_clusters=num_unknown_clusters,
+        )
+        tuned_ood_acc = ((ood_probs > best_threshold).astype(int) == ood_targets).mean()
+        print(f"  🎯 OOD Threshold tuned: {best_threshold:.2f} (binary F1={best_f1:.4f})")
+        print(f"     Default (0.5): OOD Acc = {total_ood_acc/num_batches:.4f}")
+        print(f"     Tuned ({best_threshold:.2f}): OOD Acc = {tuned_ood_acc:.4f}")
+        print(f"     Macro-F1 (argmax):   {argmax_metrics['macro_f1']:.4f}")
+        print(f"     Macro-F1 (thr={best_threshold:.2f}): {thr_metrics['macro_f1']:.4f}")
+    else:
+        # OOD head disabled (cluster mode) — the collapse carries unknown.
+        thr_metrics = argmax_metrics
+        tuned_ood_acc = float("nan")
+        print(f"  🎯 OOD head disabled (cluster mode) — threshold report skipped")
 
     metrics = {
         "final_val_loss": round(total_loss / num_batches, 6),
@@ -821,7 +857,7 @@ def evaluate_model(
         "known_acc": round(argmax_metrics["known_acc"], 6),
         "overall_acc": round(argmax_metrics["overall_acc"], 6),
         "macro_f1_at_ood_threshold": round(thr_metrics["macro_f1"], 6),
-        "ood_threshold": float(best_threshold),
+        "ood_threshold": float(best_threshold) if best_threshold is not None else None,
         "ood_threshold_f1": float(best_f1),
         "num_val_batches": num_batches,
     }
