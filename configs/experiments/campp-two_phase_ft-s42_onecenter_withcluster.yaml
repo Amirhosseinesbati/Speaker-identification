@@ -1,8 +1,8 @@
 _meta:
   name: campp-two_phase_ft-s42_onecenter_withcluster
   base: default_config.yaml
-  created: '2026-08-20T19:39:01'
-  base_git: 0ff5bdd
+  created: '2026-08-22T19:23:14'
+  base_git: 5d22ac1
 audio:
   num_train_windows: 8
 augmentation:
@@ -38,8 +38,9 @@ model:
     arcface_subcenter:
       embedding_dim: 256
   speaker_head_type: arcface
+  ood_head: false
 training:
-  early_stopping_patience: 20
+  early_stopping_patience: 0
   encoder_lr: 1.0e-05
   freeze_epochs: 20
   label_smoothing: 0.1
@@ -48,4 +49,6 @@ training:
       weight: 0.2
     speaker:
       label_smoothing: 0.1
+      weight: 1.0
+  speaker_loss_weight: 1.0
   weight_decay: 0.0003
