@@ -1,0 +1,57 @@
+_meta:
+  name: campp-two_phase_partial_ft-s42_subcenter3_withcluster
+  base: default_config.yaml
+  created: '2026-08-22T14:00:00'
+  base_git: ee67462
+# campp winner + Sub-center ArcFace K=3 instead of single center.
+# Rationale (from the dirty-data audit): each class can reserve one sub-center
+# for its empty/non-speech chunks, so silence-region embeddings of classes that
+# HAVE a matching train silence file (e.g. 0e928e78, bdc21377) become reachable.
+# Pure digital-zero files stay unrecoverable (identical embeddings), but this
+# tests whether the near-zero files get fixed. Everything else = the winner.
+audio:
+  num_train_windows: 8
+augmentation:
+  domain:
+    mp3_codec_roundtrip:
+      p: 0.5
+    musan:
+      music_p: 0.5
+      noise_p: 0.8
+      snr_db:
+      - 0.0
+      - 15.0
+    rirs_reverb:
+      p: 0.6
+  waveform:
+    time_stretch:
+      p: 0.9
+      rate:
+      - 0.9
+      - 1.1
+data:
+  split:
+    scheme: single
+model:
+  num_unknown_clusters: 554
+  ood_head: false
+  encoder_config:
+    campp:
+      unfreeze_last_n_blocks: 2
+  encoder_type: campp
+  speaker_head_config:
+    arcface_subcenter:
+      embedding_dim: 192
+      margin: 0.3
+      scale: 32.0
+      sub_centers: 3
+  speaker_head_type: arcface_subcenter
+training:
+  encoder_lr: 1.0e-05
+  early_stopping_patience: 0
+  freeze_epochs: 30
+  label_smoothing: 0.1
+  loss:
+    speaker:
+      label_smoothing: 0.1
+  weight_decay: 0.0003

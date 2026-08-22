@@ -516,6 +516,16 @@ The `OODHead` is trained end-to-end with BCE. It learns "does this pooled embedd
 near the known-speaker manifold?" — its sigmoid is fused directly into the 447-way output
 ([Section 4.5](#45-probability-fusion-the-447-way-output)).
 
+**Cluster mode removes the OOD head** (`model.ood_head: false`). When
+`num_unknown_clusters > 0` the pseudo-identity columns already encode
+P(unknown) — their softmax mass is summed into column 0 at output — so the
+binary head is redundant, and its BCE supervision would be distorted (unknown
+files are relabeled to cluster ids, so the `label==0` target is never positive
+for them). The flag is explicit: absent it stays ON, so old cluster checkpoints
+(e.g. `campp_best.pt`) load unchanged. With `model.ood_head: false`, `P(unknown)`
+comes entirely from the cluster-column collapse (`p_unknown = 0` in the fusion).
+The UI hides the OOD controls whenever cluster mode is enabled.
+
 ### 8.2 FAISS cosine-distance detector
 
 [`src/ood_detector.py`](src/ood_detector.py) — `FAISSOODDetector`:
