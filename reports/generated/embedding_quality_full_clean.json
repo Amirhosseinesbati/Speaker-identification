@@ -1,0 +1,93 @@
+{
+  "scope": "All cached clean files; 70 corrupted files excluded; known scores are leave-one-out.",
+  "encoders": {
+    "ecapa": {
+      "n_files": 4459,
+      "n_known_files": 2232,
+      "n_unknown_files": 2227,
+      "embedding_dim": 192,
+      "known_loo_top1": 0.9525089605734767,
+      "known_loo_top5": 0.9619175627240143,
+      "ood_auc": 0.9584880410343567,
+      "best_macro_f1": {
+        "macro_f1": 0.9197382219448271,
+        "threshold": 0.31
+      },
+      "pair_separation": {
+        "same_mean": 0.8143894989318988,
+        "same_std": 0.22183054266404367,
+        "different_mean": 0.1598235369381097,
+        "different_std": 0.11927023021453832,
+        "d_prime": 3.6754181804005897,
+        "same_pairs": 2231,
+        "different_pairs": 8907
+      }
+    },
+    "campp": {
+      "n_files": 4459,
+      "n_known_files": 2232,
+      "n_unknown_files": 2227,
+      "embedding_dim": 512,
+      "known_loo_top1": 0.9502688172043011,
+      "known_loo_top5": 0.9596774193548387,
+      "ood_auc": 0.9568930830971475,
+      "best_macro_f1": {
+        "macro_f1": 0.924880806239865,
+        "threshold": 0.26999999999999996
+      },
+      "pair_separation": {
+        "same_mean": 0.8476003114781533,
+        "same_std": 0.19582301283478826,
+        "different_mean": 0.19385077103074677,
+        "different_std": 0.12327570637063696,
+        "d_prime": 3.995515361463138,
+        "same_pairs": 2231,
+        "different_pairs": 8907
+      }
+    },
+    "eres2net": {
+      "n_files": 4459,
+      "n_known_files": 2232,
+      "n_unknown_files": 2227,
+      "embedding_dim": 192,
+      "known_loo_top1": 0.9578853046594982,
+      "known_loo_top5": 0.9663978494623656,
+      "ood_auc": 0.9599373443869873,
+      "best_macro_f1": {
+        "macro_f1": 0.9258007076722753,
+        "threshold": 0.23999999999999996
+      },
+      "pair_separation": {
+        "same_mean": 0.8561087698026145,
+        "same_std": 0.18350405085177562,
+        "different_mean": 0.30852751461259936,
+        "different_std": 0.12860424959448666,
+        "d_prime": 3.4558620299363056,
+        "same_pairs": 2231,
+        "different_pairs": 8907
+      }
+    },
+    "titanet": {
+      "n_files": 4459,
+      "n_known_files": 2232,
+      "n_unknown_files": 2227,
+      "embedding_dim": 192,
+      "known_loo_top1": 0.953853046594982,
+      "known_loo_top5": 0.9659498207885304,
+      "ood_auc": 0.9625798484870431,
+      "best_macro_f1": {
+        "macro_f1": 0.9331282513728041,
+        "threshold": 0.31999999999999995
+      },
+      "pair_separation": {
+        "same_mean": 0.8277210015711738,
+        "same_std": 0.2156443774749254,
+        "different_mean": 0.15218501755670993,
+        "different_std": 0.12147827248059878,
+        "d_prime": 3.8599072959814644,
+        "same_pairs": 2231,
+        "different_pairs": 8907
+      }
+    }
+  }
+}

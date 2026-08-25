@@ -1,0 +1,60 @@
+{
+  "scope": "No checkpoint was trained. Historical CAM++ only received inference and train-split centroid extraction.",
+  "validation": {
+    "n": 891,
+    "known": 446,
+    "unknown": 445
+  },
+  "search": "Alternating grid (3 rounds): every model-weight combination at step=0.1; alpha/lambda step=0.1; kappa={4,8,12,16,24,32}; tau={0,.1,.2,.3,.4}.",
+  "results": {
+    "current_campp_only": {
+      "score": 0.9619238377104478,
+      "weights": [
+        1.0
+      ],
+      "params": {
+        "alpha": 0.4,
+        "kappa": 24.0,
+        "tau": 0.0,
+        "lambda_unknown": 0.6
+      },
+      "models": [
+        "campp"
+      ]
+    },
+    "campp_ecapa_eres2net_no_titanet": {
+      "score": 0.9649041423187907,
+      "weights": [
+        0.8,
+        0.2,
+        0.0
+      ],
+      "params": {
+        "alpha": 0.3,
+        "kappa": 16.0,
+        "tau": 0.0,
+        "lambda_unknown": 0.65
+      },
+      "models": [
+        "campp",
+        "ecapa",
+        "eres2net"
+      ]
+    },
+    "historical_campp_5_only": {
+      "score": 0.9622757380357064,
+      "weights": [
+        1.0
+      ],
+      "params": {
+        "alpha": 0.30000000000000004,
+        "kappa": 16.0,
+        "tau": 0.0,
+        "lambda_unknown": 0.7
+      },
+      "models": [
+        "campp_best (5).pt"
+      ]
+    }
+  }
+}

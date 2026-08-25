@@ -1,0 +1,86 @@
+{
+  "scope": "post-hoc decision layer only; no audio encoder or speaker head was trained",
+  "n_validation": 891,
+  "n_known": 446,
+  "n_unknown": 445,
+  "n_unknown_pseudo_speaker_groups": 296,
+  "largest_unknown_group_in_validation": 7,
+  "features": [
+    "fused_unknown_mass",
+    "top_known_probability",
+    "known_margin",
+    "max_centroid_cosine",
+    "centroid_margin",
+    "head_entropy"
+  ],
+  "baseline_existing_decision": {
+    "macro_f1": 0.965657469550087,
+    "unknown_recall": 0.9932584269662922,
+    "known_accuracy": 0.9663677130044843
+  },
+  "one_dimensional_gate_cv": {
+    "ordinary": {
+      "protocol": "ordinary_stratified_5fold",
+      "macro_f1": 0.9589387599376673,
+      "unknown_recall": 0.9932584269662922,
+      "known_accuracy": 0.9596412556053812,
+      "thresholds": [
+        0.4700000000000001,
+        0.49000000000000005,
+        0.49000000000000005,
+        0.49000000000000005,
+        0.49000000000000005
+      ]
+    },
+    "group_aware": {
+      "protocol": "pseudo_speaker_group_5fold",
+      "macro_f1": 0.9634178942777145,
+      "unknown_recall": 0.9932584269662922,
+      "known_accuracy": 0.9641255605381166,
+      "thresholds": [
+        0.49000000000000005,
+        0.4800000000000001,
+        0.49000000000000005,
+        0.49000000000000005,
+        0.49000000000000005
+      ]
+    }
+  },
+  "six_feature_logistic_calibration_cv": {
+    "ordinary": {
+      "protocol": "ordinary_stratified_5fold",
+      "macro_f1": 0.9602058366413325,
+      "unknown_recall": 0.9797752808988764,
+      "known_accuracy": 0.9641255605381166,
+      "thresholds": [
+        0.5500000000000002,
+        0.5900000000000002,
+        0.42000000000000004,
+        0.6200000000000001,
+        0.5400000000000001
+      ],
+      "mean_predicted_unknown_probability": {
+        "unknown": 0.9082757562439912,
+        "known": 0.09142362048361227
+      }
+    },
+    "group_aware": {
+      "protocol": "pseudo_speaker_group_5fold",
+      "macro_f1": 0.9589355587394951,
+      "unknown_recall": 0.9775280898876404,
+      "known_accuracy": 0.9641255605381166,
+      "thresholds": [
+        0.42000000000000004,
+        0.4700000000000001,
+        0.5600000000000002,
+        0.6900000000000002,
+        0.5800000000000002
+      ],
+      "mean_predicted_unknown_probability": {
+        "unknown": 0.9080291555480298,
+        "known": 0.09283106262194601
+      }
+    }
+  },
+  "interpretation": "Ordinary CV is intentionally optimistic because it may contain the same pseudo-speaker on both sides. Group-aware CV is the deployment guardrail."
+}

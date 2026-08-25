@@ -1,0 +1,20 @@
+{
+  "n_files": 4459,
+  "embedding_dim": 512,
+  "known_loo_top1": 0.5994623655913979,
+  "known_loo_top5": 0.8010752688172043,
+  "ood_auc": 0.6796823321793627,
+  "best_macro_f1": {
+    "macro_f1": 0.44419901688977104,
+    "threshold": 0.03
+  },
+  "pair_separation": {
+    "same_mean": 0.9427367527253261,
+    "same_std": 0.10687587142998996,
+    "different_mean": 0.717796546977632,
+    "different_std": 0.16327512029936278,
+    "d_prime": 1.630146656010298,
+    "same_pairs": 2231,
+    "different_pairs": 8907
+  }
+}
