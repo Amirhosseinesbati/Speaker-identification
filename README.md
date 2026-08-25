@@ -774,7 +774,8 @@ Fixed random seeds in data splits (42), balanced sampler (42), and the EDA suite
 ├── data/
 │   ├── raw/                      # 4,529 × .mp3 + labels.csv (DVC-tracked)
 │   └── processed/                # audio_wav/ (16 kHz mono), label CSVs, split_report.json, embedding caches
-├── eda/                          # EDA reports, charts, JSON summaries, .npy
+├── eda/                          # Reproducible EDA reports, charts, JSON summaries, .npy
+├── reports/generated/            # Generated experiment and error-analysis tables
 ├── checkpoints/                  # best/latest/init models + corrupted_files.json
 ├── scripts/
 │   ├── convert_mp3_to_wav.py     # thin CLI wrapper over src/audio_preprocessing

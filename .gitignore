@@ -65,3 +65,6 @@ eda
 # Leaderboard submission zip (built artifact — never commit)
 submission_leaderboard.zip
 *.zip
+
+# Temporary inspection/rendering artifacts (for example rendered PDF pages).
+tmp/
