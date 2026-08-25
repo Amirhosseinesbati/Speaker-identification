@@ -12,7 +12,7 @@ audio: {num_train_windows: 8, speech_aware_crop_probability: 0.75, eval_speech_a
 training:
   epochs: 200
   freeze_epochs: 15
-  early_stopping_patience: 18
+  early_stopping_patience: 20
   encoder_lr: 5.0e-06
   loss:
     speaker: {type: ce, label_smoothing: 0.05, weight: 0.8}

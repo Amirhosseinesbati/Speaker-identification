@@ -6,7 +6,7 @@ audio:
   min_valid_duration: 1.0
   n_fft: 400
   n_mels: 80
-  num_train_windows: 4
+  num_train_windows: 8
   ood_batch_ratio: 0.35
   sample_rate: 16000
   # Shared train/submission window policy. Defaults preserve legacy behaviour;
