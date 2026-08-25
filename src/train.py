@@ -41,6 +41,7 @@ from src.training_utils import (
     build_scheduler,
     encoder_will_train,
 )
+from src.model_artifacts import enrich_checkpoint, create_training_bundle
 
 warnings.filterwarnings("ignore")
 
@@ -189,12 +190,14 @@ class TwoPartLoss(nn.Module):
         label_smoothing: float = 0.0,
         ood_pos_weight: float = 1.0,
         use_ood: bool = True,
+        competition_known_count: int = 446,
     ):
         super().__init__()
         self.ignore_index = ignore_index
         self.ood_weight = ood_weight
         self.speaker_weight = speaker_weight
         self.use_ood = use_ood
+        self.competition_known_count = int(competition_known_count)
 
         # Cluster mode (use_ood=False): the OOD head does not exist and its BCE
         # supervision would be distorted (unknown files are relabeled to cluster
@@ -234,9 +237,12 @@ class TwoPartLoss(nn.Module):
             loss_components: dict with individual loss values
         """
         # ── Loss 1: OOD Detection ── (skipped when the OOD head is disabled)
-        # Target: 1 if label == 0 (unknown), else 0
+        # Target is independent from the metric identity.  Pseudo-OOD classes
+        # occupy ids > competition_known_count and must remain positive for BCE.
         if self.use_ood and ood_logits is not None:
-            ood_targets = (labels == 0).float().unsqueeze(1)  # (batch, 1)
+            ood_targets = (
+                (labels == 0) | (labels > self.competition_known_count)
+            ).float().unsqueeze(1)
             loss_ood = self.bce_loss(ood_logits, ood_targets)
         else:
             loss_ood = torch.zeros((), dtype=speaker_logits.dtype,
@@ -271,7 +277,11 @@ class TwoPartLoss(nn.Module):
 #  Config-driven Loss Factory
 # ─────────────────────────────────────────────────────────
 
-def build_criterion(train_cfg: dict, use_ood: bool = True) -> TwoPartLoss:
+def build_criterion(
+    train_cfg: dict,
+    use_ood: bool = True,
+    competition_known_count: int = 446,
+) -> TwoPartLoss:
     """Build the two-part loss from the ``training`` config (root cause R9/C4).
 
     Reads an optional ``training.loss`` block:
@@ -311,6 +321,7 @@ def build_criterion(train_cfg: dict, use_ood: bool = True) -> TwoPartLoss:
         ood_pos_weight=float(ood_cfg.get(
             "pos_weight", train_cfg.get("ood_pos_weight", 1.0))),
         use_ood=use_ood,
+        competition_known_count=competition_known_count,
     )
 
 
@@ -355,8 +366,8 @@ class PrototypicalLoss(nn.Module):
 
     def forward(self, embeddings: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         """embeddings: (N, D) L2-normalised; labels: (N,) original (0 = unknown)."""
-        remapped = labels - 1  # known 1..446 → 0..445; unknown 0 → -1
-        known_mask = remapped >= 0
+        remapped = labels - 1
+        known_mask = (remapped >= 0) & (remapped < self.num_classes)
         if not known_mask.any():
             return torch.tensor(0.0, device=embeddings.device, requires_grad=True)
 
@@ -365,10 +376,12 @@ class PrototypicalLoss(nn.Module):
 
         # EMA prototype update (no grad — the prototypes are not parameters).
         with torch.no_grad():
-            for c in range(self.num_classes):
+            # Only classes present in this batch need an EMA update. Iterating
+            # all 1000 metric classes for every window was a substantial Python
+            # bottleneck in hybrid runs.
+            for c in lab.unique().tolist():
+                c = int(c)
                 m = lab == c
-                if not m.any():
-                    continue
                 new = F.normalize(emb[m].mean(dim=0, keepdim=True), p=2, dim=1)[0]
                 self.prototypes[c] = (
                     self.decay * self.prototypes[c] + (1.0 - self.decay) * new
@@ -393,6 +406,7 @@ class PrototypicalLoss(nn.Module):
 def compute_ood_accuracy(
     ood_logits: Optional[torch.Tensor],
     labels: torch.Tensor,
+    competition_known_count: int = 446,
 ) -> float:
     """
     Compute OOD detection accuracy:
@@ -407,7 +421,7 @@ def compute_ood_accuracy(
         return 0.0
     probs = torch.sigmoid(ood_logits).squeeze(1)  # (batch,)
     predictions = (probs > 0.5).long()  # 1 = predicted unknown, 0 = predicted known
-    targets = (labels == 0).long()       # 1 = actual unknown, 0 = actual known
+    targets = ((labels == 0) | (labels > competition_known_count)).long()
     correct = (predictions == targets).sum().item()
     return correct / labels.size(0)
 
@@ -415,11 +429,12 @@ def compute_ood_accuracy(
 def compute_speaker_accuracy(
     speaker_logits: torch.Tensor,
     labels: torch.Tensor,
+    competition_known_count: int = 446,
 ) -> Tuple[float, int]:
     """
     Compute known speaker accuracy (only for samples with label != 0).
     """
-    known_mask = labels != 0
+    known_mask = (labels > 0) & (labels <= competition_known_count)
     if known_mask.sum() == 0:
         return 0.0, 0
 
@@ -436,6 +451,7 @@ def compute_speaker_accuracy(
 def tune_ood_threshold(
     ood_logits: Optional[torch.Tensor],
     labels: torch.Tensor,
+    competition_known_count: int = 446,
 ) -> Optional[float]:
     """Tune a binary OOD threshold on the val set for the checkpoint.
 
@@ -451,7 +467,9 @@ def tune_ood_threshold(
     from sklearn.metrics import f1_score
 
     ood_probs = torch.sigmoid(ood_logits.squeeze(1)).numpy()
-    ood_targets = (labels == 0).numpy().astype(int)
+    ood_targets = (
+        (labels == 0) | (labels > competition_known_count)
+    ).numpy().astype(int)
     best_threshold = 0.5
     best_f1 = 0.0
     for thr in np.arange(0.1, 0.9, 0.05):
@@ -603,8 +621,10 @@ def train_epoch(
             step_loss += loss_dict["loss_total"]
             step_loss_ood += loss_dict["loss_ood"]
             step_loss_spk += loss_dict["loss_speaker"]
-            step_ood_acc += compute_ood_accuracy(ood_logits, labels)
-            spk_acc, _ = compute_speaker_accuracy(speaker_logits, labels)
+            step_ood_acc += compute_ood_accuracy(
+                ood_logits, labels, criterion.competition_known_count)
+            spk_acc, _ = compute_speaker_accuracy(
+                speaker_logits, labels, criterion.competition_known_count)
             step_spk_acc += spk_acc
 
         scaler.unscale_(optimizer)
@@ -691,8 +711,10 @@ def validate_epoch(
         loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
         total_loss += loss_dict["loss_total"]
-        total_ood_acc += compute_ood_accuracy(ood_logits, labels)
-        speaker_acc, _ = compute_speaker_accuracy(speaker_logits, labels)
+        total_ood_acc += compute_ood_accuracy(
+            ood_logits, labels, criterion.competition_known_count)
+        speaker_acc, _ = compute_speaker_accuracy(
+            speaker_logits, labels, criterion.competition_known_count)
         total_speaker_acc += speaker_acc
 
         if ood_logits is not None:  # OOD head disabled (cluster mode)
@@ -702,7 +724,7 @@ def validate_epoch(
 
         progress_bar.set_postfix({
             "loss": f"{loss_dict['loss_total']:.4f}",
-            "ood": f"{compute_ood_accuracy(ood_logits, labels):.3f}",
+            "ood": f"{compute_ood_accuracy(ood_logits, labels, criterion.competition_known_count):.3f}",
             "spk": f"{speaker_acc:.3f}",
         })
 
@@ -802,7 +824,12 @@ def train(config_path: str = "configs/default_config.yaml"):
     )
     scheduler = build_scheduler(optimizer, train_cfg, train_cfg["epochs"])
     from src.heads import ood_head_enabled
-    criterion = build_criterion(train_cfg, use_ood=ood_head_enabled(config))
+    competition_known_count = int(
+        config.get("model", {}).get("competition_num_known", 446))
+    criterion = build_criterion(
+        train_cfg, use_ood=ood_head_enabled(config),
+        competition_known_count=competition_known_count,
+    )
     amp_dtype = train_cfg.get("amp_dtype", "fp16")
     autocast_fn, scaler = build_amp(
         amp_enabled=hw_profile["mixed_precision"], amp_dtype=amp_dtype, device=device,
@@ -821,8 +848,11 @@ def train(config_path: str = "configs/default_config.yaml"):
         emb_dim = getattr(model.head_speaker, "embedding_dim", None)
         if emb_dim is None:
             emb_dim = model.encoder.output_dim * model.pooling.output_multiplier
+        proto_scope = str(proto_cfg.get("scope", "metric")).lower().strip()
+        proto_classes = (competition_known_count
+                         if proto_scope == "known" else num_known)
         proto_criterion = PrototypicalLoss(
-            num_classes=num_known,
+            num_classes=proto_classes,
             embedding_dim=int(emb_dim),
             scale=float(proto_cfg.get("scale", 30.0)),
             margin=float(proto_cfg.get("margin", 0.2)),
@@ -842,6 +872,14 @@ def train(config_path: str = "configs/default_config.yaml"):
     best_val_f1 = -float("inf")
     best_epoch = -1
     history = []
+    split_scheme = str((config.get("data", {}).get("split", {}) or {})
+                       .get("scheme", "single")).lower().strip()
+    selection_mode = str(train_cfg.get(
+        "selection_mode", "last_epoch" if split_scheme == "full" else "best_macro_f1"
+    )).lower().strip()
+    if split_scheme == "full":
+        selection_mode = "last_epoch"
+        print("  🧾 Full-data selection: final epoch only; overlapping val is diagnostic")
 
     for epoch in range(1, train_cfg["epochs"] + 1):
         epoch_start = time.time()
@@ -896,12 +934,18 @@ def train(config_path: str = "configs/default_config.yaml"):
         # Save best checkpoint (based on competition Macro-F1). Named by
         # encoder (<enc>_best.pt) so the submission package can ship one per
         # encoder; best_model.pt is kept as a backward-compat copy.
-        if val_metrics["macro_f1"] > best_val_f1:
+        should_save = (
+            (selection_mode == "last_epoch" and epoch == train_cfg["epochs"])
+            or (selection_mode != "last_epoch" and
+                val_metrics["macro_f1"] > best_val_f1)
+        )
+        if should_save:
             best_val_f1 = val_metrics["macro_f1"]
             best_epoch = epoch
             ood_threshold = tune_ood_threshold(
-                val_metrics["ood_logits"], val_metrics["labels"])
-            ckpt = {
+                val_metrics["ood_logits"], val_metrics["labels"],
+                competition_known_count=competition_known_count)
+            ckpt = enrich_checkpoint({
                 "epoch": epoch,
                 "model_state_dict": (
                     ema.state_dict(model) if ema is not None else model.state_dict()
@@ -915,20 +959,25 @@ def train(config_path: str = "configs/default_config.yaml"):
                 "val_ood_acc": val_metrics["ood_acc"],
                 "val_speaker_acc": val_metrics["speaker_acc"],
                 "val_macro_f1": val_metrics["macro_f1"],
-            }
+            }, config, class_map, metrics={
+                "val_loss": val_metrics["loss"],
+                "val_ood_acc": val_metrics["ood_acc"],
+                "val_speaker_acc": val_metrics["speaker_acc"],
+                "val_macro_f1": val_metrics["macro_f1"],
+            }, history=history)
             torch.save(ckpt, checkpoint_dir / f"{encoder_type}_best.pt")
             torch.save(ckpt, checkpoint_dir / "best_model.pt")
             print(f"     💾 Saved new best model (val_macro_f1={best_val_f1:.4f}, "
                   f"ood_thr={ood_threshold:.2f})")
 
         # Save latest checkpoint (encoder-named + back-compat copy)
-        latest_ckpt = {
+        latest_ckpt = enrich_checkpoint({
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "config": config,
             "class_map": class_map,
-        }
+        }, config, class_map, history=history)
         torch.save(latest_ckpt, checkpoint_dir / f"{encoder_type}_latest.pt")
         torch.save(latest_ckpt, checkpoint_dir / "latest_model.pt")
 
@@ -953,6 +1002,18 @@ def train(config_path: str = "configs/default_config.yaml"):
         print(f"  Best val OOD acc: {history[best_epoch-1]['val_ood_acc']:.3f}")
         print(f"  Best val Speaker acc: {history[best_epoch-1]['val_speaker_acc']:.3f}")
     print(f"  Checkpoint saved: {checkpoint_dir / f'{encoder_type}_best.pt'}")
+    best_path = checkpoint_dir / f"{encoder_type}_best.pt"
+    if best_path.exists():
+        final_metrics = {
+            "best_epoch": best_epoch,
+            "best_val_macro_f1": best_val_f1,
+        }
+        final_ckpt = torch.load(best_path, map_location="cpu", weights_only=False)
+        final_ckpt = enrich_checkpoint(
+            final_ckpt, config, class_map, final_metrics, history)
+        torch.save(final_ckpt, best_path)
+        torch.save(final_ckpt, checkpoint_dir / "best_model.pt")
+        create_training_bundle(best_path, config, class_map, history, final_metrics)
     print()
 
     return history

@@ -298,6 +298,11 @@ def build_cluster_map(
     method: str = "kmeans",
     force_cache: bool = False,
     out_map_path: Optional[str] = None,
+    split_scheme: Optional[str] = None,
+    fold: Optional[int] = None,
+    folds: Optional[int] = None,
+    split_seed: Optional[int] = None,
+    scope: str = "train",
 ) -> dict:
     """Cluster the unknown TRAIN files into ``k_clusters`` pseudo-identities.
 
@@ -356,6 +361,8 @@ def build_cluster_map(
     # ── Train-space embeddings (same as the shipped decision layer) ──
     embs, labels, files = _extract_train_embs(
         checkpoint_path, dev, force=force_cache,
+        split_scheme=split_scheme, fold=fold, folds=folds,
+        split_seed=split_seed, scope=scope,
     )
     unk_mask = labels == 0
     unk_embs = embs[unk_mask]
@@ -447,11 +454,18 @@ def run_build(
     method: str = "kmeans",
     force_cache: bool = False,
     out: Optional[str] = None,
+    split_scheme: Optional[str] = None,
+    fold: Optional[int] = None,
+    folds: Optional[int] = None,
+    split_seed: Optional[int] = None,
+    scope: str = "train",
 ) -> dict:
     """Build-only entry point (no val comparison) — the UI/CI rebuild path."""
     out = build_cluster_map(
         checkpoint_path, k_clusters=k_clusters, device=device, seed=seed,
         method=method, force_cache=force_cache, out_map_path=out,
+        split_scheme=split_scheme, fold=fold, folds=folds,
+        split_seed=split_seed, scope=scope,
     )
     print(f"\n  ✅ Cluster map ready: k={out['actual_k']} → "
           f"{int((out['cluster_sizes'] > 0).sum())} non-empty pseudo-identities. "
@@ -469,6 +483,11 @@ def _extract_train_embs(
     device: torch.device,
     batch_size: int = 32,
     force: bool = False,
+    split_scheme: Optional[str] = None,
+    fold: Optional[int] = None,
+    folds: Optional[int] = None,
+    split_seed: Optional[int] = None,
+    scope: str = "train",
 ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """TRAIN-split embeddings in the checkpoint's ArcFace space.
 
@@ -489,9 +508,16 @@ def _extract_train_embs(
     from tqdm import tqdm
 
     ckpt_key = Path(checkpoint_path).name.replace("_best.pt", "")
-    cache_embs = DATA_PROCESSED / f"train_emb_{ckpt_key}.npy"
-    cache_lbls = DATA_PROCESSED / f"train_emb_{ckpt_key}_labels.npy"
-    cache_files = DATA_PROCESSED / f"train_emb_{ckpt_key}_files.json"
+    scope = str(scope).lower().strip()
+    split_tag = str(split_scheme or "checkpoint").lower().strip()
+    if scope == "full":
+        split_tag = "full"
+    elif split_tag == "kfold":
+        split_tag = f"kfold{int(folds or 3)}_f{int(fold or 0)}_s{int(split_seed or 42)}"
+    cache_key = f"{ckpt_key}_{split_tag}"
+    cache_embs = DATA_PROCESSED / f"train_emb_{cache_key}.npy"
+    cache_lbls = DATA_PROCESSED / f"train_emb_{cache_key}_labels.npy"
+    cache_files = DATA_PROCESSED / f"train_emb_{cache_key}_files.json"
     if not force and cache_embs.exists() and cache_lbls.exists() and cache_files.exists():
         print(f"  ✅ Train embeddings cache found ({ckpt_key}) — loading.")
         return (
@@ -499,6 +525,50 @@ def _extract_train_embs(
             np.load(cache_lbls),
             json.loads(cache_files.read_text(encoding="utf-8")),
         )
+
+    # Extract every usable file only once, then derive fold/single caches by
+    # filename. This turns three OOF map builds from three encoder passes into
+    # one encoder pass plus cheap deterministic slicing.
+    if split_tag != "full":
+        full_embs, full_labels, full_files = _extract_train_embs(
+            checkpoint_path, device, batch_size=batch_size, force=force,
+            split_scheme="full", scope="full",
+        )
+        ck_for_split = torch.load(
+            checkpoint_path, map_location="cpu", weights_only=False)
+        cfg_for_split = ck_for_split["config"]
+        audio_for_split = cfg_for_split["audio"]
+        data_for_split = cfg_for_split["data"]
+        split_args = split_args_from_config(cfg_for_split)
+        if split_scheme is not None:
+            split_args["split_scheme"] = str(split_scheme)
+        if fold is not None:
+            split_args["fold"] = int(fold)
+        if folds is not None:
+            split_args["folds"] = int(folds)
+        if split_seed is not None:
+            split_args["random_seed"] = int(split_seed)
+        split_train, _, _ = prepare_clean_split(
+            labels_path=data_for_split["labels_path"],
+            audio_dir=data_for_split["audio_dir"],
+            processed_labels=data_for_split["processed_labels"],
+            val_per_known=1,
+            unknown_val_ratio=0.2,
+            min_valid_duration=audio_for_split.get("min_valid_duration", 1.0),
+            clean_duplicates=bool(data_for_split.get("clean_duplicates", True)),
+            **split_args,
+        )
+        wanted = set(split_train["audio_file"].astype(str))
+        keep = np.asarray([f in wanted for f in full_files], dtype=bool)
+        embs = full_embs[keep]
+        labs = full_labels[keep]
+        files = [f for f, selected in zip(full_files, keep) if selected]
+        np.save(cache_embs, embs)
+        np.save(cache_lbls, labs)
+        cache_files.write_text(json.dumps(files), encoding="utf-8")
+        print(f"  ✓ Derived split embedding cache from full cache: {cache_key} "
+              f"({len(files):,} files)")
+        return embs, labs, files
 
     ck = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config = ck["config"]
@@ -517,6 +587,18 @@ def _extract_train_embs(
     audio_cfg = config["audio"]
     data_cfg = config["data"]
 
+    split_args = split_args_from_config(config)
+    if split_scheme is not None:
+        split_args["split_scheme"] = str(split_scheme)
+    if fold is not None:
+        split_args["fold"] = int(fold)
+    if folds is not None:
+        split_args["folds"] = int(folds)
+    if split_seed is not None:
+        split_args["random_seed"] = int(split_seed)
+    if scope == "full":
+        split_args["split_scheme"] = "full"
+
     train_df, _, _ = prepare_clean_split(
         labels_path=data_cfg["labels_path"],
         audio_dir=data_cfg["audio_dir"],
@@ -524,7 +606,8 @@ def _extract_train_embs(
         val_per_known=1,
         unknown_val_ratio=0.2,
         min_valid_duration=audio_cfg.get("min_valid_duration", 1.0),
-        **split_args_from_config(config),
+        clean_duplicates=bool(data_cfg.get("clean_duplicates", True)),
+        **split_args,
     )
     # Align labels to the CHECKPOINT's class map (not the fresh one).
     train_df = train_df.copy()
@@ -536,6 +619,9 @@ def _extract_train_embs(
         num_train_windows=audio_cfg.get("num_train_windows", 1),
         eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
         max_eval_windows=audio_cfg.get("max_eval_windows", 8),
+        eval_speech_aware=audio_cfg.get("eval_speech_aware", False),
+        speech_relative_db=audio_cfg.get("speech_relative_db", 35.0),
+        short_audio_mode=audio_cfg.get("short_audio_mode", "pad"),
     )
     dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)
 
@@ -950,6 +1036,13 @@ def main() -> int:
              "name, so without this a new model would be clustered in the "
              "OLD model's embedding space.",
     )
+    bd.add_argument("--split-scheme", choices=["single", "kfold", "full"], default=None,
+                    help="override the checkpoint split used to choose clustering files")
+    bd.add_argument("--fold", type=int, default=None)
+    bd.add_argument("--folds", type=int, default=None)
+    bd.add_argument("--split-seed", type=int, default=None)
+    bd.add_argument("--scope", choices=["train", "full"], default="train",
+                    help="full clusters every usable unknown file (final retrain only)")
 
     p1 = sub.add_parser("phase1", help="Phase 1 — 1000-centroid decision layer on val")
     p1.add_argument("--checkpoint", default="checkpoints/campp_best.pt")
@@ -972,7 +1065,10 @@ def main() -> int:
     elif args.cmd == "build":
         run_build(checkpoint_path=args.checkpoint, k_clusters=args.k,
                   device=args.device, seed=args.seed, method=args.method,
-                  force_cache=args.force_cache, out=args.out)
+                  force_cache=args.force_cache, out=args.out,
+                  split_scheme=args.split_scheme, fold=args.fold,
+                  folds=args.folds, split_seed=args.split_seed,
+                  scope=args.scope)
     elif args.cmd == "phase1":
         run_phase1(checkpoint_path=args.checkpoint, k_clusters=args.k,
                    device=args.device, force_cache=args.force_cache)

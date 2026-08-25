@@ -331,8 +331,9 @@ with st.sidebar:
                 else (f"Partial (last {blocks})" if blocks and blocks > 0 else "Full"))
     cluster_k = int(mc.get("num_unknown_clusters", 0) or 0)
     cluster_label = f"ON (k={cluster_k})" if cluster_k > 0 else "OFF"
-    ood_label = ("OFF (cluster)" if cluster_k > 0
-                 else ("ON" if mc.get("ood_head", True) else "OFF"))
+    ood_enabled_cfg = bool(mc.get("ood_head", True))
+    ood_label = ("ON (hybrid)" if cluster_k > 0 and ood_enabled_cfg
+                 else ("ON" if ood_enabled_cfg else "OFF"))
     st.markdown(f"""
     | Param | Value |
     |-------|-------|
@@ -355,9 +356,9 @@ with st.sidebar:
 #  Main
 # ═══════════════════════════════════════════════════════════
 st.title("🎤 Speaker-ID MLOps Center")
-tab_cfg, tab_cloud, tab_local, tab_matrix, tab_analysis = st.tabs(
+tab_cfg, tab_cloud, tab_local, tab_matrix, tab_analysis, tab_models = st.tabs(
     ["⚙️ Config", "☁️ Cloud (Vast.ai)", "💻 Local", "🧬 Experiment Matrix",
-     "🧪 Analysis"])
+     "🧪 Analysis", "📦 Models"])
 
 # ── TAB: Config ──
 with tab_cfg:
@@ -385,25 +386,38 @@ with tab_cfg:
 
     st.header("⚙️ Model Setup")
 
-    # ── Mode switch: cluster ON removes the OOD head + its controls ──
-    # (the pseudo-identity columns encode P(unknown) via the output collapse,
-    # so the binary OOD head is redundant in cluster mode — its BCE targets
-    # would be distorted too). OOD widgets below render only when OFF.
+    # Metric identity and OOD supervision are independent.  Cluster mode can
+    # therefore run either metric-only or as the recommended hybrid.
     _cluster_k_cfg = int(mc.get("num_unknown_clusters", 0) or 0)
     cluster_on = st.checkbox(
-        "🧬 Enable cluster mode (closed-set 1000-class — OOD head OFF)",
+        "🧬 Enable pseudo-identity cluster mode",
         value=_cluster_k_cfg > 0, key="cluster_on",
-        help="ON: the collapsed 'unknown' identities are trained as pseudo-classes "
-             "(the 1000-class experiment) and the redundant binary OOD head is "
-             "removed (model.ood_head=false). OFF: legacy 447-way behaviour with "
-             "the OOD head.",
+        help="Train unknown files as pseudo-identities and collapse their output "
+             "mass back into the competition unknown class.",
     )
     if cluster_on:
-        st.caption("Cluster mode: the OOD head is disabled and its controls are "
-                   "hidden — P(unknown) comes from the cluster-column collapse.")
+        strategy_options = ["Hybrid metric + OOD (recommended)", "Metric-only clusters"]
+        strategy_index = 0 if bool(mc.get("ood_head", True)) else 1
+        strategy_mode = st.radio(
+            "Open-set training strategy", strategy_options, index=strategy_index,
+            horizontal=True,
+            help="Hybrid keeps the 446+k ArcFace target and independently trains "
+                 "binary OOD from the original label.",
+        )
     else:
-        st.caption("Legacy mode: the binary OOD head is enabled — all OOD controls "
-                   "below are active.")
+        strategy_mode = "Legacy 446-way + OOD"
+    ood_enabled = (not cluster_on) or strategy_mode.startswith("Hybrid")
+
+    with st.expander("Architecture contract", expanded=cluster_on):
+        st.code(
+            "audio → encoder → metric embedding → ArcFace[446+k]\n"
+            "                         ├─ known probabilities\n"
+            "                         └─ pseudo-OOD mass ─┐\n"
+            "audio → shared embedding → binary OOD head ─┴→ calibrated 447-way output",
+            language="text",
+        )
+        st.caption("metric_label and is_ood are stored separately; pseudo identities "
+                   "never erase the OOD target.")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -513,7 +527,26 @@ with tab_cfg:
                               float(config["audio"].get("eval_hop_ratio", 0.5)), 0.05)
         max_win = st.number_input("Max eval windows", 1, 32,
                                   int(config["audio"].get("max_eval_windows", 8)))
-        if not cluster_on:
+        speech_crop_p = st.slider(
+            "Speech-aware train crops", 0.0, 1.0,
+            float(config["audio"].get("speech_aware_crop_probability", 0.0)), 0.05,
+            help="Probability of centring a train crop on an energy-active frame.",
+        )
+        eval_speech_aware = st.checkbox(
+            "Speech-aware eval window ranking",
+            value=bool(config["audio"].get("eval_speech_aware", False)),
+            help="When more candidate windows exist than the budget, keep those "
+                 "with the highest speech coverage. The same policy ships to submission.",
+        )
+        short_audio_mode = st.selectbox(
+            "Short-audio policy", ["pad", "tile_speech"],
+            index=0 if config["audio"].get("short_audio_mode", "pad") == "pad" else 1,
+        )
+        speech_relative_db = st.slider(
+            "Speech gate (dB below file peak)", 20.0, 50.0,
+            float(config["audio"].get("speech_relative_db", 35.0)), 1.0,
+        )
+        if ood_enabled:
             ood_ratio = st.slider("OOD batch ratio", 0.1, 0.9,
                                   float(config["audio"].get("ood_batch_ratio", 0.5)), 0.05)
         else:
@@ -521,8 +554,9 @@ with tab_cfg:
         st.subheader("🎲 Split")
         split_cfg = config["data"].get("split", {}) or {}
         split_scheme = st.selectbox(
-            "Split scheme", ["single", "kfold"],
-            index=0 if str(split_cfg.get("scheme", "single")) == "single" else 1,
+            "Split scheme", ["single", "kfold", "full"],
+            index=(["single", "kfold", "full"].index(str(split_cfg.get("scheme", "single")))
+                   if str(split_cfg.get("scheme", "single")) in ["single", "kfold", "full"] else 0),
             help="kfold = speaker-aware K-fold for out-of-fold (OOF) tuning. "
                  "Each fold runs separately (set the fold index).",
         )
@@ -532,6 +566,9 @@ with tab_cfg:
         if split_scheme == "kfold":
             n_folds = st.number_input("Folds (K)", 2, 10, int(split_cfg.get("folds", 3)))
             fold_idx = st.number_input("Fold index", 0, n_folds - 1, int(split_cfg.get("fold", 0)))
+        elif split_scheme == "full":
+            st.warning("Full-data is final retraining only. Validation overlaps train, "
+                       "selection is forced to the final epoch, and epochs must come from OOF.")
         split_seed = st.number_input("Split seed", 0, 2**31 - 1, split_seed,
                                      help="RNG seed for the val/fold partition (matrix seeds vary this).")
         st.subheader("🎛 Augmentation")
@@ -673,8 +710,7 @@ with tab_cfg:
         if loss_type == "focal":
             focal_gamma = st.number_input("Focal γ", 0.0, 5.0,
                                           float(loss_spk.get("focal_gamma", 2.0)), 0.5)
-        if not cluster_on:
-            # OOD controls are hidden in cluster mode (the OOD head is removed).
+        if ood_enabled:
             ood_hidden = st.number_input("OOD head hidden dim", 0, 1024,
                                          mc.get("ood_head_config",{}).get("hidden_dim",256), 64)
             ood_pos_w = st.number_input("OOD pos_weight", 0.1, 10.0,
@@ -702,6 +738,7 @@ with tab_cfg:
         proto_scale = float(proto_cfg.get("scale", 30.0))
         proto_margin = float(proto_cfg.get("margin", 0.2))
         proto_decay = float(proto_cfg.get("decay", 0.9))
+        proto_scope = str(proto_cfg.get("scope", "metric"))
         if proto_on:
             pc1, pc2 = st.columns(2)
             proto_w = pc1.number_input("Proto weight", 0.0, 1.0, proto_w, 0.05)
@@ -709,6 +746,11 @@ with tab_cfg:
             pc1, pc2 = st.columns(2)
             proto_margin = pc1.number_input("Proto margin", 0.0, 1.0, proto_margin, 0.05)
             proto_decay = pc2.number_input("Proto EMA decay", 0.5, 0.999, proto_decay, 0.01)
+            proto_scope = st.selectbox(
+                "Prototype scope", ["metric", "known"],
+                index=0 if proto_scope == "metric" else 1,
+                help="metric includes pseudo-OOD identities; known restricts prototypes to 446 speakers.",
+            )
 
     st.divider()
     st.subheader("🧬 Cluster Mode (closed-set 1000-class)")
@@ -784,7 +826,14 @@ with tab_cfg:
             cmd = [sys.executable, "-m", "src.unknown_clustering", "build",
                    "--k", str(cluster_k_val),
                    "--checkpoint", (cluster_ckpt or "checkpoints/campp_best.pt").strip(),
-                   "--device", "auto"]
+                   "--device", "auto",
+                   "--out", cluster_path,
+                   "--split-scheme", split_scheme,
+                   "--fold", str(fold_idx),
+                   "--folds", str(n_folds),
+                   "--split-seed", str(split_seed)]
+            if split_scheme == "full":
+                cmd += ["--scope", "full"]
             if force_cache:
                 cmd.append("--force-cache")
             cr = LocalRunner(cmd, str(PROJECT_ROOT))
@@ -820,15 +869,17 @@ with tab_cfg:
         if head_type == "arcface_subcenter":
             head_block["sub_centers"] = int(sub_centers)
         config["model"].setdefault("speaker_head_config", {})[head_type] = head_block
-        # OOD head: explicit flag synced with the mode toggle — ON in legacy
-        # mode, OFF in cluster mode (the cluster collapse carries P(unknown)).
-        config["model"]["ood_head"] = not cluster_on
+        config["model"]["ood_head"] = bool(ood_enabled)
         config["model"].setdefault("ood_head_config", {})["hidden_dim"] = ood_hidden
         config["audio"]["duration_seconds"] = audio_dur
         config["audio"]["min_valid_duration"] = min_dur
         config["audio"]["num_train_windows"] = int(num_win)
         config["audio"]["eval_hop_ratio"] = float(hop_ratio)
         config["audio"]["max_eval_windows"] = int(max_win)
+        config["audio"]["speech_aware_crop_probability"] = float(speech_crop_p)
+        config["audio"]["eval_speech_aware"] = bool(eval_speech_aware)
+        config["audio"]["speech_relative_db"] = float(speech_relative_db)
+        config["audio"]["short_audio_mode"] = short_audio_mode
         config["audio"]["ood_batch_ratio"] = float(ood_ratio)
         # Split (single vs speaker-aware K-fold)
         config["data"].setdefault("split", {})
@@ -923,7 +974,7 @@ with tab_cfg:
         spk_block["focal_gamma"] = float(focal_gamma)
         spk_block["label_smoothing"] = float(sm_val)
         spk_block["weight"] = float(spk_w)
-        if not cluster_on:
+        if ood_enabled:
             ood_block["type"] = "bce"
             ood_block["pos_weight"] = float(ood_pos_w)
             ood_block["weight"] = float(ood_w)
@@ -939,6 +990,7 @@ with tab_cfg:
         proto_block["scale"] = float(proto_scale)
         proto_block["margin"] = float(proto_margin)
         proto_block["decay"] = float(proto_decay)
+        proto_block["scope"] = proto_scope
         # Closed-set cluster mode (UI knob): k when enabled, 0 = legacy off.
         config["model"]["num_unknown_clusters"] = int(cluster_k_val) if cluster_on else 0
         config["model"]["unknown_cluster_path"] = cluster_path
@@ -1429,3 +1481,71 @@ with tab_analysis:
             st.rerun()
 
     _render_local_runner("analysis_runner", "Analysis tool")
+
+
+# ── TAB: Models & artifacts ──
+with tab_models:
+    st.header("📦 Models, bundles & experiment roadmap")
+    st.caption("Every new best checkpoint embeds its resolved config, class map, "
+               "target schema, package versions, metrics and history. MLflow also "
+               "receives a readable sidecar bundle.")
+
+    roadmap = []
+    for name in list_profiles():
+        try:
+            profile = load_profile(name)
+            meta = profile.get("experiment", {}) or {}
+            if meta.get("priority"):
+                roadmap.append({
+                    "Priority": meta.get("priority"),
+                    "Experiment": name,
+                    "Family": meta.get("family", "—"),
+                    "Purpose": meta.get("purpose", "—"),
+                    "Status": meta.get("status", "ready"),
+                })
+        except Exception:
+            continue
+    if roadmap:
+        order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+        roadmap.sort(key=lambda row: (order.get(row["Priority"], 99), row["Experiment"]))
+        st.subheader("🧪 Vast.ai run order")
+        st.dataframe(roadmap, use_container_width=True, hide_index=True)
+
+    st.subheader("Local checkpoints")
+    checkpoint_rows = []
+    for ckpt in sorted((PROJECT_ROOT / "checkpoints").glob("*_best.pt")):
+        bundle = ckpt.with_suffix("")
+        bundle = bundle.parent / f"{bundle.name}_bundle"
+        checkpoint_rows.append({
+            "Checkpoint": ckpt.name,
+            "Size (MB)": round(ckpt.stat().st_size / 1024**2, 1),
+            "Self-describing bundle": "ready" if bundle.exists() else "legacy",
+            "Modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(ckpt.stat().st_mtime)),
+        })
+    if checkpoint_rows:
+        st.dataframe(checkpoint_rows, use_container_width=True, hide_index=True)
+        inspect_name = st.selectbox(
+            "Inspect checkpoint metadata", [r["Checkpoint"] for r in checkpoint_rows])
+        if st.button("🔍 Load metadata", key="model_metadata"):
+            import torch
+            payload = torch.load(
+                PROJECT_ROOT / "checkpoints" / inspect_name,
+                map_location="cpu", weights_only=False)
+            if payload.get("metadata"):
+                st.json(payload["metadata"])
+            else:
+                st.info("Legacy checkpoint: embedded v2 metadata is absent; config and "
+                        "class_map are still available.")
+                st.json({
+                    "epoch": payload.get("epoch"),
+                    "metrics": {k: v for k, v in payload.items()
+                                if k.startswith("val_") or k == "macro_f1"},
+                    "config": payload.get("config", {}),
+                })
+    else:
+        st.info("No *_best.pt checkpoint exists yet.")
+
+    report_path = PROJECT_ROOT / "reports" / "IMPLEMENTATION_AND_EXPERIMENT_PLAN.md"
+    if report_path.exists():
+        with st.expander("Implementation & experiment report", expanded=False):
+            st.markdown(report_path.read_text(encoding="utf-8"))

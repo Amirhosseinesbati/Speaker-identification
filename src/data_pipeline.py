@@ -98,7 +98,14 @@ def apply_unknown_cluster_labels(
         return labels_df, {"n_rewritten": 0, "n_clusters": 0}
 
     df = labels_df.copy()
-    unk = df["speaker_id"] == "unknown"
+    # Keep the competition target independent from the metric-learning target.
+    # ``speaker_id`` remains the backwards-compatible metric identity used by
+    # the split/class-map code, while these columns preserve ground truth.
+    if "original_speaker_id" not in df:
+        df["original_speaker_id"] = df["speaker_id"]
+    if "is_ood" not in df:
+        df["is_ood"] = df["original_speaker_id"].eq("unknown").astype("int8")
+    unk = df["is_ood"].astype(bool)
     mapped = df.loc[unk, "audio_file"].map(cluster_map)
     mask = unk & mapped.notna()
     df.loc[mask, "speaker_id"] = "unknown_" + (
@@ -108,6 +115,21 @@ def apply_unknown_cluster_labels(
         "n_rewritten": int(mask.sum()),
         "n_clusters": len(set(cluster_map.values())),
     }
+
+
+def ensure_target_columns(labels_df: pd.DataFrame) -> pd.DataFrame:
+    """Attach the explicit dual-target contract used by hybrid training.
+
+    ``metric_label`` is the ArcFace/prototype identity (known or pseudo-OOD),
+    while ``is_ood`` always reflects the original competition label.  ``label``
+    is retained as an alias for old scripts/checkpoints.
+    """
+    df = labels_df.copy()
+    if "original_speaker_id" not in df:
+        df["original_speaker_id"] = df["speaker_id"]
+    if "is_ood" not in df:
+        df["is_ood"] = df["original_speaker_id"].eq("unknown").astype("int8")
+    return df
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -345,11 +367,15 @@ def stratified_split(
 
     train_rows, val_rows = [], []
 
-    df_known = df[df["speaker_id"] != "unknown"]
-    df_unknown = df[df["speaker_id"] == "unknown"]
+    # Splitting must follow the original competition identity, never the
+    # pseudo-label. Otherwise applying a cluster map changes the partition and
+    # fold-specific maps leak their own validation files back into training.
+    split_col = "original_speaker_id" if "original_speaker_id" in df else "speaker_id"
+    df_known = df[df[split_col] != "unknown"]
+    df_unknown = df[df[split_col] == "unknown"]
 
     # Known speakers: val from NON-duplicate files only
-    for speaker_id, group in df_known.groupby("speaker_id"):
+    for speaker_id, group in df_known.groupby(split_col):
         group = group.reset_index(drop=True)
         n = len(group)
         dup_mask = group["audio_file"].isin(dup_files).values
@@ -446,8 +472,9 @@ def speaker_aware_kfold(
         return [np.asarray(g, dtype=int) for g in groups]
 
     # ── Known speakers ──
-    df_known = df[df["speaker_id"] != "unknown"]
-    for _, group in df_known.groupby("speaker_id"):
+    split_col = "original_speaker_id" if "original_speaker_id" in df else "speaker_id"
+    df_known = df[df[split_col] != "unknown"]
+    for _, group in df_known.groupby(split_col):
         group = group.reset_index(drop=True)
         non_dup_idx = np.where(~group["audio_file"].isin(dup_files).values)[0]
         groups = _partition(non_dup_idx)
@@ -459,7 +486,7 @@ def speaker_aware_kfold(
             fold_train_rows[f].append(group[train_mask])
 
     # ── Unknown class ──
-    df_unknown = df[df["speaker_id"] == "unknown"]
+    df_unknown = df[df[split_col] == "unknown"]
     unknown_idx = np.where(~df_unknown["audio_file"].isin(dup_files).values)[0]
     groups = _partition(unknown_idx)
     for f in range(folds):
@@ -495,11 +522,13 @@ def _write_split_report(
     """
     import json
 
+    split_col = ("original_speaker_id" if "original_speaker_id" in labels_df
+                 else "speaker_id")
     corrupted_known = int(labels_df[
-        labels_df["audio_file"].isin(corrupted) & (labels_df["speaker_id"] != "unknown")
+        labels_df["audio_file"].isin(corrupted) & (labels_df[split_col] != "unknown")
     ].shape[0])
     corrupted_unknown = int(labels_df[
-        labels_df["audio_file"].isin(corrupted) & (labels_df["speaker_id"] == "unknown")
+        labels_df["audio_file"].isin(corrupted) & (labels_df[split_col] == "unknown")
     ].shape[0])
 
     groups_info = []
@@ -519,7 +548,7 @@ def _write_split_report(
 
     train_files = set(train_df["audio_file"])
     per_speaker = {}
-    for sid, group in labels_df[labels_df["speaker_id"] != "unknown"].groupby("speaker_id"):
+    for sid, group in labels_df[labels_df[split_col] != "unknown"].groupby(split_col):
         good = group[~group["audio_file"].isin(corrupted)]
         per_speaker[sid] = {
             "train_files": int(group[group["audio_file"].isin(train_files)].shape[0]),
@@ -544,10 +573,10 @@ def _write_split_report(
         "split_summary": {
             "train_samples": int(len(train_df)),
             "val_samples": int(len(val_df)),
-            "train_known": int((train_df["label"] != 0).sum()),
-            "val_known": int((val_df["label"] != 0).sum()),
-            "train_unknown": int((train_df["label"] == 0).sum()),
-            "val_unknown": int((val_df["label"] == 0).sum()),
+            "train_known": int((train_df.get("is_ood", train_df["label"].eq(0)) == 0).sum()),
+            "val_known": int((val_df.get("is_ood", val_df["label"].eq(0)) == 0).sum()),
+            "train_unknown": int((train_df.get("is_ood", train_df["label"].eq(0)) == 1).sum()),
+            "val_unknown": int((val_df.get("is_ood", val_df["label"].eq(0)) == 1).sum()),
         },
     }
 
@@ -573,10 +602,10 @@ def _write_kfold_report(
             "fold": f,
             "train_samples": int(len(train_df)),
             "val_samples": int(len(val_df)),
-            "train_known": int((train_df["label"] != 0).sum()),
-            "val_known": int((val_df["label"] != 0).sum()),
-            "train_unknown": int((train_df["label"] == 0).sum()),
-            "val_unknown": int((val_df["label"] == 0).sum()),
+            "train_known": int((train_df.get("is_ood", train_df["label"].eq(0)) == 0).sum()),
+            "val_known": int((val_df.get("is_ood", val_df["label"].eq(0)) == 0).sum()),
+            "train_unknown": int((train_df.get("is_ood", train_df["label"].eq(0)) == 1).sum()),
+            "val_unknown": int((val_df.get("is_ood", val_df["label"].eq(0)) == 1).sum()),
         })
 
     report = {
@@ -629,6 +658,7 @@ def prepare_clean_split(
     fold: int = 0,
     folds: int = 3,
     unknown_cluster_map: Optional[Dict[str, int]] = None,
+    clean_duplicates: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
     """
     Load, clean and leak-free split labels; write data/processed/split_report.json.
@@ -654,16 +684,8 @@ def prepare_clean_split(
     df = df.drop_duplicates().reset_index(drop=True)
     df = df.dropna(subset=["speaker_id", "audio_file"]).reset_index(drop=True)
 
-    # Closed-set 1000-class experiment: pseudo identities for unknown files.
-    if unknown_cluster_map:
-        df, cluster_stats = apply_unknown_cluster_labels(df, unknown_cluster_map)
-        print(f"  🧬 Unknown clusters applied: "
-              f"{cluster_stats['n_rewritten']} files → "
-              f"{cluster_stats['n_clusters']} pseudo-identities")
-
-    # Create class mapping
-    class_map = create_class_mapping(df)
-    df["label"] = df["speaker_id"].map(class_map)
+    # Preserve the original binary target before pseudo-identity relabelling.
+    df = ensure_target_columns(df)
 
     # ── Leak-aware scans ──
     print(f"  Scanning durations ({len(df):,} files)...")
@@ -677,9 +699,30 @@ def prepare_clean_split(
     if dup_groups:
         print(f"  ⚠ {len(dup_groups)} duplicate groups "
               f"({sum(len(v) for v in dup_groups.values())} files)")
+    if clean_duplicates and dup_groups:
+        before = len(df)
+        df, duplicate_stats = clean_conflicting_labels(df, audio_dir)
+        print(f"  🧹 Duplicate cleaning: {before - len(df)} files removed "
+              f"({duplicate_stats['n_conflicting_files_dropped']} conflicting, "
+              f"{duplicate_stats['n_nonconflicting_duplicates_dropped']} repeated)")
+
+    # Apply pseudo identities only AFTER duplicate/conflict cleaning. Otherwise
+    # byte-identical unknown files assigned to two clusters look like a false
+    # label conflict even though their original competition label agrees.
+    if unknown_cluster_map:
+        df, cluster_stats = apply_unknown_cluster_labels(df, unknown_cluster_map)
+        print(f"  🧬 Unknown clusters applied: "
+              f"{cluster_stats['n_rewritten']} files → "
+              f"{cluster_stats['n_clusters']} pseudo-identities")
+
+    # Create the metric class map after all label rewrites.
+    class_map = create_class_mapping(df)
+    df["metric_label"] = df["speaker_id"].map(class_map).astype(int)
+    df["label"] = df["metric_label"]  # backward-compatible alias
 
     # ── Leak-free split ──
-    if str(split_scheme).lower().strip() == "kfold":
+    scheme = str(split_scheme).lower().strip()
+    if scheme == "kfold":
         kfold_splits = speaker_aware_kfold(
             df,
             folds=folds,
@@ -691,6 +734,23 @@ def prepare_clean_split(
         train_df, val_df = kfold_splits[fold_idx]
         print(f"  ✓ K-fold split (fold {fold_idx}/{folds}, "
               f"train={len(train_df)}, val={len(val_df)})")
+    elif scheme == "full":
+        # Final retrain: every usable file contributes to optimisation.  Keep a
+        # deterministic overlapping diagnostic set so existing monitoring code
+        # can detect catastrophic failures; it MUST NOT select the epoch/model.
+        usable = df[~df["audio_file"].isin(set(corrupted))].reset_index(drop=True)
+        _, val_df = stratified_split(
+            usable,
+            val_per_known=val_per_known,
+            unknown_val_ratio=unknown_val_ratio,
+            random_seed=random_seed,
+            duplicate_groups=dup_groups,
+            corrupted_files=set(),
+        )
+        train_df = usable.sample(frac=1, random_state=random_seed).reset_index(drop=True)
+        print(f"  ⚠ FULL-DATA mode: train={len(train_df)} uses every usable file; "
+              f"val={len(val_df)} overlaps train and is diagnostic only. "
+              f"Checkpoint selection is forced to the final epoch.")
     else:
         train_df, val_df = stratified_split(
             df,
@@ -707,7 +767,7 @@ def prepare_clean_split(
     print(f"  ✓ Saved cleaned labels ({len(df)} rows) to {processed_labels}")
 
     # ── Split report (single-scheme only; kfold writes a per-fold summary) ──
-    if str(split_scheme).lower().strip() == "kfold":
+    if scheme == "kfold":
         _write_kfold_report(df, kfold_splits, dup_groups, corrupted, split_report_path)
     else:
         _write_split_report(
@@ -716,12 +776,12 @@ def prepare_clean_split(
 
     print(f"  ✓ Train samples: {len(train_df)} | Val samples: {len(val_df)}")
     print(
-        f"    Train known: {(train_df['label'] != 0).sum()} | "
-        f"Train unknown: {(train_df['label'] == 0).sum()}"
+        f"    Train known: {(train_df['is_ood'] == 0).sum()} | "
+        f"Train unknown: {(train_df['is_ood'] == 1).sum()}"
     )
     print(
-        f"    Val known: {(val_df['label'] != 0).sum()} | "
-        f"Val unknown: {(val_df['label'] == 0).sum()}"
+        f"    Val known: {(val_df['is_ood'] == 0).sum()} | "
+        f"Val unknown: {(val_df['is_ood'] == 1).sum()}"
     )
 
     return train_df, val_df, class_map
@@ -738,6 +798,7 @@ def prepare_labels(
     fold: int = 0,
     folds: int = 3,
     unknown_cluster_map: Optional[Dict[str, int]] = None,
+    clean_duplicates: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
     """
     Load, clean, split labels and create class mapping.
@@ -758,6 +819,7 @@ def prepare_labels(
             fold=fold,
             folds=folds,
             unknown_cluster_map=unknown_cluster_map,
+            clean_duplicates=clean_duplicates,
         )
 
     df = pd.read_csv(labels_path)
@@ -767,9 +829,12 @@ def prepare_labels(
     df = df.drop_duplicates().reset_index(drop=True)
     df = df.dropna(subset=["speaker_id", "audio_file"]).reset_index(drop=True)
 
+    df = ensure_target_columns(df)
+
     # Create class mapping
     class_map = create_class_mapping(df)
-    df["label"] = df["speaker_id"].map(class_map)
+    df["metric_label"] = df["speaker_id"].map(class_map).astype(int)
+    df["label"] = df["metric_label"]
 
     # Save cleaned labels
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -780,12 +845,12 @@ def prepare_labels(
     train_df, val_df = stratified_split(df, val_per_known, unknown_val_ratio)
     print(f"  ✓ Train samples: {len(train_df)} | Val samples: {len(val_df)}")
     print(
-        f"    Train known: {(train_df['label'] != 0).sum()} | "
-        f"Train unknown: {(train_df['label'] == 0).sum()}"
+        f"    Train known: {(train_df['is_ood'] == 0).sum()} | "
+        f"Train unknown: {(train_df['is_ood'] == 1).sum()}"
     )
     print(
-        f"    Val known: {(val_df['label'] != 0).sum()} | "
-        f"Val unknown: {(val_df['label'] == 0).sum()}"
+        f"    Val known: {(val_df['is_ood'] == 0).sum()} | "
+        f"Val unknown: {(val_df['is_ood'] == 1).sum()}"
     )
 
     return train_df, val_df, class_map
@@ -1028,6 +1093,10 @@ class SpeakerDataset(Dataset):
         eval_hop_ratio: float = 0.5,
         max_eval_windows: int = 8,
         augmentation: Optional[dict] = None,
+        speech_aware_crop_probability: float = 0.0,
+        eval_speech_aware: bool = False,
+        speech_relative_db: float = 35.0,
+        short_audio_mode: str = "pad",
     ):
         self.df = df.reset_index(drop=True)
         self.audio_dir = Path(audio_dir)
@@ -1040,6 +1109,10 @@ class SpeakerDataset(Dataset):
         self.eval_hop_ratio = eval_hop_ratio
         self.max_eval_windows = max(1, max_eval_windows)
         self.augmentation = augmentation
+        self.speech_aware_crop_probability = float(speech_aware_crop_probability)
+        self.eval_speech_aware = bool(eval_speech_aware)
+        self.speech_relative_db = float(speech_relative_db)
+        self.short_audio_mode = str(short_audio_mode)
 
         if self.augment:
             self.augmentor = AudioAugmentation(sample_rate, self.augmentation)
@@ -1089,10 +1162,19 @@ class SpeakerDataset(Dataset):
             n = w.size(-1)
             if n > T:
                 max_start = n - T
-                start = torch.randint(0, max_start + 1, (1,)).item()
+                if (self.speech_aware_crop_probability > 0 and
+                        torch.rand(1).item() < self.speech_aware_crop_probability):
+                    from src.audio_windows import choose_speech_crop_start
+                    start = choose_speech_crop_start(
+                        w, T, sample_rate=self.target_sr,
+                        relative_db=self.speech_relative_db,
+                    )
+                else:
+                    start = torch.randint(0, max_start + 1, (1,)).item()
                 w = w[..., start : start + T]
             elif n < T:
-                w = torch.nn.functional.pad(w, (0, T - n))
+                from src.audio_windows import fit_short_audio
+                w = fit_short_audio(w, T, mode=self.short_audio_mode)
             if self.augment:
                 w = self.augmentor(w)
                 # TimeStretch / PitchShift can change the window length
@@ -1115,20 +1197,17 @@ class SpeakerDataset(Dataset):
         spread across the file; if fewer, the last window is repeated to keep
         a constant count (so DataLoader batching stays simple).
         """
-        T = self.target_length
-        n = waveform.size(-1)
-        if n <= T:
-            w = torch.nn.functional.pad(waveform, (0, T - n))
-            return torch.stack([w] * self.max_eval_windows)
-
-        hop = max(1, int(T * self.eval_hop_ratio))
-        starts = list(range(0, n - T + 1, hop))
-        if len(starts) > self.max_eval_windows:
-            # Evenly spread across the whole file (use the full signal)
-            starts = np.unique(np.linspace(0, n - T, self.max_eval_windows).astype(int)).tolist()
-        windows = [waveform[..., s : s + T] for s in starts]
-        while len(windows) < self.max_eval_windows:
-            windows.append(windows[-1])  # repeat last window → constant count
+        from src.audio_windows import make_eval_windows
+        windows = make_eval_windows(
+            waveform,
+            target_length=self.target_length,
+            hop_ratio=self.eval_hop_ratio,
+            max_windows=self.max_eval_windows,
+            sample_rate=self.target_sr,
+            speech_aware=self.eval_speech_aware,
+            speech_relative_db=self.speech_relative_db,
+            short_audio_mode=self.short_audio_mode,
+        )
         return torch.stack(windows)
 
     def _load_audio(self, path: Path) -> torch.Tensor:
@@ -1293,6 +1372,7 @@ def get_dataloaders(
         fold=int(split_cfg.get("fold", 0)),
         folds=int(split_cfg.get("folds", 3)),
         unknown_cluster_map=unknown_cluster_map,
+        clean_duplicates=bool(data_cfg.get("clean_duplicates", False)),
     )
 
     # Create datasets
@@ -1307,6 +1387,10 @@ def get_dataloaders(
         eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
         max_eval_windows=audio_cfg.get("max_eval_windows", 8),
         augmentation=config.get("augmentation"),
+        speech_aware_crop_probability=audio_cfg.get("speech_aware_crop_probability", 0.0),
+        eval_speech_aware=audio_cfg.get("eval_speech_aware", False),
+        speech_relative_db=audio_cfg.get("speech_relative_db", 35.0),
+        short_audio_mode=audio_cfg.get("short_audio_mode", "pad"),
     )
 
     val_dataset = SpeakerDataset(
@@ -1319,6 +1403,9 @@ def get_dataloaders(
         num_train_windows=audio_cfg.get("num_train_windows", 1),
         eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
         max_eval_windows=audio_cfg.get("max_eval_windows", 8),
+        eval_speech_aware=audio_cfg.get("eval_speech_aware", False),
+        speech_relative_db=audio_cfg.get("speech_relative_db", 35.0),
+        short_audio_mode=audio_cfg.get("short_audio_mode", "pad"),
     )
 
     # ── Balanced Batch Sampler ──

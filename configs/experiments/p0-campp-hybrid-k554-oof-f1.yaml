@@ -1,0 +1,29 @@
+_meta: {name: p0-campp-hybrid-k554-oof-f1, base: default_config.yaml}
+experiment: {priority: P0, family: campp-hybrid-oof, purpose: Primary hybrid architecture OOF fold 1}
+data: {clean_duplicates: true, split: {scheme: kfold, folds: 3, fold: 1, seed: 42}}
+model:
+  encoder_type: campp
+  num_unknown_clusters: 554
+  unknown_cluster_path: data/processed/unknown_clusters_oof_f1.json
+  ood_head: true
+  speaker_head_type: arcface
+  encoder_config: {campp: {freeze_encoder: false, unfreeze_last_n_blocks: 2}}
+  speaker_head_config: {arcface: {embedding_dim: 192, margin: 0.3, scale: 32.0}}
+audio: {num_train_windows: 4, speech_aware_crop_probability: 0.75, eval_speech_aware: true, short_audio_mode: pad}
+training:
+  epochs: 200
+  freeze_epochs: 20
+  early_stopping_patience: 20
+  encoder_lr: 1.0e-05
+  learning_rate: 0.0003
+  weight_decay: 0.0003
+  loss:
+    speaker: {type: ce, label_smoothing: 0.05, weight: 0.8}
+    ood: {type: bce, pos_weight: 1.0, weight: 0.15}
+    proto: {enabled: true, scope: metric, weight: 0.05, scale: 30.0, margin: 0.2, decay: 0.9}
+augmentation:
+  domain:
+    mp3_codec_roundtrip: {p: 0.2}
+    musan: {noise_p: 0.35, music_p: 0.1, snr_db: [5.0, 20.0]}
+    rirs_reverb: {p: 0.3}
+  waveform: {time_stretch: {p: 0.15, rate: [0.9, 1.1]}}

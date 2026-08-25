@@ -62,6 +62,11 @@ from src.heads import ood_head_enabled
 # ─────────────────────────────────────────────────────────
 
 from src.mlflow_helper import get_tracker, MLflowTracker
+from src.model_artifacts import (
+    enrich_checkpoint,
+    create_training_bundle,
+    save_oof_predictions,
+)
 
 def _mlflow_active() -> bool:
     """Check if MLflow has an active run."""
@@ -244,6 +249,7 @@ def prepare_data(
         fold=int(split_cfg.get("fold", 0)),
         folds=int(split_cfg.get("folds", 3)),
         unknown_cluster_map=unknown_cluster_map,
+        clean_duplicates=bool(data_cfg.get("clean_duplicates", False)),
     )
 
     print(f"  ✓ Train: {len(train_df)} samples | Val: {len(val_df)} samples")
@@ -255,8 +261,8 @@ def prepare_data(
             "num_known": len(class_map) - 1,
             "train_samples": len(train_df),
             "val_samples": len(val_df),
-            "train_known": int((train_df["label"] != 0).sum()),
-            "train_unknown": int((train_df["label"] == 0).sum()),
+            "train_known": int((train_df["is_ood"] == 0).sum()),
+            "train_unknown": int((train_df["is_ood"] == 1).sum()),
         })
 
     return config, class_map, train_df, val_df
@@ -405,6 +411,10 @@ def train_model(
         eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
         max_eval_windows=audio_cfg.get("max_eval_windows", 8),
         augmentation=config.get("augmentation"),
+        speech_aware_crop_probability=audio_cfg.get("speech_aware_crop_probability", 0.0),
+        eval_speech_aware=audio_cfg.get("eval_speech_aware", False),
+        speech_relative_db=audio_cfg.get("speech_relative_db", 35.0),
+        short_audio_mode=audio_cfg.get("short_audio_mode", "pad"),
     )
     val_dataset = SpeakerDataset(
         df=val_df,
@@ -415,6 +425,9 @@ def train_model(
         num_train_windows=audio_cfg.get("num_train_windows", 1),
         eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
         max_eval_windows=audio_cfg.get("max_eval_windows", 8),
+        eval_speech_aware=audio_cfg.get("eval_speech_aware", False),
+        speech_relative_db=audio_cfg.get("speech_relative_db", 35.0),
+        short_audio_mode=audio_cfg.get("short_audio_mode", "pad"),
     )
 
     train_labels = train_df["label"].values
@@ -497,7 +510,12 @@ def train_model(
     # hardcoded 3-epoch warmup + warm-restarts is the "cosine_warm_restarts"
     # option for backward compatibility).
     scheduler = build_scheduler(optimizer, train_cfg, train_cfg["epochs"])
-    criterion = build_criterion(train_cfg, use_ood=ood_head_enabled(config))
+    competition_known_count = int(
+        config.get("model", {}).get("competition_num_known", 446))
+    criterion = build_criterion(
+        train_cfg, use_ood=ood_head_enabled(config),
+        competition_known_count=competition_known_count,
+    )
     amp_dtype = train_cfg.get("amp_dtype", "fp16")
     autocast_fn, scaler = build_amp(
         amp_enabled=hw_profile["mixed_precision"], amp_dtype=amp_dtype, device=device,
@@ -516,8 +534,11 @@ def train_model(
         emb_dim = getattr(model.head_speaker, "embedding_dim", None)
         if emb_dim is None:
             emb_dim = model.encoder.output_dim * model.pooling.output_multiplier
+        proto_scope = str(proto_cfg.get("scope", "metric")).lower().strip()
+        proto_classes = (competition_known_count
+                         if proto_scope == "known" else num_known)
         proto_criterion = PrototypicalLoss(
-            num_classes=num_known,
+            num_classes=proto_classes,
             embedding_dim=int(emb_dim),
             scale=float(proto_cfg.get("scale", 30.0)),
             margin=float(proto_cfg.get("margin", 0.2)),
@@ -536,6 +557,15 @@ def train_model(
     best_epoch = -1
     patience_counter = 0
     early_stop_patience = int(train_cfg.get("early_stopping_patience", 10))
+    split_scheme = str((config.get("data", {}).get("split", {}) or {})
+                       .get("scheme", "single")).lower().strip()
+    selection_mode = str(train_cfg.get(
+        "selection_mode", "last_epoch" if split_scheme == "full" else "best_macro_f1"
+    )).lower().strip()
+    if split_scheme == "full":
+        selection_mode = "last_epoch"
+        early_stop_patience = 0
+        print("  🧾 Full-data selection: final epoch only; overlapping val is diagnostic")
     # <= 0 disables early stopping (two-phase cosine runs its full course)
     if early_stop_patience <= 0:
         print(f"  ⏸ Early stopping DISABLED (early_stopping_patience={early_stop_patience})")
@@ -607,11 +637,16 @@ def train_model(
               f"MacroF1: {val_metrics['macro_f1']:.4f}")
 
         # Save best model (based on val Macro-F1) + Early stopping (also Macro-F1)
-        if val_metrics["macro_f1"] > best_val_f1:
+        should_save = (
+            (selection_mode == "last_epoch" and epoch == train_cfg["epochs"])
+            or (selection_mode != "last_epoch" and
+                val_metrics["macro_f1"] > best_val_f1)
+        )
+        if should_save:
             best_val_f1 = val_metrics["macro_f1"]
             best_epoch = epoch
             patience_counter = 0
-            best_ckpt = {
+            best_ckpt = enrich_checkpoint({
                 "epoch": epoch,
                 "model_state_dict": (
                     ema.state_dict(model) if ema is not None else model.state_dict()
@@ -624,7 +659,12 @@ def train_model(
                 "val_ood_acc": val_metrics["ood_acc"],
                 "val_speaker_acc": val_metrics["speaker_acc"],
                 "val_macro_f1": val_metrics["macro_f1"],
-            }
+            }, config, class_map, metrics={
+                "val_loss": val_metrics["loss"],
+                "val_ood_acc": val_metrics["ood_acc"],
+                "val_speaker_acc": val_metrics["speaker_acc"],
+                "val_macro_f1": val_metrics["macro_f1"],
+            }, history=history)
             # Encoder-named best (build_submission.py globs *_best.pt) +
             # back-compat copy for tools that still read best_model.pt.
             best_path = checkpoint_dir / f"{encoder_type}_best.pt"
@@ -645,13 +685,13 @@ def train_model(
         })
 
         # Save latest checkpoint (BEFORE early stopping check)
-        latest_ckpt = {
+        latest_ckpt = enrich_checkpoint({
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "config": config,
             "class_map": class_map,
-        }
+        }, config, class_map, history=history)
         torch.save(latest_ckpt, checkpoint_dir / f"{encoder_type}_latest.pt")
         torch.save(latest_ckpt, checkpoint_dir / "latest_model.pt")
 
@@ -694,9 +734,24 @@ def train_model(
         "num_unknown_clusters": num_unknown_clusters,
         "ood_head": ood_head_enabled(config),
         "speaker_head_type": config["model"].get("speaker_head_type", "linear"),
+        "selection_mode": selection_mode,
+        "validation_overlap": split_scheme == "full",
     })
     _mlflow_log_metrics(summary)
     _mlflow_log_artifact(final_best_path, artifact_path="models")
+
+    # Finalise the best checkpoint with the complete history and produce a
+    # human-readable sidecar bundle.  Downloading only the .pt remains enough;
+    # the bundle exists for convenient MLflow inspection.
+    final_ckpt = torch.load(final_best_path, map_location="cpu", weights_only=False)
+    final_ckpt = enrich_checkpoint(
+        final_ckpt, config, class_map, metrics=summary, history=history)
+    torch.save(final_ckpt, final_best_path)
+    torch.save(final_ckpt, checkpoint_dir / "best_model.pt")
+    bundle_dir = create_training_bundle(
+        final_best_path, config, class_map, history, summary)
+    if get_tracker().is_active:
+        get_tracker().log_artifacts(str(bundle_dir), artifact_path="models/bundle")
 
     print(f"\n  ✓ Training complete! Best val Macro-F1: {best_val_f1:.4f} (epoch {best_epoch})")
     print(f"  ✓ Best model: {final_best_path}")
@@ -739,6 +794,9 @@ def evaluate_model(
         num_train_windows=audio_cfg.get("num_train_windows", 1),
         eval_hop_ratio=audio_cfg.get("eval_hop_ratio", 0.5),
         max_eval_windows=audio_cfg.get("max_eval_windows", 8),
+        eval_speech_aware=audio_cfg.get("eval_speech_aware", False),
+        speech_relative_db=audio_cfg.get("speech_relative_db", 35.0),
+        short_audio_mode=audio_cfg.get("short_audio_mode", "pad"),
     )
     hw_profile = get_active_profile(config)
     val_loader = torch.utils.data.DataLoader(
@@ -763,7 +821,12 @@ def evaluate_model(
 
     # Evaluate with threshold tuning (criterion mirrors training weights)
     train_cfg = config["training"]
-    criterion = build_criterion(train_cfg, use_ood=ood_head_enabled(config))
+    competition_known_count = int(
+        config.get("model", {}).get("competition_num_known", 446))
+    criterion = build_criterion(
+        train_cfg, use_ood=ood_head_enabled(config),
+        competition_known_count=competition_known_count,
+    )
     total_loss = 0.0
     total_ood_acc = 0.0
     total_speaker_acc = 0.0
@@ -783,8 +846,10 @@ def evaluate_model(
             loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
             total_loss += loss_dict["loss_total"]
-            total_ood_acc += compute_ood_accuracy(ood_logits, labels)
-            speaker_acc, _ = compute_speaker_accuracy(speaker_logits, labels)
+            total_ood_acc += compute_ood_accuracy(
+                ood_logits, labels, competition_known_count)
+            speaker_acc, _ = compute_speaker_accuracy(
+                speaker_logits, labels, competition_known_count)
             total_speaker_acc += speaker_acc
 
             if ood_logits is not None:  # OOD head disabled (cluster mode)
@@ -809,7 +874,9 @@ def evaluate_model(
     best_f1 = 0.0
     if all_ood is not None:
         ood_probs = torch.sigmoid(all_ood.squeeze(1)).numpy()
-        ood_targets = (all_lbl == 0).numpy().astype(int)
+        ood_targets = (
+            (all_lbl == 0) | (all_lbl > competition_known_count)
+        ).numpy().astype(int)
 
         from sklearn.metrics import f1_score
         best_threshold = 0.5
@@ -870,9 +937,26 @@ def evaluate_model(
 
     # ── Persist the tuned OOD threshold into the checkpoint ──
     try:
-        checkpoint["ood_threshold"] = float(best_threshold)
+        checkpoint["ood_threshold"] = (
+            float(best_threshold) if best_threshold is not None else None)
         checkpoint["macro_f1"] = argmax_metrics["macro_f1"]
+        checkpoint = enrich_checkpoint(
+            checkpoint, config, class_map, metrics=metrics,
+            history=checkpoint.get("training_history", []),
+        )
         torch.save(checkpoint, best_model_path)
+        bundle_dir = create_training_bundle(
+            best_model_path, config, class_map,
+            checkpoint.get("training_history", []), metrics)
+        save_oof_predictions(
+            bundle_dir,
+            files=val_df["audio_file"].astype(str).tolist(),
+            labels=all_lbl,
+            speaker_logits=all_spk,
+            ood_logits=all_ood,
+            num_unknown_clusters=num_unknown_clusters,
+            split=(config.get("data", {}).get("split", {}) or {}),
+        )
         print(f"  ✓ OOD threshold persisted to {best_model_path}")
     except Exception as e:
         print(f"  ⚠ Could not persist OOD threshold: {e}")
@@ -882,6 +966,8 @@ def evaluate_model(
     if tracker.is_active:
         tracker.log_metrics(metrics)
         tracker.log_best_checkpoint(best_model_path)
+        if 'bundle_dir' in locals():
+            tracker.log_artifacts(str(bundle_dir), artifact_path="models/bundle")
         tracker.log_summary(
             {"final_val_loss": metrics["final_val_loss"],
              "final_ood_acc": metrics["final_val_ood_acc"],

@@ -114,22 +114,22 @@ def make_windows(
     duration_seconds: float,
     eval_hop_ratio: float,
     max_eval_windows: int,
+    speech_aware: bool = False,
+    speech_relative_db: float = 35.0,
+    short_audio_mode: str = "pad",
 ) -> List[torch.Tensor]:
-    """Sliding windows over the full file (same logic as SpeakerDataset)."""
-    T = int(sample_rate * duration_seconds)
-    n = waveform.size(-1)
-    if n <= T:
-        w = torch.nn.functional.pad(waveform, (0, T - n))
-        return [w] * max_eval_windows
-
-    hop = max(1, int(T * eval_hop_ratio))
-    starts = list(range(0, n - T + 1, hop))
-    if len(starts) > max_eval_windows:
-        starts = np.unique(np.linspace(0, n - T, max_eval_windows).astype(int)).tolist()
-    windows = [waveform[..., s : s + T] for s in starts]
-    while len(windows) < max_eval_windows:
-        windows.append(windows[-1])
-    return windows
+    """Shared window policy — identical to ``SpeakerDataset``."""
+    from src.audio_windows import make_eval_windows
+    return make_eval_windows(
+        waveform,
+        target_length=int(sample_rate * duration_seconds),
+        hop_ratio=eval_hop_ratio,
+        max_windows=max_eval_windows,
+        sample_rate=sample_rate,
+        speech_aware=speech_aware,
+        speech_relative_db=speech_relative_db,
+        short_audio_mode=short_audio_mode,
+    )
 
 
 @torch.inference_mode()
@@ -143,6 +143,9 @@ def predict_file_probs_and_embedding(
     max_eval_windows: int = 8,
     use_amp: bool = True,
     temperature: float = 1.0,
+    speech_aware: bool = False,
+    speech_relative_db: float = 35.0,
+    short_audio_mode: str = "pad",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Multi-window TTA on an ALREADY-DECODED waveform → (probs, embedding).
 
@@ -162,7 +165,10 @@ def predict_file_probs_and_embedding(
         emb:   (embedding_dim,) unit-norm speaker embedding.
     """
     windows = make_windows(waveform, sample_rate, duration_seconds,
-                           eval_hop_ratio, max_eval_windows)
+                           eval_hop_ratio, max_eval_windows,
+                           speech_aware=speech_aware,
+                           speech_relative_db=speech_relative_db,
+                           short_audio_mode=short_audio_mode)
 
     # Stack all windows into (W, 1, T) — one transfer, one forward pass
     batch = torch.stack(windows).to(device)  # (W, 1, T)
@@ -385,6 +391,9 @@ def score_ensemble(
     duration_seconds = audio_cfg.get("duration_seconds", 8.0)
     eval_hop_ratio = audio_cfg.get("eval_hop_ratio", 0.5)
     max_windows = max_eval_windows or audio_cfg.get("max_eval_windows", 8)
+    eval_speech_aware = bool(audio_cfg.get("eval_speech_aware", False))
+    speech_relative_db = float(audio_cfg.get("speech_relative_db", 35.0))
+    short_audio_mode = str(audio_cfg.get("short_audio_mode", "pad"))
 
     files = sorted(p for p in Path(data_dir).iterdir()
                    if p.suffix.lower() in {".wav", ".mp3", ".flac", ".ogg", ".m4a"})
@@ -427,6 +436,9 @@ def score_ensemble(
                 duration_seconds=duration_seconds, eval_hop_ratio=eval_hop_ratio,
                 max_eval_windows=max_windows, use_amp=not no_amp,
                 temperature=temperature if do_decision else 1.0,
+                speech_aware=eval_speech_aware,
+                speech_relative_db=speech_relative_db,
+                short_audio_mode=short_audio_mode,
             )
             all_model_probs[m_idx][i] = probs
             if m_idx in all_model_embs:
