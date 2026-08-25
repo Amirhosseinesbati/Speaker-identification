@@ -7,7 +7,7 @@ experiment:
   purpose: Primary hybrid architecture, OOF fold 0
   expected_decision: Keep only if stable across all three folds
 audio:
-  num_train_windows: 4
+  num_train_windows: 8
   speech_aware_crop_probability: 0.75
   eval_speech_aware: true
   short_audio_mode: pad

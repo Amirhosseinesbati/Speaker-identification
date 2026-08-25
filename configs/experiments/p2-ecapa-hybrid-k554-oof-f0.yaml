@@ -8,7 +8,7 @@ model:
   ood_head: true
   speaker_head_type: arcface
   encoder_config: {ecapa: {freeze_encoder: false, unfreeze_last_n_blocks: 2, pooling_type: identity}}
-audio: {num_train_windows: 4, speech_aware_crop_probability: 0.75, eval_speech_aware: true}
+audio: {num_train_windows: 8, speech_aware_crop_probability: 0.75, eval_speech_aware: true}
 training:
   epochs: 200
   freeze_epochs: 15
