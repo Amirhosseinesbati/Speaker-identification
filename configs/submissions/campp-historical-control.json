@@ -1,0 +1,30 @@
+{
+  "package_id": "campp-historical-control",
+  "fusion_method": "weighted_average",
+  "use_decision_layer": true,
+  "validation_macro_f1": 0.9622757380357064,
+  "encoder_names": [
+    "campp"
+  ],
+  "checkpoints": [
+    "campp_best.pt"
+  ],
+  "weights": [
+    1.0
+  ],
+  "models": [
+    {
+      "name": "campp",
+      "source_checkpoint": "modelrigestry/campp_best (5).pt",
+      "checkpoint": "campp_best.pt",
+      "base_encoder": "campp",
+      "weight": 1.0
+    }
+  ],
+  "centroid_sources": {
+    "campp": "data/processed/centroids_campp_best (5).pt.npz"
+  },
+  "unknown_centroid_sources": {},
+  "decision_config_source": "configs/submissions/campp-historical-control.decision.json",
+  "note": "Exact historical CAM++ (5) control: 447-way head/OOD output plus freshly extracted 446-known-speaker centroids. No pseudo-identity centroids."
+}

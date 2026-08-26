@@ -14,11 +14,45 @@ Contents:
 
 from __future__ import annotations
 
+import os
+import random
 import math
+from contextlib import contextmanager
 from typing import Callable, Optional, Tuple
 
+import numpy as np
 import torch
 from torch.amp import GradScaler
+
+
+def seed_everything(seed: int, deterministic: bool = True) -> dict:
+    """Seed every training RNG and record the effective reproducibility policy.
+
+    ``data.split.seed`` only controls which files land in each fold.  Model
+    initialisation, random crops, augmentation and DataLoader workers use the
+    process RNGs, so they must be seeded separately for controlled experiments.
+    """
+    seed = int(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    deterministic = bool(deterministic)
+    if deterministic:
+        # Required by deterministic CUDA matrix multiplications on supported
+        # toolchains.  setdefault preserves an explicit operator choice.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = deterministic
+    torch.use_deterministic_algorithms(deterministic, warn_only=True)
+    return {
+        "seed": seed,
+        "deterministic_algorithms": deterministic,
+        "cudnn_benchmark": False,
+        "cudnn_deterministic": deterministic,
+    }
 
 
 # ═══════════════════════════════════════════════════════════
@@ -98,6 +132,31 @@ class EMA:
             if name in sd:
                 sd[name] = shadow.to(sd[name].dtype)
         return sd
+
+    @contextmanager
+    def average_parameters(self, model: torch.nn.Module):
+        """Temporarily evaluate ``model`` with EMA parameters, then restore raw.
+
+        Validation used to score raw weights but save EMA weights under the same
+        metric.  This context manager makes the two variants independently
+        measurable without perturbing optimizer state or the training path.
+        """
+        parameters = dict(model.named_parameters())
+        backup = {}
+        with torch.no_grad():
+            for name, shadow in self._shadow.items():
+                parameter = parameters.get(name)
+                if parameter is None:
+                    continue
+                backup[name] = parameter.detach().clone()
+                parameter.copy_(shadow.to(device=parameter.device,
+                                          dtype=parameter.dtype))
+        try:
+            yield model
+        finally:
+            with torch.no_grad():
+                for name, value in backup.items():
+                    parameters[name].copy_(value)
 
     def extend(self, model: torch.nn.Module) -> None:
         """Add fresh shadows for params that became trainable after construction.

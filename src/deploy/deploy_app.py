@@ -331,6 +331,10 @@ with st.sidebar:
                 else (f"Partial (last {blocks})" if blocks and blocks > 0 else "Full"))
     cluster_k = int(mc.get("num_unknown_clusters", 0) or 0)
     cluster_label = f"ON (k={cluster_k})" if cluster_k > 0 else "OFF"
+    target_scope = str(mc.get("speaker_target_scope", "metric"))
+    primary_label = ("446 known only" if target_scope == "known"
+                     else f"446+{cluster_k} metric classes" if cluster_k > 0
+                     else "446 known")
     ood_enabled_cfg = bool(mc.get("ood_head", True))
     ood_label = ("ON (hybrid)" if cluster_k > 0 and ood_enabled_cfg
                  else ("ON" if ood_enabled_cfg else "OFF"))
@@ -340,6 +344,7 @@ with st.sidebar:
     | Encoder | `{enc}` |
     | Pooling | `{pool}` |
     | Head | {head_label} |
+    | Primary target | `{primary_label}` |
     | Fine-tune | `{ft_label}` |
     | Cluster mode | `{cluster_label}` |
     | OOD head | `{ood_label}` |
@@ -386,8 +391,9 @@ with tab_cfg:
 
     st.header("⚙️ Model Setup")
 
-    # Metric identity and OOD supervision are independent.  Cluster mode can
-    # therefore run either metric-only or as the recommended hybrid.
+    # Metric identity and OOD supervision are independent. Cluster maps can
+    # supervise either the primary 446+k head (legacy hybrid) or only an
+    # auxiliary metric objective behind a strict 446-way primary head.
     _cluster_k_cfg = int(mc.get("num_unknown_clusters", 0) or 0)
     cluster_on = st.checkbox(
         "🧬 Enable pseudo-identity cluster mode",
@@ -396,26 +402,47 @@ with tab_cfg:
              "mass back into the competition unknown class.",
     )
     if cluster_on:
-        strategy_options = ["Hybrid metric + OOD (recommended)", "Metric-only clusters"]
-        strategy_index = 0 if bool(mc.get("ood_head", True)) else 1
+        strategy_options = [
+            "Known-first 446 + OOD (recommended gate)",
+            "Hybrid 446+k + OOD (legacy)",
+            "Metric-only 446+k clusters",
+        ]
+        configured_scope = str(mc.get("speaker_target_scope", "metric"))
+        if configured_scope == "known" and bool(mc.get("ood_head", True)):
+            strategy_index = 0
+        elif bool(mc.get("ood_head", True)):
+            strategy_index = 1
+        else:
+            strategy_index = 2
         strategy_mode = st.radio(
             "Open-set training strategy", strategy_options, index=strategy_index,
             horizontal=True,
-            help="Hybrid keeps the 446+k ArcFace target and independently trains "
-                 "binary OOD from the original label.",
+            help="Known-first keeps pseudo identities out of the primary softmax; "
+                 "they may still supervise OOD and the optional metric auxiliary.",
         )
     else:
         strategy_mode = "Legacy 446-way + OOD"
-    ood_enabled = (not cluster_on) or strategy_mode.startswith("Hybrid")
+    ood_enabled = (not cluster_on) or not strategy_mode.startswith("Metric-only")
+    speaker_target_scope = (
+        "known" if strategy_mode.startswith("Known-first") else "metric"
+    )
 
     with st.expander("Architecture contract", expanded=cluster_on):
-        st.code(
-            "audio → encoder → metric embedding → ArcFace[446+k]\n"
-            "                         ├─ known probabilities\n"
-            "                         └─ pseudo-OOD mass ─┐\n"
-            "audio → shared embedding → binary OOD head ─┴→ calibrated 447-way output",
-            language="text",
-        )
+        if speaker_target_scope == "known":
+            st.code(
+                "audio → encoder → metric embedding → ArcFace[446] → known identity\n"
+                "                         ├─ binary OOD head → known/unknown\n"
+                "                         └─ optional pseudo metric auxiliary[446+k]",
+                language="text",
+            )
+        else:
+            st.code(
+                "audio → encoder → metric embedding → ArcFace[446+k]\n"
+                "                         ├─ known probabilities\n"
+                "                         └─ pseudo-OOD mass ─┐\n"
+                "audio → shared embedding → binary OOD head ─┴→ calibrated 447-way output",
+                language="text",
+            )
         st.caption("metric_label and is_ood are stored separately; pseudo identities "
                    "never erase the OOD target.")
 
@@ -753,13 +780,12 @@ with tab_cfg:
             )
 
     st.divider()
-    st.subheader("🧬 Cluster Mode (closed-set 1000-class)")
+    st.subheader("🧬 Pseudo-identity supervision")
     st.caption("Recover the 554 collapsed 'unknown' identities by clustering the "
-               "unlabelled unknown train files (src/unknown_clustering.py) and train a "
-               "(446+k)-way head whose cluster columns are summed back into 'unknown' at "
-               "output — the competition output stays 447-way. Composes with every "
-               "fine-tune strategy above: Frozen / Partial (last N) / Full / staged "
-               "(progressive freeze_epochs).")
+               "unlabelled unknown train files (src/unknown_clustering.py). In metric "
+               "scope they train a 446+k primary head; in known-first scope they stay "
+               "outside the 446-way primary softmax and supervise only OOD/auxiliary "
+               "metric objectives. The competition output always stays 447-way.")
     # Toggle lives at the top of this tab (key="cluster_on") — it also controls
     # whether the OOD head + its controls are shown.
     cluster_on = st.session_state.get("cluster_on", cluster_k > 0)
@@ -994,6 +1020,7 @@ with tab_cfg:
         # Closed-set cluster mode (UI knob): k when enabled, 0 = legacy off.
         config["model"]["num_unknown_clusters"] = int(cluster_k_val) if cluster_on else 0
         config["model"]["unknown_cluster_path"] = cluster_path
+        config["model"]["speaker_target_scope"] = speaker_target_scope
         exp_name = (exp_name or "").strip()
         if exp_name:
             save_profile(exp_name, config)

@@ -211,7 +211,14 @@ model:
     linear:
       hidden_dims: []
   speaker_head_type: arcface_subcenter
+  # metric = one 446+k head (legacy hybrid); known = strict 446-way primary
+  # head while pseudo labels supervise only OOD/auxiliary metric objectives.
+  speaker_target_scope: metric
 training:
+  # Process-level RNG seed (model init, random crops, augmentation, workers).
+  # This is distinct from data.split.seed, which only chooses fold membership.
+  seed: 42
+  deterministic_algorithms: true
   amp_dtype: fp16
   early_stopping_patience: 15
   ema_decay: 0.999

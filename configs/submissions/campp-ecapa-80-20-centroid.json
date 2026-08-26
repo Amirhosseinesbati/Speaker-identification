@@ -1,0 +1,43 @@
+{
+  "package_id": "campp-ecapa-80-20-centroid",
+  "fusion_method": "weighted_average",
+  "use_decision_layer": true,
+  "validation_macro_f1": 0.9649041423187907,
+  "encoder_names": [
+    "campp",
+    "ecapa"
+  ],
+  "checkpoints": [
+    "campp_best.pt",
+    "ecapa_best.pt"
+  ],
+  "weights": [
+    0.8,
+    0.2
+  ],
+  "models": [
+    {
+      "name": "campp",
+      "source_checkpoint": "modelrigestry/campp_best (6).pt",
+      "checkpoint": "campp_best.pt",
+      "base_encoder": "campp",
+      "weight": 0.8
+    },
+    {
+      "name": "ecapa",
+      "source_checkpoint": "modelrigestry/ecapa_best.pt",
+      "checkpoint": "ecapa_best.pt",
+      "base_encoder": "ecapa",
+      "weight": 0.2
+    }
+  ],
+  "centroid_sources": {
+    "campp": "data/processed/centroids_campp.npz",
+    "ecapa": "data/processed/centroids_ecapa.npz"
+  },
+  "unknown_centroid_sources": {
+    "campp": "data/processed/centroids_unknown_campp.npz"
+  },
+  "decision_config_source": "configs/submissions/campp-ecapa-80-20-centroid.decision.json",
+  "note": "Deployment-safe no-TitaNet fusion reproduced from no_titanet_comparison.json: CAM++ cluster model plus legacy ECAPA, probability and centroid fusion."
+}

@@ -124,19 +124,21 @@ class TwoHeadedSpeakerModel(nn.Module):
             import inspect
             sig = inspect.signature(self.head_speaker.forward)
             if 'labels' in sig.parameters:
-                # Remap: original labels [0, 1..446] → ArcFace [0, 0..445]
-                #   Known speakers 1..446 → ArcFace classes 0..445
-                #   Unknown (label 0)     → ArcFace class 0 (same as speaker #1).
+                # Remap one-indexed metric labels to zero-indexed ArcFace
+                # labels.  In ``speaker_target_scope=known`` experiments the
+                # data can still carry pseudo-OOD ids above the 446-class head;
+                # map those rows to the harmless dummy class 0.  TwoPartLoss
+                # masks them from speaker CE while an auxiliary metric loss can
+                # still learn from their returned embeddings.
                 #
                 # This collision is HARMLESS because:
-                # (a) TwoPartLoss ignores unknown samples (ignore_index=-100),
-                #     so gradient contribution from unknown is always 0.
+                # (a) TwoPartLoss ignores every label outside this head's
+                #     target scope, so its speaker-logit gradient is always 0.
                 # (b) ArcFace weight[0] is ONLY trained by speaker #1 samples.
                 # (c) The ArcFace margin on unknown's output[0] never backprops.
-                remapped = labels.clone()
-                mask_known = remapped != 0
-                remapped[mask_known] = remapped[mask_known] - 1       # 1..446 → 0..445
-                # remapped[~mask_known] stays 0 (harmless collision)
+                remapped = torch.zeros_like(labels)
+                mask_in_head = (labels > 0) & (labels <= self.num_known_speakers)
+                remapped[mask_in_head] = labels[mask_in_head] - 1
                 speaker_logits = self.head_speaker(pooled, labels=remapped)
             else:
                 speaker_logits = self.head_speaker(pooled)
@@ -259,6 +261,23 @@ class TwoHeadedSpeakerModel(nn.Module):
             probs: (1 + num_known,)  rows sum to 1.
             emb:   (embedding_dim,)  unit norm.
         """
+        probs, emb, _ = self.predict_proba_embed_and_evidence(
+            waveforms, temperature=temperature,
+        )
+        return probs, emb
+
+    def predict_proba_embed_and_evidence(
+        self,
+        waveforms: torch.Tensor,
+        temperature: float = 1.0,
+    ) -> Tuple[torch.Tensor, torch.Tensor, dict]:
+        """Inference probabilities, embedding, and pre-collapse open-set evidence.
+
+        ``speaker_probs`` retains the pseudo-unknown tail instead of summing all
+        of it into class 0.  This permits cardinality-normalised decision rules
+        (for example top-k mean evidence) while preserving the existing
+        ``predict_proba_and_embed`` API for training and legacy submissions.
+        """
         if waveforms.dim() == 4:
             waveforms = waveforms.reshape(-1, 1, waveforms.size(-1))
 
@@ -285,7 +304,18 @@ class TwoHeadedSpeakerModel(nn.Module):
 
         # mean_then_l2norm embedding over windows.
         emb = F.normalize(raw_emb.mean(dim=0, keepdim=True), p=2, dim=1)[0]  # (D,)
-        return probs, emb
+        speaker_probs = p_known.mean(dim=0)
+        ood_prob = p_unknown.mean()
+        num_competition_known = int(self.num_output_classes) - 1
+        window_top = p_known[:, :num_competition_known].argmax(dim=1)
+        aggregate_top = speaker_probs[:num_competition_known].argmax()
+        window_agreement = (window_top == aggregate_top).float().mean()
+        evidence = {
+            "speaker_probs": speaker_probs,
+            "ood_prob": ood_prob,
+            "window_agreement": window_agreement,
+        }
+        return probs, emb, evidence
 
     def get_trainable_params(self) -> int:
         """Count trainable parameters."""

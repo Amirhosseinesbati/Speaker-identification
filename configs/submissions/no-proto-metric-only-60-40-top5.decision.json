@@ -1,0 +1,21 @@
+{
+  "decision_params": {
+    "temperature": 1.0,
+    "open_set_rule": {
+      "type": "tail_topk_mean_plus_ood",
+      "top_k": 5,
+      "ood_model_index": 0,
+      "ood_weight": 0.5,
+      "threshold": -2.279
+    }
+  },
+  "calibration_protocol": "Disjoint 1000-file calibration: one historical-train file per known identity and one per historical unknown cluster. Threshold is the seven-seed median plus a 0.001 numerical safety margin; the only sample in that interval is known.",
+  "stability": {
+    "seeds": [0, 1, 2, 17, 42, 123, 2026],
+    "random_macro_f1_mean": 0.9751460238766946,
+    "hard_macro_f1_mean": 0.9305743578668657,
+    "min_delta_random_vs_package": 0.0022344595366319275,
+    "min_delta_hard_vs_package": 0.00597485732371561,
+    "min_unknown_recall": 0.9910112359550561
+  }
+}

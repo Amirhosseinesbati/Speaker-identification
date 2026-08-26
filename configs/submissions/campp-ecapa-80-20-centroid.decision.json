@@ -1,0 +1,20 @@
+{
+  "decision_params": {
+    "alpha": 0.3,
+    "kappa": 16.0,
+    "tau": 0.0,
+    "lambda_unknown": 0.65,
+    "temperature": 1.0
+  },
+  "val_macro_f1": 0.9649041423187907,
+  "encoder_names": [
+    "campp",
+    "ecapa"
+  ],
+  "fusion_weights": [
+    0.8,
+    0.2
+  ],
+  "num_classes": 447,
+  "note": "Alternating-grid optimum on the native 891-file validation; TitaNet and ERes2Net weights are zero and are not shipped."
+}

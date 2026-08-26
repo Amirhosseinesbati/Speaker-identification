@@ -19,6 +19,21 @@ import numpy as np
 FORMAT_VERSION = "speaker-id-checkpoint/v2"
 
 
+def _fingerprint_file(path_value: str | Path) -> Optional[dict[str, Any]]:
+    path = Path(path_value)
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return {
+        "path": path.as_posix(),
+        "size_bytes": path.stat().st_size,
+        "sha256": digest.hexdigest(),
+    }
+
+
 def _git_revision() -> str:
     try:
         return subprocess.check_output(
@@ -50,6 +65,17 @@ def checkpoint_metadata(
     model_cfg = config.get("model", {}) or {}
     competition_known = int(model_cfg.get("competition_num_known", 446))
     pseudo_count = max(0, len(class_map) - 1 - competition_known)
+    data_cfg = config.get("data", {}) or {}
+    fingerprint_candidates = {
+        "labels": data_cfg.get("labels_path", ""),
+        "processed_labels": data_cfg.get("processed_labels", ""),
+        "unknown_clusters": model_cfg.get("unknown_cluster_path", ""),
+        "uv_lock": Path("uv.lock"),
+    }
+    data_fingerprints = {
+        name: fp for name, value in fingerprint_candidates.items()
+        if value and (fp := _fingerprint_file(value)) is not None
+    }
     return {
         "format_version": FORMAT_VERSION,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -58,6 +84,7 @@ def checkpoint_metadata(
             "encoder": model_cfg.get("encoder_type"),
             "pooling": model_cfg.get("pooling_type"),
             "speaker_head": model_cfg.get("speaker_head_type"),
+            "speaker_target_scope": model_cfg.get("speaker_target_scope", "metric"),
             "ood_head": bool(model_cfg.get("ood_head", True)),
             "competition_known_classes": competition_known,
             "pseudo_ood_classes": pseudo_count,
@@ -71,6 +98,13 @@ def checkpoint_metadata(
         },
         "audio_policy": config.get("audio", {}),
         "split": (config.get("data", {}) or {}).get("split", {}),
+        "reproducibility": {
+            "training_seed": (config.get("training", {}) or {}).get("seed", 42),
+            "deterministic_algorithms": (
+                config.get("training", {}) or {}).get(
+                    "deterministic_algorithms", True),
+        },
+        "data_fingerprints": data_fingerprints,
         "metrics": metrics or {},
         "history_epochs": len(history or []),
         "versions": _versions(),
@@ -140,6 +174,9 @@ def create_training_bundle(
 - Strategy: metric head with {metadata['architecture']['pseudo_ood_classes']} pseudo-OOD identities; OOD head={metadata['architecture']['ood_head']}
 - Competition output: {metadata['architecture']['competition_output_classes']} classes
 - Best Macro-F1: {metrics.get('best_val_macro_f1', metrics.get('macro_f1', 'n/a'))}
+- Selected weights: `{metrics.get('selected_weight_variant', 'n/a')}`
+- Training seed: `{metadata['reproducibility']['training_seed']}`
+- Deterministic algorithms: `{metadata['reproducibility']['deterministic_algorithms']}`
 - Git revision: `{metadata['git_revision']}`
 
 The checkpoint embeds the resolved config, class map, target schema, metrics,
@@ -168,6 +205,8 @@ def save_oof_predictions(
     ood_logits: Optional[torch.Tensor],
     num_unknown_clusters: int,
     split: dict,
+    competition_probs: Optional[torch.Tensor] = None,
+    embeddings: Optional[torch.Tensor] = None,
 ) -> Path:
     """Persist fold predictions needed for unbiased concatenated OOF scoring."""
     bundle_dir = Path(bundle_dir)
@@ -184,6 +223,16 @@ def save_oof_predictions(
         split_fold=np.asarray([int(split.get("fold", 0))], dtype=np.int64),
         split_folds=np.asarray([int(split.get("folds", 1))], dtype=np.int64),
         split_seed=np.asarray([int(split.get("seed", 42))], dtype=np.int64),
+        competition_probs=(
+            competition_probs.detach().cpu().numpy().astype(np.float32)
+            if competition_probs is not None
+            else np.empty((len(files), 0), dtype=np.float32)
+        ),
+        embeddings=(
+            embeddings.detach().cpu().numpy().astype(np.float32)
+            if embeddings is not None
+            else np.empty((len(files), 0), dtype=np.float32)
+        ),
     )
     manifest_path = bundle_dir / "manifest.json"
     if manifest_path.exists():

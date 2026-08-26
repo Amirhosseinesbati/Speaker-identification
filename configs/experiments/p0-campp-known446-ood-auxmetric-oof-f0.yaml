@@ -1,0 +1,51 @@
+_meta:
+  name: p0-campp-known446-ood-auxmetric-oof-f0
+  base: default_config.yaml
+experiment:
+  priority: P0-GATE
+  family: campp-known446-ood-auxmetric-oof
+  purpose: Strict 446-way ArcFace and binary OOD with pseudo identities only in a 5-percent metric auxiliary
+  expected_decision: Compare only against control fold 0; expand this family only if it wins robustly
+data:
+  clean_duplicates: true
+  split: {scheme: kfold, folds: 3, fold: 0, seed: 42}
+model:
+  encoder_type: campp
+  competition_num_known: 446
+  num_unknown_clusters: 554
+  unknown_cluster_path: data/processed/unknown_clusters_oof_f0.json
+  speaker_target_scope: known
+  ood_head: true
+  speaker_head_type: arcface
+  speaker_head_config:
+    arcface: {embedding_dim: 192, margin: 0.4, scale: 30.0}
+  encoder_config:
+    campp: {freeze_encoder: false, unfreeze_last_n_blocks: 2}
+audio:
+  num_train_windows: 8
+  speech_aware_crop_probability: 0.75
+  eval_speech_aware: true
+  short_audio_mode: pad
+hardware: {mode: vastai_3060}
+logging:
+  checkpoint_dir: checkpoints/p0-campp-known446-ood-auxmetric-oof-f0
+  log_dir: logs/p0-campp-known446-ood-auxmetric-oof-f0
+training:
+  seed: 42
+  deterministic_algorithms: true
+  epochs: 200
+  freeze_epochs: 20
+  early_stopping_patience: 20
+  learning_rate: 0.0003
+  encoder_lr: 1.0e-05
+  weight_decay: 0.0001
+  schedule: cosine
+  warmup_ratio: 0.1
+  min_lr_ratio: 0.05
+  ema_enabled: true
+  ema_decay: 0.999
+  loss:
+    # Keep the old 85:15 speaker/OOD ratio inside the remaining 95% mass.
+    speaker: {type: ce, label_smoothing: 0.05, weight: 0.8075}
+    ood: {type: bce, pos_weight: 1.0, weight: 0.1425}
+    proto: {enabled: true, scope: metric, weight: 0.05, scale: 30.0, margin: 0.2, decay: 0.9}

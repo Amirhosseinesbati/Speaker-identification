@@ -1,0 +1,125 @@
+{
+  "status": "ok",
+  "families": {
+    "control": [
+      {
+        "profile": "p0-campp-known446-ood-control-oof-f0",
+        "checks": {
+          "fold": true,
+          "cluster_path": true,
+          "known_scope": true,
+          "head_classes": true,
+          "output_pseudo_classes": true,
+          "metric_pseudo_classes": true,
+          "ood_head": true,
+          "loss_weights_sum_to_one": true,
+          "checkpoint_isolated": true,
+          "proto_gate": true
+        }
+      },
+      {
+        "profile": "p0-campp-known446-ood-control-oof-f1",
+        "checks": {
+          "fold": true,
+          "cluster_path": true,
+          "known_scope": true,
+          "head_classes": true,
+          "output_pseudo_classes": true,
+          "metric_pseudo_classes": true,
+          "ood_head": true,
+          "loss_weights_sum_to_one": true,
+          "checkpoint_isolated": true,
+          "proto_gate": true
+        }
+      },
+      {
+        "profile": "p0-campp-known446-ood-control-oof-f2",
+        "checks": {
+          "fold": true,
+          "cluster_path": true,
+          "known_scope": true,
+          "head_classes": true,
+          "output_pseudo_classes": true,
+          "metric_pseudo_classes": true,
+          "ood_head": true,
+          "loss_weights_sum_to_one": true,
+          "checkpoint_isolated": true,
+          "proto_gate": true
+        }
+      }
+    ],
+    "auxmetric": [
+      {
+        "profile": "p0-campp-known446-ood-auxmetric-oof-f0",
+        "checks": {
+          "fold": true,
+          "cluster_path": true,
+          "known_scope": true,
+          "head_classes": true,
+          "output_pseudo_classes": true,
+          "metric_pseudo_classes": true,
+          "ood_head": true,
+          "loss_weights_sum_to_one": true,
+          "checkpoint_isolated": true,
+          "proto_gate": true,
+          "proto_scope_metric": true
+        }
+      },
+      {
+        "profile": "p0-campp-known446-ood-auxmetric-oof-f1",
+        "checks": {
+          "fold": true,
+          "cluster_path": true,
+          "known_scope": true,
+          "head_classes": true,
+          "output_pseudo_classes": true,
+          "metric_pseudo_classes": true,
+          "ood_head": true,
+          "loss_weights_sum_to_one": true,
+          "checkpoint_isolated": true,
+          "proto_gate": true,
+          "proto_scope_metric": true
+        }
+      },
+      {
+        "profile": "p0-campp-known446-ood-auxmetric-oof-f2",
+        "checks": {
+          "fold": true,
+          "cluster_path": true,
+          "known_scope": true,
+          "head_classes": true,
+          "output_pseudo_classes": true,
+          "metric_pseudo_classes": true,
+          "ood_head": true,
+          "loss_weights_sum_to_one": true,
+          "checkpoint_isolated": true,
+          "proto_gate": true,
+          "proto_scope_metric": true
+        }
+      }
+    ]
+  },
+  "cluster_maps": {
+    "0": {
+      "sha256": "6b1277e2dd62a05a31398434900eb49fd4606e5833d4456ad7f5a14f4f0f9352",
+      "files": 1482,
+      "clusters": 554
+    },
+    "1": {
+      "sha256": "f7ea9e0decca06638b7184b8a7efe512f2af4974cf29c456d8136bb935d73b58",
+      "files": 1482,
+      "clusters": 554
+    },
+    "2": {
+      "sha256": "3228ff0966b4f7ab272e5bfea4889b5a0710ff2d06fcc12d2f266e4cd6c02a46",
+      "files": 1483,
+      "clusters": 554
+    }
+  },
+  "fold0_gate_diff": [
+    "training.loss.ood.weight",
+    "training.loss.proto.enabled",
+    "training.loss.proto.weight",
+    "training.loss.speaker.weight"
+  ]
+}

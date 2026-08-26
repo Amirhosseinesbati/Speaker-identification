@@ -1250,10 +1250,12 @@ def make_balanced_batch_sampler(
     batch_size: int,
     ood_ratio: float = 0.5,
     seed: int = 42,
+    competition_known_count: Optional[int] = None,
 ) -> List[int]:
     """
     Build a flat index list so that every batch contains ~`ood_ratio` samples
-    from the unknown class (label == 0) and the rest from known speakers.
+    from the unknown class and the rest from known speakers. In known-first
+    experiments pseudo labels above ``competition_known_count`` are OOD too.
 
     Without this, a per-class WeightedRandomSampler gives the unknown class
     (a single 2275-sample super-class) a total probability mass of ~1/447,
@@ -1261,7 +1263,7 @@ def make_balanced_batch_sampler(
     collapse to "always known" (the failure from the last run).
 
     Args:
-        train_labels: (N,) global class ids (0 = unknown, 1..446 = known).
+        train_labels: (N,) global metric ids.
         batch_size:   desired batch size (the last partial batch is dropped).
         ood_ratio:    target fraction of unknown samples per batch (0.5 matches
                       the ~50/50 eval mix).
@@ -1272,8 +1274,18 @@ def make_balanced_batch_sampler(
         with torch.utils.data.SubsetRandomSampler.
     """
     rng = np.random.RandomState(seed)
-    ood_indices = np.where(train_labels == 0)[0]
-    known_indices = np.where(train_labels != 0)[0]
+    if competition_known_count is None:
+        is_ood = train_labels == 0
+    else:
+        is_ood = ((train_labels == 0)
+                  | (train_labels > int(competition_known_count)))
+    ood_indices = np.where(is_ood)[0]
+    known_indices = np.where(~is_ood)[0]
+    if len(ood_indices) == 0 or len(known_indices) == 0:
+        raise ValueError(
+            "Balanced batch sampling requires non-empty OOD and known pools: "
+            f"ood={len(ood_indices)}, known={len(known_indices)}"
+        )
 
     n_ood = max(1, int(round(batch_size * ood_ratio)))
     n_known = batch_size - n_ood
@@ -1420,20 +1432,30 @@ def get_dataloaders(
     num_unknown_clusters = (
         len(set(unknown_cluster_map.values())) if unknown_cluster_map else 0
     )
-    if num_unknown_clusters > 0:
+    speaker_target_scope = str(
+        config.get("model", {}).get("speaker_target_scope", "metric")
+    ).lower().strip()
+    if num_unknown_clusters > 0 and speaker_target_scope != "known":
         sampler = None
         print("\n  🧬 1000-class mode: uniform batch sampling "
               "(no OOD/known balance)")
     else:
         ood_ratio = audio_cfg.get("ood_batch_ratio", 0.50)
+        competition_known_count = (
+            int(config.get("model", {}).get("competition_num_known", 446))
+            if speaker_target_scope == "known" else None
+        )
         balanced_indices = make_balanced_batch_sampler(
             train_labels, batch_size, ood_ratio=ood_ratio, seed=42,
+            competition_known_count=competition_known_count,
         )
+        is_ood = ((train_labels == 0) | (train_labels > competition_known_count)
+                  if competition_known_count is not None else train_labels == 0)
         n_ood = max(1, int(round(batch_size * ood_ratio)))
         print(f"\n  ⚖️  Batch balance: {n_ood} OOD + {batch_size - n_ood} known "
               f"({ood_ratio:.0%} / {1 - ood_ratio:.0%})")
-        print(f"     OOD pool: {(train_labels == 0).sum():,} samples | "
-              f"Known pool: {(train_labels != 0).sum():,} samples "
+        print(f"     OOD pool: {is_ood.sum():,} samples | "
+              f"Known pool: {(~is_ood).sum():,} samples "
               f"across {len(class_map) - 1} speakers")
         sampler = torch.utils.data.SubsetRandomSampler(
             np.asarray(balanced_indices, dtype=np.int64)

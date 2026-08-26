@@ -146,7 +146,8 @@ def predict_file_probs_and_embedding(
     speech_aware: bool = False,
     speech_relative_db: float = 35.0,
     short_audio_mode: str = "pad",
-) -> Tuple[np.ndarray, np.ndarray]:
+    return_open_set_evidence: bool = False,
+) -> Tuple[np.ndarray, np.ndarray] | Tuple[np.ndarray, np.ndarray, dict]:
     """Multi-window TTA on an ALREADY-DECODED waveform → (probs, embedding).
 
     Decoding is intentionally NOT done here — ``score_ensemble`` decodes each
@@ -178,12 +179,23 @@ def predict_file_probs_and_embedding(
     )
     with autocast_ctx:
         # Single encoder forward returns BOTH probs and embedding (no second pass).
-        probs, emb = model.predict_proba_and_embed(batch, temperature=temperature)
+        if return_open_set_evidence:
+            probs, emb, evidence = model.predict_proba_embed_and_evidence(
+                batch, temperature=temperature,
+            )
+        else:
+            probs, emb = model.predict_proba_and_embed(batch, temperature=temperature)
 
     probs = probs.float().cpu().numpy()  # (num_classes,)
     probs = probs / probs.sum()
     emb = emb.float().cpu().numpy()      # (embedding_dim,)
-    return probs, emb
+    if not return_open_set_evidence:
+        return probs, emb
+    return probs, emb, {
+        "speaker_probs": evidence["speaker_probs"].float().cpu().numpy(),
+        "ood_prob": float(evidence["ood_prob"].float().cpu()),
+        "window_agreement": float(evidence["window_agreement"].float().cpu()),
+    }
 
 
 # ────────────────────────────────────────────────────────────────
@@ -359,10 +371,15 @@ def score_ensemble(
     models = []
     for ckpt in checkpoint_path:
         m, cfg, cm = load_model(ckpt, device)
-        models.append((m, cm))
+        models.append((m, cm, cfg))
     if not models:
         raise RuntimeError("No checkpoints to run.")
     class_map = models[0][1]
+    first_known_map = {k: v for k, v in class_map.items() if int(v) <= 446}
+    for _, other_map, _ in models[1:]:
+        other_known_map = {k: v for k, v in other_map.items() if int(v) <= 446}
+        if other_known_map != first_known_map:
+            raise RuntimeError("Ensemble checkpoints have incompatible known-speaker class maps")
     # Competition output width: 447 legacy; with the closed-set cluster
     # experiment the internal class map is wider (1001) but the model's
     # predict_proba_and_embed already collapses the cluster columns into
@@ -373,11 +390,17 @@ def score_ensemble(
     num_classes = int(models[0][0].num_output_classes)
     n_models = len(models)
 
-    encoder_names = [Path(c).name.replace("_best.pt", "") for c in checkpoint_path]
+    encoder_names = [
+        str((cfg.get("model", {}) or {}).get("encoder_type",
+            Path(c).name.replace("_best.pt", "")))
+        for c, (_, _, cfg) in zip(checkpoint_path, models)
+    ]
 
     # ── Decision-layer setup ──
     do_decision = centroids is not None and decision_params is not None
     decision_params = decision_params or {}
+    open_set_rule = decision_params.get("open_set_rule") or {}
+    do_open_set_rule = bool(open_set_rule)
     alpha = float(decision_params.get("alpha", 0.5))
     kappa = float(decision_params.get("kappa", 8.0))
     tau = float(decision_params.get("tau", 0.0))
@@ -407,6 +430,14 @@ def score_ensemble(
     # Per-model probability arrays: (n_models, n_files, num_classes)
     all_model_probs = [np.zeros((n_files, num_classes), dtype=np.float64)
                        for _ in models]
+    all_model_speaker_probs: Dict[int, np.ndarray] = {}
+    all_model_ood_probs: Dict[int, np.ndarray] = {}
+    if do_open_set_rule:
+        for model_index, (model, _, _) in enumerate(models):
+            all_model_speaker_probs[model_index] = np.zeros(
+                (n_files, int(model.num_known_speakers)), dtype=np.float64,
+            )
+            all_model_ood_probs[model_index] = np.zeros(n_files, dtype=np.float64)
     scored = np.zeros(n_files, dtype=bool)
 
     # Per-model embeddings only for models that have a centroid (decision path).
@@ -430,8 +461,8 @@ def score_ensemble(
             # embeddings stay zero → max_cosine = 0 → gated to unknown
             continue
         scored[i] = True
-        for m_idx, (model, cm) in enumerate(models):
-            probs, emb = predict_file_probs_and_embedding(
+        for m_idx, (model, cm, cfg) in enumerate(models):
+            prediction = predict_file_probs_and_embedding(
                 model, waveform, device, sample_rate=sample_rate,
                 duration_seconds=duration_seconds, eval_hop_ratio=eval_hop_ratio,
                 max_eval_windows=max_windows, use_amp=not no_amp,
@@ -439,7 +470,14 @@ def score_ensemble(
                 speech_aware=eval_speech_aware,
                 speech_relative_db=speech_relative_db,
                 short_audio_mode=short_audio_mode,
+                return_open_set_evidence=do_open_set_rule,
             )
+            if do_open_set_rule:
+                probs, emb, evidence = prediction
+                all_model_speaker_probs[m_idx][i] = evidence["speaker_probs"]
+                all_model_ood_probs[m_idx][i] = evidence["ood_prob"]
+            else:
+                probs, emb = prediction
             all_model_probs[m_idx][i] = probs
             if m_idx in all_model_embs:
                 all_model_embs[m_idx][i] = emb
@@ -470,6 +508,55 @@ def score_ensemble(
     final_probs = fused / fused.sum(axis=1, keepdims=True)
     labels = final_probs.argmax(axis=1).astype(np.int64)
     max_cosine: Optional[np.ndarray] = None
+    open_set_score: Optional[np.ndarray] = None
+
+    # ── Cardinality-normalised pseudo-tail decision rule ──
+    # The legacy 1000-way collapse sums all 554 pseudo-unknown probabilities,
+    # so the unknown score grows with tail width.  A top-k mean measures local
+    # unknown evidence without this cardinality bias.  The threshold is tuned
+    # offline on a disjoint calibration set and shipped in decision_config.json.
+    if do_open_set_rule:
+        rule_type = str(open_set_rule.get("type", "")).lower().strip()
+        if rule_type != "tail_topk_mean_plus_ood":
+            raise RuntimeError(f"Unsupported open_set_rule type: {rule_type}")
+        model_weights = np.asarray(
+            fusion_weights if fusion_weights is not None
+            else [1.0 / n_models] * n_models,
+            dtype=np.float64,
+        )
+        model_weights /= model_weights.sum() + 1e-12
+        widths = {matrix.shape[1] for matrix in all_model_speaker_probs.values()}
+        if len(widths) != 1:
+            raise RuntimeError("Open-set evidence requires equal speaker-head widths")
+        speaker_width = widths.pop()
+        num_competition_known = num_classes - 1
+        if speaker_width <= num_competition_known:
+            raise RuntimeError("Open-set tail rule requires pseudo-unknown speaker columns")
+        speaker_probs = np.tensordot(
+            model_weights,
+            np.stack([all_model_speaker_probs[i] for i in range(n_models)]),
+            axes=(0, 0),
+        )
+        known_probs = speaker_probs[:, :num_competition_known]
+        tail_probs = speaker_probs[:, num_competition_known:]
+        top_k = max(1, min(int(open_set_rule.get("top_k", 5)), tail_probs.shape[1]))
+        tail_topk_mean = np.partition(
+            tail_probs, tail_probs.shape[1] - top_k, axis=1,
+        )[:, -top_k:].mean(axis=1)
+        known_max = known_probs.max(axis=1)
+        ood_model_index = int(open_set_rule.get("ood_model_index", 0))
+        if ood_model_index not in all_model_ood_probs:
+            raise RuntimeError(f"Invalid open-set ood_model_index={ood_model_index}")
+        ood_prob = np.clip(all_model_ood_probs[ood_model_index], 1e-9, 1.0 - 1e-9)
+        ood_logit = np.log(ood_prob / (1.0 - ood_prob))
+        score = (
+            np.log(np.clip(tail_topk_mean, 1e-9, 1.0))
+            - np.log(np.clip(known_max, 1e-9, 1.0))
+            + float(open_set_rule.get("ood_weight", 0.5)) * ood_logit
+        )
+        labels = known_probs.argmax(axis=1).astype(np.int64) + 1
+        labels[score > float(open_set_rule["threshold"])] = 0
+        open_set_score = score
 
     # ── Centroid + OOD-gate decision layer ──
     if do_decision and all_model_embs:
@@ -518,6 +605,7 @@ def score_ensemble(
         "probs": final_probs,
         "labels": labels,
         "max_cosine": max_cosine,
+        "open_set_score": open_set_score,
         "class_map": class_map,
         "scored": scored,
         "total_elapsed": total_elapsed,

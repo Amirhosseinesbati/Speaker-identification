@@ -126,14 +126,25 @@ def _discover_checkpoints() -> List[str]:
         )
     fw_path = PKG_DIR / "ensemble_fusion_weights.json"
     order = None
+    explicit = None
     if fw_path.exists():
         try:
-            order = json.loads(fw_path.read_text(encoding="utf-8")).get("encoder_names")
+            fw = json.loads(fw_path.read_text(encoding="utf-8"))
+            order = fw.get("encoder_names")
+            models = fw.get("models") or []
+            if models:
+                explicit = [str(m.get("checkpoint", "")) for m in models]
+            elif fw.get("checkpoints"):
+                explicit = [str(x) for x in fw["checkpoints"]]
         except Exception:
             order = None
 
     checkpoints = []
-    if order:
+    if explicit:
+        for name in explicit:
+            c = ckpt_dir / name
+            checkpoints.append(str(c) if c.exists() else None)
+    elif order:
         # Aligned to the fusion-weights vector: one entry per encoder name,
         # None when that encoder's checkpoint was pruned (zero weight). The
         # decision layer filters by weight>0 AND non-None, so a sparse
@@ -166,7 +177,15 @@ def _load_centroids(checkpoint_paths: List[str]) -> Optional[dict]:
     paths = [c for c in checkpoint_paths if c]
     if not paths:
         return None
-    encoders = [_encoder_name(c) for c in paths]
+    encoders = []
+    for path in paths:
+        try:
+            ck = torch.load(path, map_location="cpu", weights_only=False)
+            encoders.append(str(
+                (ck.get("config", {}).get("model", {}) or {})
+                .get("encoder_type", _encoder_name(path))))
+        except Exception:
+            encoders.append(_encoder_name(path))
     # Cluster mode: read the first checkpoint's embedded config so the k-locked
     # centroids_unknown_<enc>_k<k>.npz is merged — the model's own k — not a
     # different-k experiment's centroids that happens to be in the package.

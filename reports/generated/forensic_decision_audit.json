@@ -1,0 +1,932 @@
+{
+  "generated_at": "2026-08-26T19:23:03.250571",
+  "historical_rebuild": {
+    "checkpoint": {
+      "path": "checkpoints\\modelrigestry\\campp_best (5).pt",
+      "bytes": 69034739,
+      "mtime": "2026-08-19T21:39:59.236205",
+      "sha256_12": "ff5108b0e037"
+    },
+    "device": "cuda",
+    "n_train": 3568,
+    "n_val": 891,
+    "n_known_train": 1786,
+    "n_unknown_train": 1782,
+    "n_embeddings_reused_from_modern_full_cache": 3560,
+    "n_embeddings_reextracted": 8,
+    "val_manifest": "data\\processed\\forensics\\historical_4a47c98\\val_manifest.csv",
+    "train_manifest": "data\\processed\\forensics\\historical_4a47c98\\train_manifest.csv",
+    "full_manifest": "data\\processed\\forensics\\historical_4a47c98\\full_manifest.csv",
+    "val_cache_label_order_matches_historical_split": true,
+    "historical_map_entries": 1782,
+    "historical_map_sha256_12": "cafc46400ad2",
+    "known_centroids": {
+      "path": "data\\processed\\forensics\\historical_4a47c98\\centroids_campp.npz",
+      "bytes": 318537,
+      "mtime": "2026-08-26T19:23:03.096614",
+      "sha256_12": "25db2171a991",
+      "arrays": {
+        "centroids": [
+          446,
+          192
+        ],
+        "speaker_ids": [
+          446
+        ],
+        "cluster_sizes": [
+          446
+        ]
+      }
+    },
+    "unknown_centroids": {
+      "path": "data\\processed\\forensics\\historical_4a47c98\\centroids_unknown_campp.npz",
+      "bytes": 396310,
+      "mtime": "2026-08-26T19:23:03.128471",
+      "sha256_12": "3959cf194077",
+      "arrays": {
+        "centroids": [
+          554,
+          192
+        ],
+        "cluster_ids": [
+          554
+        ],
+        "cluster_sizes": [
+          554
+        ]
+      }
+    },
+    "known_cluster_size": {
+      "min": 3,
+      "mean": 4.004484304932736,
+      "max": 8
+    },
+    "unknown_cluster_size": {
+      "min": 1,
+      "mean": 3.216606498194946,
+      "max": 14
+    }
+  },
+  "inventory": [
+    {
+      "path": "checkpoints\\modelrigestry\\campp_best (2).pt",
+      "bytes": 93229493,
+      "mtime": "2026-08-16T00:37:09.410866",
+      "sha256_12": "c646c57487b9"
+    },
+    {
+      "path": "checkpoints\\modelrigestry\\campp_best (3).pt",
+      "bytes": 93229429,
+      "mtime": "2026-08-17T11:06:21.701335",
+      "sha256_12": "68a36f37e7a1"
+    },
+    {
+      "path": "checkpoints\\modelrigestry\\campp_best (4).pt",
+      "bytes": 71089907,
+      "mtime": "2026-08-19T09:45:53.309387",
+      "sha256_12": "d7bbf16af315"
+    },
+    {
+      "path": "checkpoints\\modelrigestry\\campp_best (5).pt",
+      "bytes": 69034739,
+      "mtime": "2026-08-19T21:39:59.236205",
+      "sha256_12": "ff5108b0e037"
+    },
+    {
+      "path": "checkpoints\\modelrigestry\\campp_best (6).pt",
+      "bytes": 70325107,
+      "mtime": "2026-08-21T00:53:19.683133",
+      "sha256_12": "e461cf867540"
+    },
+    {
+      "path": "checkpoints\\modelrigestry\\campp_best.pt",
+      "bytes": 33292326,
+      "mtime": "2026-08-12T02:55:36.087574",
+      "sha256_12": "05002ffdeb1e"
+    },
+    {
+      "path": "data\\processed\\centroids_campp.npz",
+      "bytes": 318704,
+      "mtime": "2026-08-21T01:34:33.107006",
+      "sha256_12": "cd67d6c6f08e",
+      "arrays": {
+        "centroids": [
+          446,
+          192
+        ],
+        "speaker_ids": [
+          446
+        ],
+        "embedding_dim": []
+      }
+    },
+    {
+      "path": "data\\processed\\centroids_campp_best (2).pt.npz",
+      "bytes": 318567,
+      "mtime": "2026-08-17T18:29:37.759435",
+      "sha256_12": "d79600877275",
+      "arrays": {
+        "centroids": [
+          446,
+          192
+        ],
+        "speaker_ids": [
+          446
+        ],
+        "embedding_dim": []
+      }
+    },
+    {
+      "path": "data\\processed\\centroids_campp_best (5).pt.npz",
+      "bytes": 346622,
+      "mtime": "2026-08-25T09:48:27.787930",
+      "sha256_12": "59a0339fcd04",
+      "arrays": {
+        "centroids": [
+          446,
+          192
+        ],
+        "speaker_ids": [
+          446
+        ]
+      }
+    },
+    {
+      "path": "data\\processed\\centroids_unknown_campp.npz",
+      "bytes": 396119,
+      "mtime": "2026-08-21T01:35:35.168986",
+      "sha256_12": "b7450f2f8d68",
+      "arrays": {
+        "centroids": [
+          554,
+          192
+        ],
+        "cluster_sizes": [
+          554
+        ],
+        "cluster_ids": [
+          554
+        ]
+      }
+    },
+    {
+      "path": "data\\processed\\centroids_unknown_campp_k1000.npz",
+      "bytes": 714319,
+      "mtime": "2026-08-21T14:56:09.097798",
+      "sha256_12": "bbd6df3c51ee",
+      "arrays": {
+        "centroids": [
+          1000,
+          192
+        ],
+        "cluster_sizes": [
+          1000
+        ],
+        "cluster_ids": [
+          1000
+        ]
+      }
+    },
+    {
+      "path": "data\\processed\\centroids_unknown_campp_k554.npz",
+      "bytes": 396107,
+      "mtime": "2026-08-25T15:28:58.203067",
+      "sha256_12": "f503244617da",
+      "arrays": {
+        "centroids": [
+          554,
+          192
+        ],
+        "cluster_sizes": [
+          554
+        ],
+        "cluster_ids": [
+          554
+        ]
+      }
+    },
+    {
+      "path": "data\\processed\\decision_config.json",
+      "bytes": 676,
+      "mtime": "2026-08-22T13:47:42.664144",
+      "sha256_12": "f87b5e8ceb76",
+      "json_type": "dict",
+      "keys": [
+        "decision_params",
+        "val_macro_f1",
+        "baseline_val_macro_f1",
+        "delta",
+        "encoder_names",
+        "fusion_weights",
+        "num_classes",
+        "note"
+      ]
+    },
+    {
+      "path": "data\\processed\\val_emb_campp.npy",
+      "bytes": 684416,
+      "mtime": "2026-08-21T02:09:49.077826",
+      "sha256_12": "d4dbb0612c39",
+      "shape": [
+        891,
+        192
+      ]
+    },
+    {
+      "path": "data\\processed\\val_emb_campp_best (2).pt.npy",
+      "bytes": 1253504,
+      "mtime": "2026-08-17T18:26:18.257030",
+      "sha256_12": "1c9ee329f304",
+      "shape": [
+        1632,
+        192
+      ]
+    },
+    {
+      "path": "data\\processed\\val_emb_campp_best (5).pt.npy",
+      "bytes": 684416,
+      "mtime": "2026-08-25T09:43:52.043918",
+      "sha256_12": "4bda596d2992",
+      "shape": [
+        891,
+        192
+      ]
+    },
+    {
+      "path": "data\\processed\\val_emb_campp_vad.npy",
+      "bytes": 684416,
+      "mtime": "2026-08-22T13:52:29.902099",
+      "sha256_12": "9098796cf0ba",
+      "shape": [
+        891,
+        192
+      ]
+    },
+    {
+      "path": "data\\processed\\val_labels.npy",
+      "bytes": 7256,
+      "mtime": "2026-08-25T09:43:52.047490",
+      "sha256_12": "2c16f7d071fc",
+      "shape": [
+        891
+      ]
+    },
+    {
+      "path": "data\\processed\\val_labels_new.npy",
+      "bytes": 7256,
+      "mtime": "2026-08-16T01:22:20.768545",
+      "sha256_12": "2c16f7d071fc",
+      "shape": [
+        891
+      ]
+    },
+    {
+      "path": "data\\processed\\val_labels_old.npy",
+      "bytes": 7256,
+      "mtime": "2026-08-16T01:19:21.298180",
+      "sha256_12": "2c16f7d071fc",
+      "shape": [
+        891
+      ]
+    },
+    {
+      "path": "data\\processed\\val_probs_campp.npy",
+      "bytes": 1593236,
+      "mtime": "2026-08-21T02:09:49.075820",
+      "sha256_12": "223db505679d",
+      "shape": [
+        891,
+        447
+      ]
+    },
+    {
+      "path": "data\\processed\\val_probs_campp_best (2).pt.npy",
+      "bytes": 2918144,
+      "mtime": "2026-08-17T18:26:18.255045",
+      "sha256_12": "32544d8b8fda",
+      "shape": [
+        1632,
+        447
+      ]
+    },
+    {
+      "path": "data\\processed\\val_probs_campp_best (5).pt.npy",
+      "bytes": 1593236,
+      "mtime": "2026-08-25T09:43:52.031962",
+      "sha256_12": "070e9b3c3cd2",
+      "shape": [
+        891,
+        447
+      ]
+    },
+    {
+      "path": "data\\processed\\val_probs_campp_vad.npy",
+      "bytes": 1593236,
+      "mtime": "2026-08-22T13:52:29.902099",
+      "sha256_12": "9924d7f2b1e6",
+      "shape": [
+        891,
+        447
+      ]
+    }
+  ],
+  "zip_inventory": [
+    {
+      "path": "submission_campp_ecapa_80-20_centroid.zip",
+      "bytes": 301079696,
+      "mtime": "2026-08-26T17:58:59.075441",
+      "sha256_12": "2f5a168d6a37",
+      "members": [
+        {
+          "name": "centroids/centroids_campp.npz",
+          "bytes": 318704,
+          "crc32": "2071068e",
+          "date_time": [
+            2026,
+            8,
+            21,
+            1,
+            34,
+            32
+          ]
+        },
+        {
+          "name": "centroids/centroids_ecapa.npz",
+          "bytes": 318566,
+          "crc32": "aee0505d",
+          "date_time": [
+            2026,
+            8,
+            17,
+            22,
+            30,
+            32
+          ]
+        },
+        {
+          "name": "centroids/centroids_unknown_campp.npz",
+          "bytes": 396119,
+          "crc32": "83398cb2",
+          "date_time": [
+            2026,
+            8,
+            21,
+            1,
+            35,
+            34
+          ]
+        },
+        {
+          "name": "checkpoints/campp_best.pt",
+          "bytes": 70325107,
+          "crc32": "ca2030f3",
+          "date_time": [
+            2026,
+            8,
+            21,
+            0,
+            53,
+            18
+          ]
+        },
+        {
+          "name": "checkpoints/ecapa_best.pt",
+          "bytes": 134462934,
+          "crc32": "e916a63e",
+          "date_time": [
+            2026,
+            8,
+            12,
+            2,
+            55,
+            56
+          ]
+        },
+        {
+          "name": "decision_config.json",
+          "bytes": 422,
+          "crc32": "1dc7e7c4",
+          "date_time": [
+            2026,
+            8,
+            26,
+            17,
+            57,
+            8
+          ]
+        },
+        {
+          "name": "ensemble_fusion_weights.json",
+          "bytes": 1182,
+          "crc32": "89ea3240",
+          "date_time": [
+            2026,
+            8,
+            26,
+            17,
+            57,
+            8
+          ]
+        },
+        {
+          "name": "unknown_clusters.json",
+          "bytes": 88628,
+          "crc32": "b5c903d3",
+          "date_time": [
+            2026,
+            8,
+            21,
+            1,
+            35,
+            34
+          ]
+        }
+      ]
+    },
+    {
+      "path": "submission_campp_historical_control.zip",
+      "bytes": 91128320,
+      "mtime": "2026-08-26T17:57:46.869139",
+      "sha256_12": "b6781261e325",
+      "members": [
+        {
+          "name": "centroids/centroids_campp.npz",
+          "bytes": 346622,
+          "crc32": "1a761668",
+          "date_time": [
+            2026,
+            8,
+            25,
+            9,
+            48,
+            26
+          ]
+        },
+        {
+          "name": "checkpoints/campp_best.pt",
+          "bytes": 69034739,
+          "crc32": "fe4d0c67",
+          "date_time": [
+            2026,
+            8,
+            19,
+            21,
+            39,
+            58
+          ]
+        },
+        {
+          "name": "decision_config.json",
+          "bytes": 396,
+          "crc32": "29dcdcb7",
+          "date_time": [
+            2026,
+            8,
+            26,
+            17,
+            57,
+            6
+          ]
+        },
+        {
+          "name": "ensemble_fusion_weights.json",
+          "bytes": 845,
+          "crc32": "00108209",
+          "date_time": [
+            2026,
+            8,
+            26,
+            17,
+            57,
+            4
+          ]
+        },
+        {
+          "name": "unknown_clusters.json",
+          "bytes": 88628,
+          "crc32": "b5c903d3",
+          "date_time": [
+            2026,
+            8,
+            21,
+            1,
+            35,
+            34
+          ]
+        }
+      ]
+    },
+    {
+      "path": "submission_leaderboard.zip",
+      "bytes": 285162446,
+      "mtime": "2026-08-22T15:46:16.082311",
+      "sha256_12": "4c0862169b89",
+      "members": [
+        {
+          "name": "centroids/centroids_campp.npz",
+          "bytes": 318704,
+          "crc32": "2071068e",
+          "date_time": [
+            2026,
+            8,
+            21,
+            1,
+            34,
+            32
+          ]
+        },
+        {
+          "name": "centroids/centroids_titanet.npz",
+          "bytes": 318582,
+          "crc32": "3108771c",
+          "date_time": [
+            2026,
+            8,
+            17,
+            22,
+            39,
+            18
+          ]
+        },
+        {
+          "name": "centroids/centroids_unknown_campp.npz",
+          "bytes": 396119,
+          "crc32": "83398cb2",
+          "date_time": [
+            2026,
+            8,
+            21,
+            1,
+            35,
+            34
+          ]
+        },
+        {
+          "name": "centroids/centroids_unknown_campp_k1000.npz",
+          "bytes": 714319,
+          "crc32": "c2dec5ca",
+          "date_time": [
+            2026,
+            8,
+            21,
+            14,
+            56,
+            8
+          ]
+        },
+        {
+          "name": "checkpoints/campp_best.pt",
+          "bytes": 70325107,
+          "crc32": "ca2030f3",
+          "date_time": [
+            2026,
+            8,
+            21,
+            0,
+            53,
+            18
+          ]
+        },
+        {
+          "name": "checkpoints/titanet_best.pt",
+          "bytes": 103734741,
+          "crc32": "e5175748",
+          "date_time": [
+            2026,
+            8,
+            12,
+            2,
+            55,
+            22
+          ]
+        },
+        {
+          "name": "decision_config.json",
+          "bytes": 676,
+          "crc32": "20f2323a",
+          "date_time": [
+            2026,
+            8,
+            22,
+            13,
+            47,
+            42
+          ]
+        },
+        {
+          "name": "ensemble_fusion_weights.json",
+          "bytes": 438,
+          "crc32": "d45fc4d2",
+          "date_time": [
+            2026,
+            8,
+            22,
+            13,
+            41,
+            38
+          ]
+        },
+        {
+          "name": "unknown_clusters.json",
+          "bytes": 88628,
+          "crc32": "b5c903d3",
+          "date_time": [
+            2026,
+            8,
+            21,
+            1,
+            35,
+            34
+          ]
+        }
+      ]
+    },
+    {
+      "path": "submission_no-proto_metric-only_60-40.zip",
+      "bytes": 153798857,
+      "mtime": "2026-08-26T14:26:34.839515",
+      "sha256_12": "0c7a3c417360",
+      "members": [
+        {
+          "name": "checkpoints/campp_metric_only_best.pt",
+          "bytes": 68773315,
+          "crc32": "3110550c",
+          "date_time": [
+            2026,
+            8,
+            26,
+            12,
+            37,
+            16
+          ]
+        },
+        {
+          "name": "checkpoints/campp_no_proto_best.pt",
+          "bytes": 70390259,
+          "crc32": "3f1507ff",
+          "date_time": [
+            2026,
+            8,
+            26,
+            12,
+            37,
+            8
+          ]
+        },
+        {
+          "name": "ensemble_fusion_weights.json",
+          "bytes": 889,
+          "crc32": "6580340f",
+          "date_time": [
+            2026,
+            8,
+            26,
+            14,
+            25,
+            28
+          ]
+        },
+        {
+          "name": "unknown_clusters.json",
+          "bytes": 88628,
+          "crc32": "b5c903d3",
+          "date_time": [
+            2026,
+            8,
+            21,
+            1,
+            35,
+            34
+          ]
+        }
+      ]
+    },
+    {
+      "path": "submission_p0_threefold_equal.zip",
+      "bytes": 218595348,
+      "mtime": "2026-08-26T14:28:48.771680",
+      "sha256_12": "b3c5ade1d062",
+      "members": [
+        {
+          "name": "checkpoints/campp_p0_f0_best.pt",
+          "bytes": 70357299,
+          "crc32": "315fbc0e",
+          "date_time": [
+            2026,
+            8,
+            26,
+            12,
+            36,
+            42
+          ]
+        },
+        {
+          "name": "checkpoints/campp_p0_f1_best.pt",
+          "bytes": 70368499,
+          "crc32": "83727c88",
+          "date_time": [
+            2026,
+            8,
+            26,
+            12,
+            36,
+            58
+          ]
+        },
+        {
+          "name": "checkpoints/campp_p0_f2_best.pt",
+          "bytes": 70365491,
+          "crc32": "9016d2c8",
+          "date_time": [
+            2026,
+            8,
+            26,
+            12,
+            36,
+            52
+          ]
+        },
+        {
+          "name": "ensemble_fusion_weights.json",
+          "bytes": 1167,
+          "crc32": "4591cd55",
+          "date_time": [
+            2026,
+            8,
+            26,
+            14,
+            25,
+            28
+          ]
+        },
+        {
+          "name": "unknown_clusters.json",
+          "bytes": 88628,
+          "crc32": "b5c903d3",
+          "date_time": [
+            2026,
+            8,
+            21,
+            1,
+            35,
+            34
+          ]
+        }
+      ]
+    }
+  ],
+  "legacy_cache_evaluations": [
+    {
+      "labels": "data\\processed\\val_labels_old.npy",
+      "known_centroids": "data\\processed\\forensics\\historical_4a47c98\\centroids_campp.npz",
+      "unknown_centroids": "data\\processed\\forensics\\historical_4a47c98\\centroids_unknown_campp.npz",
+      "unknown_k": 554,
+      "legacy_params": {
+        "alpha": 0.35,
+        "kappa": 24.0,
+        "tau": 0.0,
+        "lambda_unknown": 0.5
+      },
+      "macro_f1": 0.9600470372282452,
+      "accuracy": 0.9719416386083053,
+      "known_accuracy": 0.9618834080717489,
+      "unknown_recall": 0.9820224719101124,
+      "known_to_unknown": 15,
+      "known_to_wrong_known": 2,
+      "unknown_to_known": 8
+    },
+    {
+      "labels": "data\\processed\\val_labels.npy",
+      "known_centroids": "data\\processed\\forensics\\historical_4a47c98\\centroids_campp.npz",
+      "unknown_centroids": "data\\processed\\forensics\\historical_4a47c98\\centroids_unknown_campp.npz",
+      "unknown_k": 554,
+      "legacy_params": {
+        "alpha": 0.35,
+        "kappa": 24.0,
+        "tau": 0.0,
+        "lambda_unknown": 0.5
+      },
+      "macro_f1": 0.9600470372282452,
+      "accuracy": 0.9719416386083053,
+      "known_accuracy": 0.9618834080717489,
+      "unknown_recall": 0.9820224719101124,
+      "known_to_unknown": 15,
+      "known_to_wrong_known": 2,
+      "unknown_to_known": 8
+    },
+    {
+      "labels": "data\\processed\\val_labels_old.npy",
+      "known_centroids": "data\\processed\\centroids_campp_best (5).pt.npz",
+      "unknown_centroids": "data\\processed\\centroids_unknown_campp_k1000.npz",
+      "unknown_k": 1000,
+      "legacy_params": {
+        "alpha": 0.35,
+        "kappa": 24.0,
+        "tau": 0.0,
+        "lambda_unknown": 0.5
+      },
+      "macro_f1": 0.9435729915980768,
+      "accuracy": 0.9382716049382716,
+      "known_accuracy": 0.9708520179372198,
+      "unknown_recall": 0.9056179775280899,
+      "known_to_unknown": 6,
+      "known_to_wrong_known": 7,
+      "unknown_to_known": 42
+    },
+    {
+      "labels": "data\\processed\\val_labels.npy",
+      "known_centroids": "data\\processed\\centroids_campp_best (5).pt.npz",
+      "unknown_centroids": "data\\processed\\centroids_unknown_campp_k1000.npz",
+      "unknown_k": 1000,
+      "legacy_params": {
+        "alpha": 0.35,
+        "kappa": 24.0,
+        "tau": 0.0,
+        "lambda_unknown": 0.5
+      },
+      "macro_f1": 0.9435729915980768,
+      "accuracy": 0.9382716049382716,
+      "known_accuracy": 0.9708520179372198,
+      "unknown_recall": 0.9056179775280899,
+      "known_to_unknown": 6,
+      "known_to_wrong_known": 7,
+      "unknown_to_known": 42
+    },
+    {
+      "labels": "data\\processed\\val_labels_old.npy",
+      "known_centroids": "data\\processed\\centroids_campp_best (5).pt.npz",
+      "unknown_centroids": "data\\processed\\centroids_unknown_campp.npz",
+      "unknown_k": 554,
+      "legacy_params": {
+        "alpha": 0.35,
+        "kappa": 24.0,
+        "tau": 0.0,
+        "lambda_unknown": 0.5
+      },
+      "macro_f1": 0.9428245093642389,
+      "accuracy": 0.9371492704826038,
+      "known_accuracy": 0.9708520179372198,
+      "unknown_recall": 0.903370786516854,
+      "known_to_unknown": 6,
+      "known_to_wrong_known": 7,
+      "unknown_to_known": 43
+    },
+    {
+      "labels": "data\\processed\\val_labels_old.npy",
+      "known_centroids": "data\\processed\\centroids_campp_best (5).pt.npz",
+      "unknown_centroids": "data\\processed\\centroids_unknown_campp_k554.npz",
+      "unknown_k": 554,
+      "legacy_params": {
+        "alpha": 0.35,
+        "kappa": 24.0,
+        "tau": 0.0,
+        "lambda_unknown": 0.5
+      },
+      "macro_f1": 0.9428245093642389,
+      "accuracy": 0.9371492704826038,
+      "known_accuracy": 0.9708520179372198,
+      "unknown_recall": 0.903370786516854,
+      "known_to_unknown": 6,
+      "known_to_wrong_known": 7,
+      "unknown_to_known": 43
+    },
+    {
+      "labels": "data\\processed\\val_labels.npy",
+      "known_centroids": "data\\processed\\centroids_campp_best (5).pt.npz",
+      "unknown_centroids": "data\\processed\\centroids_unknown_campp.npz",
+      "unknown_k": 554,
+      "legacy_params": {
+        "alpha": 0.35,
+        "kappa": 24.0,
+        "tau": 0.0,
+        "lambda_unknown": 0.5
+      },
+      "macro_f1": 0.9428245093642389,
+      "accuracy": 0.9371492704826038,
+      "known_accuracy": 0.9708520179372198,
+      "unknown_recall": 0.903370786516854,
+      "known_to_unknown": 6,
+      "known_to_wrong_known": 7,
+      "unknown_to_known": 43
+    },
+    {
+      "labels": "data\\processed\\val_labels.npy",
+      "known_centroids": "data\\processed\\centroids_campp_best (5).pt.npz",
+      "unknown_centroids": "data\\processed\\centroids_unknown_campp_k554.npz",
+      "unknown_k": 554,
+      "legacy_params": {
+        "alpha": 0.35,
+        "kappa": 24.0,
+        "tau": 0.0,
+        "lambda_unknown": 0.5
+      },
+      "macro_f1": 0.9428245093642389,
+      "accuracy": 0.9371492704826038,
+      "known_accuracy": 0.9708520179372198,
+      "unknown_recall": 0.903370786516854,
+      "known_to_unknown": 6,
+      "known_to_wrong_known": 7,
+      "unknown_to_known": 43
+    }
+  ]
+}

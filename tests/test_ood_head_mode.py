@@ -35,6 +35,7 @@ from src.heads import (  # noqa: E402
     ood_head_enabled,
 )
 from src.model import TwoHeadedSpeakerModel  # noqa: E402
+from src.model_factory import resolve_speaker_head_layout  # noqa: E402
 from src.pooling import IdentityPooling  # noqa: E402
 from src.train import (  # noqa: E402
     TwoPartLoss,
@@ -43,6 +44,7 @@ from src.train import (  # noqa: E402
     tune_ood_threshold,
 )
 from src.metrics import fused_probs_from_logits  # noqa: E402
+from src.data_pipeline import make_balanced_batch_sampler  # noqa: E402
 
 
 class DummyEncoder(nn.Module):
@@ -88,6 +90,20 @@ def test_create_ood_head_none_when_disabled():
     assert create_ood_head(cfg, 8) is None
     cfg["model"]["ood_head"] = True
     assert isinstance(create_ood_head(cfg, 8), OODHead)
+
+
+def test_known_scope_decouples_primary_head_from_metric_pseudo_classes():
+    cfg = {"model": {"competition_num_known": 446,
+                     "speaker_target_scope": "known"}}
+    head_classes, output_pseudo, scope = resolve_speaker_head_layout(cfg, 1000)
+    assert (head_classes, output_pseudo, scope) == (446, 0, "known")
+
+
+def test_metric_scope_preserves_legacy_1000_way_head():
+    cfg = {"model": {"competition_num_known": 446,
+                     "speaker_target_scope": "metric"}}
+    head_classes, output_pseudo, scope = resolve_speaker_head_layout(cfg, 1000)
+    assert (head_classes, output_pseudo, scope) == (1000, 554, "metric")
 
 
 # ── model forward / proba paths ──
@@ -143,6 +159,19 @@ def test_forward_multi_window_without_ood():
     assert spk.shape == (2, 446)
 
 
+def test_known_only_arcface_accepts_pseudo_metric_labels_safely():
+    m = _model(num_unknown_clusters=0, ood_head=True)
+    m.train()
+    x = torch.randn(4, 1, 32)
+    # Labels 447/1000 exist in the metric map but are outside the 446-way head.
+    ood, spk, emb = m(
+        x, labels=torch.tensor([1, 447, 1000, 0]), return_embedding=True,
+    )
+    assert ood.shape == (4, 1)
+    assert spk.shape == (4, 446)
+    assert emb.shape == (4, 8)
+
+
 # ── loss ──
 
 def test_two_part_loss_without_ood_is_speaker_only():
@@ -163,6 +192,41 @@ def test_two_part_loss_with_ood_head_still_works():
     total, d = crit(ood, spk, labels)
     assert d["loss_ood"] > 0.0
     assert torch.isfinite(total)
+
+
+def test_known_scope_masks_pseudo_ids_from_speaker_ce_but_not_ood_bce():
+    crit = TwoPartLoss(
+        use_ood=True, use_focal=False, speaker_target_scope="known",
+        competition_known_count=446,
+    )
+    ood = torch.randn(4, 1, requires_grad=True)
+    spk = torch.randn(4, 446, requires_grad=True)
+    labels = torch.tensor([1, 447, 2, 1000])
+    total, parts = crit(ood, spk, labels)
+
+    expected_speaker = torch.nn.functional.cross_entropy(
+        spk[[0, 2]], torch.tensor([0, 1]),
+    )
+    assert parts["loss_speaker"] == pytest.approx(expected_speaker.item(), rel=1e-6)
+    assert parts["loss_ood"] > 0.0
+    total.backward()
+    # Pseudo rows must have no primary-speaker CE gradient.
+    torch.testing.assert_close(spk.grad[[1, 3]], torch.zeros_like(spk.grad[[1, 3]]))
+    assert ood.grad is not None
+
+
+def test_known_first_sampler_treats_pseudo_ids_as_ood():
+    labels = torch.tensor(
+        [1, 2, 3, 4, 447, 448, 999, 1000], dtype=torch.long,
+    ).numpy()
+    indices = make_balanced_batch_sampler(
+        labels, batch_size=4, ood_ratio=0.5, seed=7,
+        competition_known_count=446,
+    )
+    sampled = labels[indices].reshape(-1, 4)
+    for batch in sampled:
+        assert ((batch == 0) | (batch > 446)).sum() == 2
+        assert ((batch > 0) & (batch <= 446)).sum() == 2
 
 
 # ── metrics / threshold helpers ──

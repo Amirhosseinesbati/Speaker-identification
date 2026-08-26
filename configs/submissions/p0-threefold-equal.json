@@ -1,0 +1,45 @@
+{
+  "package_id": "p0-threefold-equal",
+  "fusion_method": "weighted_average",
+  "use_decision_layer": false,
+  "recipe_oof_macro_f1": 0.9736411676312433,
+  "encoder_names": [
+    "campp_p0_f0",
+    "campp_p0_f1",
+    "campp_p0_f2"
+  ],
+  "checkpoints": [
+    "campp_p0_f0_best.pt",
+    "campp_p0_f1_best.pt",
+    "campp_p0_f2_best.pt"
+  ],
+  "weights": [
+    0.3333333333333333,
+    0.3333333333333333,
+    0.3333333333333333
+  ],
+  "models": [
+    {
+      "name": "campp_p0_f0",
+      "source_checkpoint": "campp_best.pt",
+      "checkpoint": "campp_p0_f0_best.pt",
+      "base_encoder": "campp",
+      "weight": 0.3333333333333333
+    },
+    {
+      "name": "campp_p0_f1",
+      "source_checkpoint": "campp_best (2).pt",
+      "checkpoint": "campp_p0_f1_best.pt",
+      "base_encoder": "campp",
+      "weight": 0.3333333333333333
+    },
+    {
+      "name": "campp_p0_f2",
+      "source_checkpoint": "campp_best (1).pt",
+      "checkpoint": "campp_p0_f2_best.pt",
+      "base_encoder": "campp",
+      "weight": 0.3333333333333333
+    }
+  ],
+  "note": "Equal head-probability ensemble of three P0 folds. OOF score is recipe evidence, not an ensemble-tuned score."
+}

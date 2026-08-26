@@ -15,6 +15,40 @@ import torch.nn as nn
 from src.encoders import BaseEncoder, create_encoder
 from src.pooling import create_pooling
 from src.heads import create_ood_head, create_speaker_head
+
+
+def resolve_speaker_head_layout(
+    config: dict,
+    num_metric_classes: int,
+) -> tuple[int, int, str]:
+    """Resolve speaker-head width independently from metric pseudo-labels.
+
+    ``metric`` preserves the existing 446+k ArcFace head and collapses its
+    pseudo columns at inference. ``known`` builds a strict 446-way head while
+    retaining the k pseudo labels for OOD BCE and an optional metric auxiliary
+    loss. The latter is the known-first architecture used by the new gate.
+
+    Returns ``(speaker_head_classes, output_pseudo_classes, scope)``.
+    """
+    model_cfg = config.get("model", {}) or {}
+    scope = str(model_cfg.get("speaker_target_scope", "metric")).lower().strip()
+    if scope not in {"metric", "known"}:
+        raise ValueError(
+            "model.speaker_target_scope must be 'metric' or 'known', "
+            f"got {scope!r}"
+        )
+
+    competition_known = int(model_cfg.get("competition_num_known", 446))
+    if num_metric_classes < competition_known:
+        raise ValueError(
+            f"Metric class map has {num_metric_classes} classes, fewer than "
+            f"competition_num_known={competition_known}."
+        )
+    if scope == "known":
+        return competition_known, 0, scope
+
+    output_pseudo = max(0, int(num_metric_classes) - competition_known)
+    return int(num_metric_classes), output_pseudo, scope
 from src.model import TwoHeadedSpeakerModel
 
 
@@ -65,7 +99,14 @@ def create_model_from_config(
     ood_head = create_ood_head(config, pooled_dim)
 
     # ── 4. Speaker Head ──
-    speaker_head = create_speaker_head(config, pooled_dim, num_known_speakers)
+    # The class map may carry 554 pseudo identities even when the primary
+    # speaker head is intentionally restricted to the 446 competition-known
+    # identities.  Keep those two widths independent.
+    metric_num_classes = int(num_known_speakers)
+    speaker_head_classes, output_pseudo_classes, speaker_target_scope = (
+        resolve_speaker_head_layout(config, metric_num_classes)
+    )
+    speaker_head = create_speaker_head(config, pooled_dim, speaker_head_classes)
     head_type = model_cfg.get("speaker_head_type", "linear")
 
     # ── 5. Assemble ──
@@ -77,20 +118,21 @@ def create_model_from_config(
     # clusters' files are dropped by the corruption/duplicate filter (the
     # class map shrinks) or the map was rebuilt at a different k — the model
     # always outputs the fixed 447-way competition vector.
-    num_unknown_clusters = int(model_cfg.get("num_unknown_clusters", 0))
-    if num_unknown_clusters > 0:
-        comp_known = int(model_cfg.get("competition_num_known", 446))
-        num_unknown_clusters = max(0, int(num_known_speakers) - comp_known)
+    num_unknown_clusters = output_pseudo_classes
 
     model = TwoHeadedSpeakerModel(
         encoder=encoder,
         pooling=pooling,
         speaker_head=speaker_head,
         ood_head=ood_head,
-        num_known_speakers=num_known_speakers,
+        num_known_speakers=speaker_head_classes,
         encoder_name=encoder_name,
         num_unknown_clusters=num_unknown_clusters,
     )
+    # Non-parameter metadata: useful to checkpoints, diagnostics and tests;
+    # state-dict compatibility is unchanged.
+    model.metric_num_classes = metric_num_classes
+    model.speaker_target_scope = speaker_target_scope
 
     return model
 

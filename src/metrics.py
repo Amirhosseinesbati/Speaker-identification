@@ -305,3 +305,30 @@ def evaluate_macro_f1(
         "known_acc": known_acc,
         "overall_acc": overall_acc,
     }
+
+
+def evaluate_competition_probs(
+    probabilities: torch.Tensor,
+    labels: torch.Tensor,
+) -> Dict[str, float]:
+    """Score already-collapsed competition probabilities (submission path)."""
+    from sklearn.metrics import accuracy_score, f1_score
+
+    probs = probabilities.detach().cpu().numpy()
+    y_true = labels.detach().cpu().numpy()
+    num_classes = int(probs.shape[1])
+    y_true = np.where(y_true > num_classes - 1, 0, y_true)
+    y_pred = probs.argmax(axis=1)
+    known_mask = y_true != 0
+    return {
+        "macro_f1": macro_f1_score(y_true, y_pred, num_classes=num_classes),
+        "ood_f1": float(f1_score(
+            (y_true == 0).astype(int), (y_pred == 0).astype(int),
+            zero_division=0,
+        )),
+        "known_acc": (
+            float(accuracy_score(y_true[known_mask], y_pred[known_mask]))
+            if known_mask.sum() > 0 else 0.0
+        ),
+        "overall_acc": float(accuracy_score(y_true, y_pred)),
+    }

@@ -40,6 +40,7 @@ from src.training_utils import (
     build_amp,
     build_scheduler,
     encoder_will_train,
+    seed_everything,
 )
 from src.model_artifacts import enrich_checkpoint, create_training_bundle
 
@@ -191,6 +192,7 @@ class TwoPartLoss(nn.Module):
         ood_pos_weight: float = 1.0,
         use_ood: bool = True,
         competition_known_count: int = 446,
+        speaker_target_scope: str = "metric",
     ):
         super().__init__()
         self.ignore_index = ignore_index
@@ -198,6 +200,12 @@ class TwoPartLoss(nn.Module):
         self.speaker_weight = speaker_weight
         self.use_ood = use_ood
         self.competition_known_count = int(competition_known_count)
+        self.speaker_target_scope = str(speaker_target_scope).lower().strip()
+        if self.speaker_target_scope not in {"metric", "known"}:
+            raise ValueError(
+                "speaker_target_scope must be 'metric' or 'known', "
+                f"got {self.speaker_target_scope!r}"
+            )
 
         # Cluster mode (use_ood=False): the OOD head does not exist and its BCE
         # supervision would be distorted (unknown files are relabeled to cluster
@@ -249,9 +257,14 @@ class TwoPartLoss(nn.Module):
                                    device=speaker_logits.device)
 
         # ── Loss 2: Known Speaker Classification ──
-        # Create masked labels: for unknown samples, set to ignore_index
+        # Create masked labels. Metric-scope heads classify pseudo identities;
+        # known-scope heads deliberately exclude them and let only OOD BCE plus
+        # the optional auxiliary metric loss learn from those samples.
         speaker_labels = labels.clone()
-        speaker_labels[labels == 0] = self.ignore_index
+        speaker_ignore = labels == 0
+        if self.speaker_target_scope == "known":
+            speaker_ignore = speaker_ignore | (labels > self.competition_known_count)
+        speaker_labels[speaker_ignore] = self.ignore_index
 
         # Speaker labels are 1-indexed in the dataset, but CrossEntropy expects 0-indexed.
         # So we subtract 1 to map classes 1..446 → 0..445
@@ -281,6 +294,7 @@ def build_criterion(
     train_cfg: dict,
     use_ood: bool = True,
     competition_known_count: int = 446,
+    speaker_target_scope: str = "metric",
 ) -> TwoPartLoss:
     """Build the two-part loss from the ``training`` config (root cause R9/C4).
 
@@ -322,6 +336,9 @@ def build_criterion(
             "pos_weight", train_cfg.get("ood_pos_weight", 1.0))),
         use_ood=use_ood,
         competition_known_count=competition_known_count,
+        speaker_target_scope=str(
+            speaker_cfg.get("scope", speaker_target_scope)
+        ),
     )
 
 
@@ -751,6 +768,10 @@ def train(config_path: str = "configs/default_config.yaml"):
     train_cfg = config["training"]
     log_cfg = config["logging"]
     encoder_type = str(config.get("model", {}).get("encoder_type", "model"))
+    reproducibility = seed_everything(
+        train_cfg.get("seed", 42),
+        deterministic=train_cfg.get("deterministic_algorithms", True),
+    )
 
     print("=" * 55)
     print("  Training Engine — Open-Set Speaker ID")
@@ -761,6 +782,8 @@ def train(config_path: str = "configs/default_config.yaml"):
     print(f"  Epochs: {train_cfg['epochs']}")
     print(f"  Learning rate: {train_cfg['learning_rate']}")
     print(f"  Weight decay: {train_cfg['weight_decay']}")
+    print(f"  Training seed: {reproducibility['seed']} | "
+          f"deterministic: {reproducibility['deterministic_algorithms']}")
     print()
 
     # ── Device ──
@@ -769,10 +792,9 @@ def train(config_path: str = "configs/default_config.yaml"):
     # ── DataLoaders ──
     print("\n  [1/4] Preparing DataLoaders...")
     train_loader, val_loader, class_map = get_dataloaders(config)
-    # Head width = number of non-unknown classes in the (possibly cluster-
-    # extended) class map: 446 legacy, 1000 with the closed-set experiment.
+    # Metric labels may span 446+k identities while the known-first primary
+    # speaker head intentionally spans only the 446 competition identities.
     num_known = len(class_map) - 1
-    num_unknown_clusters = int(config.get("model", {}).get("num_unknown_clusters", 0))
 
     # ── Model ──
     # NOTE: use the config-driven factory, NOT the legacy TwoHeadedWavLM
@@ -780,12 +802,10 @@ def train(config_path: str = "configs/default_config.yaml"):
     print(f"\n  [2/4] Building model ({num_known} known speakers)...")
     from src.model_factory import create_model_from_config
     model = create_model_from_config(config, num_known_speakers=num_known)
-    # The model derives the EFFECTIVE cluster count from the head width (the
-    # class map may hold fewer pseudo classes than the requested k when some
-    # clusters' files were dropped by the corruption filter). All downstream
-    # width math (Macro-F1 num_classes, collapse) must use that value, not the
-    # raw config — otherwise the 447-way output contract drifts.
-    num_unknown_clusters = int(model.num_unknown_clusters)
+    # Number of pseudo columns emitted by the PRIMARY head. It is zero for
+    # known-first models even when the metric class map contains pseudo ids.
+    output_unknown_clusters = int(model.num_unknown_clusters)
+    num_output_classes = int(model.num_output_classes)
     model = model.to(device)
     model.print_summary()
 
@@ -829,6 +849,7 @@ def train(config_path: str = "configs/default_config.yaml"):
     criterion = build_criterion(
         train_cfg, use_ood=ood_head_enabled(config),
         competition_known_count=competition_known_count,
+        speaker_target_scope=getattr(model, "speaker_target_scope", "metric"),
     )
     amp_dtype = train_cfg.get("amp_dtype", "fp16")
     autocast_fn, scaler = build_amp(
@@ -871,6 +892,8 @@ def train(config_path: str = "configs/default_config.yaml"):
 
     best_val_f1 = -float("inf")
     best_epoch = -1
+    best_ema_f1 = -float("inf")
+    best_ema_epoch = -1
     history = []
     split_scheme = str((config.get("data", {}).get("split", {}) or {})
                        .get("scheme", "single")).lower().strip()
@@ -910,10 +933,25 @@ def train(config_path: str = "configs/default_config.yaml"):
         val_m = evaluate_macro_f1(
             val_metrics["ood_logits"], val_metrics["speaker_logits"],
             val_metrics["labels"],
-            num_classes=len(class_map) - num_unknown_clusters,
-            num_unknown_clusters=num_unknown_clusters,
+            num_classes=num_output_classes,
+            num_unknown_clusters=output_unknown_clusters,
         )
         val_metrics["macro_f1"] = val_m["macro_f1"]
+
+        # Score EMA independently.  The raw metric remains the early-stopping
+        # signal to preserve the original recipe; EMA is a separately selected
+        # deployment candidate and never borrows the raw metric again.
+        ema_val_metrics = None
+        if ema is not None and ema.enabled:
+            with ema.average_parameters(model):
+                ema_val_metrics = validate_epoch(model, val_loader, criterion, device)
+            ema_m = evaluate_macro_f1(
+                ema_val_metrics["ood_logits"], ema_val_metrics["speaker_logits"],
+                ema_val_metrics["labels"],
+                num_classes=num_output_classes,
+                num_unknown_clusters=output_unknown_clusters,
+            )
+            ema_val_metrics["macro_f1"] = ema_m["macro_f1"]
 
         # LR scheduling
         scheduler.step()
@@ -930,6 +968,8 @@ def train(config_path: str = "configs/default_config.yaml"):
               f"{val_metrics['speaker_acc']:.3f} (val)")
         print(f"     Macro-F1: {val_metrics['macro_f1']:.4f} (val)  |  "
               f"LR: {current_lr:.2e} | Time: {epoch_time:.1f}s")
+        if ema_val_metrics is not None:
+            print(f"     EMA Macro-F1: {ema_val_metrics['macro_f1']:.4f} (independent val)")
 
         # Save best checkpoint (based on competition Macro-F1). Named by
         # encoder (<enc>_best.pt) so the submission package can ship one per
@@ -947,13 +987,13 @@ def train(config_path: str = "configs/default_config.yaml"):
                 competition_known_count=competition_known_count)
             ckpt = enrich_checkpoint({
                 "epoch": epoch,
-                "model_state_dict": (
-                    ema.state_dict(model) if ema is not None else model.state_dict()
-                ),
+                "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
                 "config": config,
                 "class_map": class_map,
+                "weight_variant": "raw",
+                "reproducibility": reproducibility,
                 "ood_threshold": ood_threshold,
                 "val_loss": val_metrics["loss"],
                 "val_ood_acc": val_metrics["ood_acc"],
@@ -966,9 +1006,42 @@ def train(config_path: str = "configs/default_config.yaml"):
                 "val_macro_f1": val_metrics["macro_f1"],
             }, history=history)
             torch.save(ckpt, checkpoint_dir / f"{encoder_type}_best.pt")
+            torch.save(ckpt, checkpoint_dir / f"{encoder_type}_best_raw.pt")
             torch.save(ckpt, checkpoint_dir / "best_model.pt")
+            threshold_text = (f"{ood_threshold:.2f}" if ood_threshold is not None
+                              else "n/a")
             print(f"     💾 Saved new best model (val_macro_f1={best_val_f1:.4f}, "
-                  f"ood_thr={ood_threshold:.2f})")
+                  f"ood_thr={threshold_text}, weights=raw)")
+
+        if (ema_val_metrics is not None and
+                ema_val_metrics["macro_f1"] > best_ema_f1):
+            best_ema_f1 = ema_val_metrics["macro_f1"]
+            best_ema_epoch = epoch
+            ema_threshold = tune_ood_threshold(
+                ema_val_metrics["ood_logits"], ema_val_metrics["labels"],
+                competition_known_count=competition_known_count)
+            ema_ckpt = enrich_checkpoint({
+                "epoch": epoch,
+                "model_state_dict": ema.state_dict(model),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "config": config,
+                "class_map": class_map,
+                "weight_variant": "ema",
+                "reproducibility": reproducibility,
+                "ood_threshold": ema_threshold,
+                "val_loss": ema_val_metrics["loss"],
+                "val_ood_acc": ema_val_metrics["ood_acc"],
+                "val_speaker_acc": ema_val_metrics["speaker_acc"],
+                "val_macro_f1": ema_val_metrics["macro_f1"],
+            }, config, class_map, metrics={
+                "val_loss": ema_val_metrics["loss"],
+                "val_ood_acc": ema_val_metrics["ood_acc"],
+                "val_speaker_acc": ema_val_metrics["speaker_acc"],
+                "val_macro_f1": ema_val_metrics["macro_f1"],
+            }, history=history)
+            torch.save(ema_ckpt, checkpoint_dir / f"{encoder_type}_best_ema.pt")
+            print(f"     💾 Saved EMA candidate (val_macro_f1={best_ema_f1:.4f})")
 
         # Save latest checkpoint (encoder-named + back-compat copy)
         latest_ckpt = enrich_checkpoint({
@@ -1003,10 +1076,25 @@ def train(config_path: str = "configs/default_config.yaml"):
         print(f"  Best val Speaker acc: {history[best_epoch-1]['val_speaker_acc']:.3f}")
     print(f"  Checkpoint saved: {checkpoint_dir / f'{encoder_type}_best.pt'}")
     best_path = checkpoint_dir / f"{encoder_type}_best.pt"
+    raw_path = checkpoint_dir / f"{encoder_type}_best_raw.pt"
+    ema_path = checkpoint_dir / f"{encoder_type}_best_ema.pt"
+    selected_variant = "raw"
+    if ema_path.exists() and best_ema_f1 > best_val_f1:
+        selected_variant = "ema"
+        torch.save(torch.load(ema_path, map_location="cpu", weights_only=False), best_path)
+    elif raw_path.exists():
+        torch.save(torch.load(raw_path, map_location="cpu", weights_only=False), best_path)
     if best_path.exists():
         final_metrics = {
             "best_epoch": best_epoch,
             "best_val_macro_f1": best_val_f1,
+            "best_raw_epoch": best_epoch,
+            "best_raw_val_macro_f1": best_val_f1,
+            "best_ema_epoch": best_ema_epoch,
+            "best_ema_val_macro_f1": (
+                best_ema_f1 if best_ema_epoch > 0 else None),
+            "selected_weight_variant": selected_variant,
+            "selected_val_macro_f1": max(best_val_f1, best_ema_f1),
         }
         final_ckpt = torch.load(best_path, map_location="cpu", weights_only=False)
         final_ckpt = enrich_checkpoint(

@@ -36,7 +36,7 @@ from src.data_pipeline import (
     make_balanced_batch_sampler,
     SpeakerDataset,
 )
-from src.metrics import evaluate_macro_f1
+from src.metrics import evaluate_competition_probs, evaluate_macro_f1
 from src.train import (
     train_epoch,
     validate_epoch,
@@ -53,6 +53,7 @@ from src.training_utils import (
     build_amp,
     build_scheduler,
     encoder_will_train,
+    seed_everything,
 )
 from src.heads import ood_head_enabled
 
@@ -287,6 +288,11 @@ def build_model(
     print("  [ZenML Step 2/4] Building Model")
     print("=" * 55)
 
+    train_cfg = config.get("training", {}) or {}
+    seed_everything(
+        train_cfg.get("seed", 42),
+        deterministic=train_cfg.get("deterministic_algorithms", True),
+    )
     num_known = len(class_map) - 1
     from src.model_factory import create_model_from_config
     model = create_model_from_config(config, num_known_speakers=num_known)
@@ -323,7 +329,9 @@ def build_model(
         "freeze_encoder": freeze_fe,
         "pooling_type": model_cfg.get("pooling_type", "statistical"),
         "speaker_head_type": model_cfg.get("speaker_head_type", "linear"),
-        "num_known_speakers": num_known,
+        "metric_num_classes": num_known,
+        "speaker_head_classes": model.num_known_speakers,
+        "speaker_target_scope": getattr(model, "speaker_target_scope", "metric"),
         "total_params": model.get_trainable_params(),
     })
 
@@ -352,6 +360,14 @@ def train_model(
     print("=" * 55)
     print("  [ZenML Step 3/4] Training Model")
     print("=" * 55)
+
+    train_cfg = config["training"]
+    reproducibility = seed_everything(
+        train_cfg.get("seed", 42),
+        deterministic=train_cfg.get("deterministic_algorithms", True),
+    )
+    print(f"  🎲 Training seed: {reproducibility['seed']} | "
+          f"deterministic: {reproducibility['deterministic_algorithms']}")
 
     # ── Device ──
     device = setup_device(config)
@@ -432,14 +448,22 @@ def train_model(
 
     train_labels = train_df["label"].values
     num_unknown_clusters = int(config.get("model", {}).get("num_unknown_clusters", 0))
-    if num_unknown_clusters > 0:
+    speaker_target_scope = str(
+        config.get("model", {}).get("speaker_target_scope", "metric")
+    ).lower().strip()
+    if num_unknown_clusters > 0 and speaker_target_scope != "known":
         # 1000-class mode: label-0 pool is ~empty — plain shuffle sampling.
         sampler = None
         print("  🧬 1000-class mode: uniform batch sampling (no OOD/known balance)")
     else:
         ood_ratio = audio_cfg.get("ood_batch_ratio", 0.5)
+        competition_known_count = (
+            int(config.get("model", {}).get("competition_num_known", 446))
+            if speaker_target_scope == "known" else None
+        )
         balanced_indices = make_balanced_batch_sampler(
             train_labels, hw_profile["batch_size"], ood_ratio=ood_ratio,
+            competition_known_count=competition_known_count,
         )
         sampler = torch.utils.data.SubsetRandomSampler(balanced_indices)
 
@@ -465,16 +489,18 @@ def train_model(
     num_known = len(class_map) - 1
     from src.model_factory import create_model_from_config
     model = create_model_from_config(config, num_known_speakers=num_known)
-    # Effective cluster count derived from the head width (the class map may
-    # hold fewer pseudo classes than the requested k when some clusters' files
-    # were dropped by the corruption filter) — the width math below must use it.
-    num_unknown_clusters = int(model.num_unknown_clusters)
+    # Pseudo columns emitted by the PRIMARY head. Known-first models keep this
+    # at zero even though their metric class map retains pseudo identities.
+    output_unknown_clusters = int(model.num_unknown_clusters)
+    metric_unknown_clusters = max(
+        0, num_known - int(config.get("model", {}).get("competition_num_known", 446))
+    )
+    num_output_classes = int(model.num_output_classes)
     checkpoint = torch.load(model_checkpoint_path, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)
 
     # ── Optimizer, Loss, Scheduler, Scaler ──
-    train_cfg = config["training"]
     # Progressive unfreezing (two-phase fine-tune): keep the encoder frozen for
     # the first `freeze_epochs` epochs, then restore the configured mode.
     freeze_epochs = int(train_cfg.get("freeze_epochs", 0))
@@ -515,6 +541,7 @@ def train_model(
     criterion = build_criterion(
         train_cfg, use_ood=ood_head_enabled(config),
         competition_known_count=competition_known_count,
+        speaker_target_scope=getattr(model, "speaker_target_scope", "metric"),
     )
     amp_dtype = train_cfg.get("amp_dtype", "fp16")
     autocast_fn, scaler = build_amp(
@@ -555,6 +582,8 @@ def train_model(
 
     best_val_f1 = -float("inf")
     best_epoch = -1
+    best_ema_f1 = -float("inf")
+    best_ema_epoch = -1
     patience_counter = 0
     early_stop_patience = int(train_cfg.get("early_stopping_patience", 10))
     split_scheme = str((config.get("data", {}).get("split", {}) or {})
@@ -595,13 +624,31 @@ def train_model(
         val_m = evaluate_macro_f1(
             val_metrics["ood_logits"], val_metrics["speaker_logits"],
             val_metrics["labels"],
-            num_classes=len(class_map) - num_unknown_clusters,
-            num_unknown_clusters=num_unknown_clusters,
+            num_classes=num_output_classes,
+            num_unknown_clusters=output_unknown_clusters,
         )
         val_metrics["macro_f1"] = val_m["macro_f1"]
         val_metrics["ood_f1"] = val_m["ood_f1"]
         val_metrics["known_acc"] = val_m["known_acc"]
         val_metrics["overall_acc"] = val_m["overall_acc"]
+
+        # Evaluate EMA as its own model.  Raw validation remains the training
+        # selection/early-stopping signal, preserving the recipe; EMA gets a
+        # separate metric and checkpoint instead of inheriting the raw score.
+        ema_val_metrics = None
+        if ema is not None and ema.enabled:
+            with ema.average_parameters(model):
+                ema_val_metrics = validate_epoch(model, val_loader, criterion, device)
+            ema_m = evaluate_macro_f1(
+                ema_val_metrics["ood_logits"], ema_val_metrics["speaker_logits"],
+                ema_val_metrics["labels"],
+                num_classes=num_output_classes,
+                num_unknown_clusters=output_unknown_clusters,
+            )
+            ema_val_metrics["macro_f1"] = ema_m["macro_f1"]
+            ema_val_metrics["ood_f1"] = ema_m["ood_f1"]
+            ema_val_metrics["known_acc"] = ema_m["known_acc"]
+            ema_val_metrics["overall_acc"] = ema_m["overall_acc"]
         scheduler.step()
         # Per-param-group LRs: group[0] is the encoder (progressive), the last
         # group is the head. Log them separately so the MLflow LR chart is
@@ -624,6 +671,14 @@ def train_model(
             "val_ood_f1": val_metrics["ood_f1"],
             "val_known_acc": val_metrics["known_acc"],
             "val_overall_acc": val_metrics["overall_acc"],
+            "val_ema_macro_f1": (
+                ema_val_metrics["macro_f1"] if ema_val_metrics is not None else 0.0),
+            "val_ema_ood_f1": (
+                ema_val_metrics["ood_f1"] if ema_val_metrics is not None else 0.0),
+            "val_ema_known_acc": (
+                ema_val_metrics["known_acc"] if ema_val_metrics is not None else 0.0),
+            "val_ema_overall_acc": (
+                ema_val_metrics["overall_acc"] if ema_val_metrics is not None else 0.0),
             "learning_rate": head_lr,
             "head_lr": head_lr,
             "encoder_lr": encoder_lr if encoder_lr is not None else 0.0,
@@ -633,8 +688,12 @@ def train_model(
         print(f"\n  Epoch {epoch:2d}/{train_cfg['epochs']} — "
               f"Loss: {train_metrics['loss']:.4f} / {val_metrics['loss']:.4f}  |  "
               f"OOD: {train_metrics['ood_acc']:.3f} / {val_metrics['ood_acc']:.3f}  |  "
-              f"Spk: {train_metrics['speaker_acc']:.3f} / {val_metrics['speaker_acc']:.3f}  |  "
-              f"MacroF1: {val_metrics['macro_f1']:.4f}")
+               f"Spk: {train_metrics['speaker_acc']:.3f} / {val_metrics['speaker_acc']:.3f}  |  "
+               f"MacroF1: {val_metrics['macro_f1']:.4f}")
+        if ema_val_metrics is not None:
+            print(f"  EMA (independent) — MacroF1: {ema_val_metrics['macro_f1']:.4f} | "
+                  f"Known: {ema_val_metrics['known_acc']:.4f} | "
+                  f"OOD-F1: {ema_val_metrics['ood_f1']:.4f}")
 
         # Save best model (based on val Macro-F1) + Early stopping (also Macro-F1)
         should_save = (
@@ -648,13 +707,13 @@ def train_model(
             patience_counter = 0
             best_ckpt = enrich_checkpoint({
                 "epoch": epoch,
-                "model_state_dict": (
-                    ema.state_dict(model) if ema is not None else model.state_dict()
-                ),
+                "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
                 "config": config,
                 "class_map": class_map,
+                "weight_variant": "raw",
+                "reproducibility": reproducibility,
                 "val_loss": val_metrics["loss"],
                 "val_ood_acc": val_metrics["ood_acc"],
                 "val_speaker_acc": val_metrics["speaker_acc"],
@@ -669,14 +728,48 @@ def train_model(
             # back-compat copy for tools that still read best_model.pt.
             best_path = checkpoint_dir / f"{encoder_type}_best.pt"
             torch.save(best_ckpt, best_path)
+            torch.save(best_ckpt, checkpoint_dir / f"{encoder_type}_best_raw.pt")
             torch.save(best_ckpt, checkpoint_dir / "best_model.pt")
         else:
             patience_counter += 1
+
+        if (ema_val_metrics is not None and
+                ema_val_metrics["macro_f1"] > best_ema_f1):
+            best_ema_f1 = ema_val_metrics["macro_f1"]
+            best_ema_epoch = epoch
+            ema_ckpt = enrich_checkpoint({
+                "epoch": epoch,
+                "model_state_dict": ema.state_dict(model),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "config": config,
+                "class_map": class_map,
+                "weight_variant": "ema",
+                "reproducibility": reproducibility,
+                "val_loss": ema_val_metrics["loss"],
+                "val_ood_acc": ema_val_metrics["ood_acc"],
+                "val_speaker_acc": ema_val_metrics["speaker_acc"],
+                "val_macro_f1": ema_val_metrics["macro_f1"],
+            }, config, class_map, metrics={
+                "val_loss": ema_val_metrics["loss"],
+                "val_ood_acc": ema_val_metrics["ood_acc"],
+                "val_speaker_acc": ema_val_metrics["speaker_acc"],
+                "val_macro_f1": ema_val_metrics["macro_f1"],
+                "val_ood_f1": ema_val_metrics["ood_f1"],
+                "val_known_acc": ema_val_metrics["known_acc"],
+                "val_overall_acc": ema_val_metrics["overall_acc"],
+            }, history=history)
+            torch.save(ema_ckpt, checkpoint_dir / f"{encoder_type}_best_ema.pt")
 
         # Record history (BEFORE early stopping check — prevents crash on break)
         # NOTE: exclude tensors (collect for Macro-F1) from the history dict
         val_history = {k: v for k, v in val_metrics.items()
                        if not isinstance(v, torch.Tensor)}
+        if ema_val_metrics is not None:
+            val_history.update({
+                f"ema_{k}": v for k, v in ema_val_metrics.items()
+                if not isinstance(v, torch.Tensor)
+            })
         history.append({
             "epoch": epoch,
             **{f"train_{k}": v for k, v in train_metrics.items()},
@@ -691,6 +784,8 @@ def train_model(
             "optimizer_state_dict": optimizer.state_dict(),
             "config": config,
             "class_map": class_map,
+            "weight_variant": "raw",
+            "reproducibility": reproducibility,
         }, config, class_map, history=history)
         torch.save(latest_ckpt, checkpoint_dir / f"{encoder_type}_latest.pt")
         torch.save(latest_ckpt, checkpoint_dir / "latest_model.pt")
@@ -704,19 +799,38 @@ def train_model(
 
     # ── Final logging ──
     final_best_path = str(checkpoint_dir / f"{encoder_type}_best.pt")
+    raw_best_path = checkpoint_dir / f"{encoder_type}_best_raw.pt"
+    ema_best_path = checkpoint_dir / f"{encoder_type}_best_ema.pt"
 
     # Safety: if early stopping happened before any improvement, use last epoch
     safe_idx = best_epoch - 1
     if safe_idx < 0 or safe_idx >= len(history):
         safe_idx = len(history) - 1  # fallback to last recorded epoch
 
+    selected_variant = (
+        "ema" if ema_best_path.exists() and best_ema_f1 > best_val_f1 else "raw"
+    )
+    selected_epoch = best_ema_epoch if selected_variant == "ema" else best_epoch
+    selected_f1 = best_ema_f1 if selected_variant == "ema" else best_val_f1
+    selected_path = ema_best_path if selected_variant == "ema" else raw_best_path
+    if not selected_path.exists():
+        selected_path = Path(final_best_path)
+
     summary = {
-        "best_epoch": best_epoch if best_epoch > 0 else (safe_idx + 1),
-        "best_val_macro_f1": round(best_val_f1, 6),
+        "best_epoch": selected_epoch if selected_epoch > 0 else (safe_idx + 1),
+        "best_val_macro_f1": round(selected_f1, 6),
+        "best_raw_epoch": best_epoch,
+        "best_raw_val_macro_f1": round(best_val_f1, 6),
+        "best_ema_epoch": best_ema_epoch,
+        "best_ema_val_macro_f1": (
+            round(best_ema_f1, 6) if best_ema_epoch > 0 else None),
+        "selected_weight_variant": selected_variant,
         "best_val_ood_acc": round(history[safe_idx]["val_ood_acc"], 4),
         "best_val_speaker_acc": round(history[safe_idx]["val_speaker_acc"], 4),
         "total_epochs_run": len(history),
         "total_epochs_configured": train_cfg["epochs"],
+        "training_seed": reproducibility["seed"],
+        "deterministic_algorithms": reproducibility["deterministic_algorithms"],
     }
 
     _mlflow_log_params({
@@ -731,30 +845,67 @@ def train_model(
         "min_lr_ratio": train_cfg.get("min_lr_ratio", 0.0),
         "early_stopping_patience": train_cfg.get("early_stopping_patience", 10),
         "encoder_type": encoder_type,
-        "num_unknown_clusters": num_unknown_clusters,
+        "metric_unknown_clusters": metric_unknown_clusters,
+        "output_unknown_clusters": output_unknown_clusters,
+        "speaker_target_scope": getattr(model, "speaker_target_scope", "metric"),
         "ood_head": ood_head_enabled(config),
         "speaker_head_type": config["model"].get("speaker_head_type", "linear"),
         "selection_mode": selection_mode,
         "validation_overlap": split_scheme == "full",
+        "training_seed": reproducibility["seed"],
+        "deterministic_algorithms": reproducibility["deterministic_algorithms"],
     })
-    _mlflow_log_metrics(summary)
-    _mlflow_log_artifact(final_best_path, artifact_path="models")
+    _mlflow_log_metrics({
+        "best_val_macro_f1": summary["best_val_macro_f1"],
+        "best_raw_val_macro_f1": summary["best_raw_val_macro_f1"],
+        "best_ema_val_macro_f1": (
+            summary["best_ema_val_macro_f1"]
+            if summary["best_ema_val_macro_f1"] is not None else 0.0),
+        "total_epochs_run": summary["total_epochs_run"],
+    })
+    _mlflow_log_params({"selected_weight_variant": selected_variant})
 
     # Finalise the best checkpoint with the complete history and produce a
     # human-readable sidecar bundle.  Downloading only the .pt remains enough;
     # the bundle exists for convenient MLflow inspection.
-    final_ckpt = torch.load(final_best_path, map_location="cpu", weights_only=False)
+    final_ckpt = torch.load(selected_path, map_location="cpu", weights_only=False)
     final_ckpt = enrich_checkpoint(
         final_ckpt, config, class_map, metrics=summary, history=history)
     torch.save(final_ckpt, final_best_path)
     torch.save(final_ckpt, checkpoint_dir / "best_model.pt")
     bundle_dir = create_training_bundle(
         final_best_path, config, class_map, history, summary)
+
+    variant_bundles = []
+    for variant_path in (raw_best_path, ema_best_path):
+        if not variant_path.exists():
+            continue
+        variant_ckpt = torch.load(
+            variant_path, map_location="cpu", weights_only=False)
+        variant_ckpt = enrich_checkpoint(
+            variant_ckpt, config, class_map, metrics=summary, history=history)
+        torch.save(variant_ckpt, variant_path)
+        variant_bundles.append(create_training_bundle(
+            variant_path, config, class_map, history, summary))
+
+    _mlflow_log_artifact(final_best_path, artifact_path="models")
+    for variant_path in (raw_best_path, ema_best_path):
+        if variant_path.exists():
+            _mlflow_log_artifact(str(variant_path), artifact_path="models/variants")
     if get_tracker().is_active:
         get_tracker().log_artifacts(str(bundle_dir), artifact_path="models/bundle")
+        for variant_bundle in variant_bundles:
+            get_tracker().log_artifacts(
+                str(variant_bundle),
+                artifact_path=f"models/variants/{variant_bundle.name}",
+            )
 
-    print(f"\n  ✓ Training complete! Best val Macro-F1: {best_val_f1:.4f} (epoch {best_epoch})")
-    print(f"  ✓ Best model: {final_best_path}")
+    print(f"\n  ✓ Training complete! Selected {selected_variant.upper()} "
+          f"Macro-F1: {selected_f1:.4f} (epoch {selected_epoch})")
+    print(f"  ✓ Canonical model: {final_best_path}")
+    print(f"  ✓ Raw candidate: {raw_best_path}")
+    if ema_best_path.exists():
+        print(f"  ✓ EMA candidate: {ema_best_path}")
 
     return final_best_path, summary
 
@@ -811,9 +962,10 @@ def evaluate_model(
     num_known = len(class_map) - 1
     from src.model_factory import create_model_from_config
     model = create_model_from_config(config, num_known_speakers=num_known)
-    # Effective cluster count from the head width — the metric width math
-    # (num_classes) below must use it, not the raw config value.
-    num_unknown_clusters = int(model.num_unknown_clusters)
+    # Pseudo columns emitted by the primary speaker head. This is zero for the
+    # known-first architecture while pseudo labels remain in the class map.
+    output_unknown_clusters = int(model.num_unknown_clusters)
+    num_output_classes = int(model.num_output_classes)
     checkpoint = torch.load(best_model_path, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)
@@ -826,6 +978,7 @@ def evaluate_model(
     criterion = build_criterion(
         train_cfg, use_ood=ood_head_enabled(config),
         competition_known_count=competition_known_count,
+        speaker_target_scope=getattr(model, "speaker_target_scope", "metric"),
     )
     total_loss = 0.0
     total_ood_acc = 0.0
@@ -835,6 +988,8 @@ def evaluate_model(
     all_ood_logits = []
     all_speaker_logits = []
     all_labels = []
+    all_competition_probs = []
+    all_embeddings = []
 
     with torch.no_grad():
         for waveforms, labels in val_loader:
@@ -857,16 +1012,30 @@ def evaluate_model(
             all_speaker_logits.append(speaker_logits.cpu())
             all_labels.append(labels.cpu())
 
+            # Exact leaderboard inference aggregation: probabilities are
+            # computed per window and averaged per file.  Keep this beside the
+            # legacy logit-average tensors so OOF analysis can compare both.
+            for sample_windows in waveforms:
+                if sample_windows.dim() == 2:
+                    sample_windows = sample_windows.unsqueeze(0)
+                probs, embedding = model.predict_proba_and_embed(
+                    sample_windows, temperature=1.0)
+                all_competition_probs.append(probs.cpu())
+                all_embeddings.append(embedding.cpu())
+
     all_ood = torch.cat(all_ood_logits) if all_ood_logits else None
     all_spk = torch.cat(all_speaker_logits)
     all_lbl = torch.cat(all_labels)
+    all_probs = torch.stack(all_competition_probs)
+    all_emb = torch.stack(all_embeddings)
 
     # ── Competition metric (plain argmax — exactly what the organizers score) ──
     argmax_metrics = evaluate_macro_f1(
         all_ood, all_spk, all_lbl,
-        num_classes=len(class_map) - num_unknown_clusters,
-        num_unknown_clusters=num_unknown_clusters,
+        num_classes=num_output_classes,
+        num_unknown_clusters=output_unknown_clusters,
     )
+    probability_metrics = evaluate_competition_probs(all_probs, all_lbl)
 
     # ── Tune OOD threshold on validation (binary unknown-class F1) ──
     # (skipped when the OOD head is disabled — cluster mode)
@@ -899,9 +1068,9 @@ def evaluate_model(
         # Macro-F1 at the tuned threshold (local OOD operating-point analysis)
         thr_metrics = evaluate_macro_f1(
             all_ood, all_spk, all_lbl,
-            num_classes=len(class_map) - num_unknown_clusters,
+            num_classes=num_output_classes,
             ood_threshold=best_threshold,
-            num_unknown_clusters=num_unknown_clusters,
+            num_unknown_clusters=output_unknown_clusters,
         )
         tuned_ood_acc = ((ood_probs > best_threshold).astype(int) == ood_targets).mean()
         print(f"  🎯 OOD Threshold tuned: {best_threshold:.2f} (binary F1={best_f1:.4f})")
@@ -923,6 +1092,10 @@ def evaluate_model(
         "ood_f1": round(argmax_metrics["ood_f1"], 6),
         "known_acc": round(argmax_metrics["known_acc"], 6),
         "overall_acc": round(argmax_metrics["overall_acc"], 6),
+        "probability_avg_macro_f1": round(probability_metrics["macro_f1"], 6),
+        "probability_avg_ood_f1": round(probability_metrics["ood_f1"], 6),
+        "probability_avg_known_acc": round(probability_metrics["known_acc"], 6),
+        "probability_avg_overall_acc": round(probability_metrics["overall_acc"], 6),
         "macro_f1_at_ood_threshold": round(thr_metrics["macro_f1"], 6),
         "ood_threshold": float(best_threshold) if best_threshold is not None else None,
         "ood_threshold_f1": float(best_f1),
@@ -934,6 +1107,8 @@ def evaluate_model(
     print(f"    OOD Acc:     {metrics['final_val_ood_acc']:.3f}")
     print(f"    Speaker Acc: {metrics['final_val_speaker_acc']:.3f}")
     print(f"    Macro-F1:    {metrics['macro_f1']:.4f}")
+    print(f"    Prob-avg F1: {metrics['probability_avg_macro_f1']:.4f} "
+          "(submission-consistent)")
 
     # ── Persist the tuned OOD threshold into the checkpoint ──
     try:
@@ -954,8 +1129,10 @@ def evaluate_model(
             labels=all_lbl,
             speaker_logits=all_spk,
             ood_logits=all_ood,
-            num_unknown_clusters=num_unknown_clusters,
+            num_unknown_clusters=output_unknown_clusters,
             split=(config.get("data", {}).get("split", {}) or {}),
+            competition_probs=all_probs,
+            embeddings=all_emb,
         )
         print(f"  ✓ OOD threshold persisted to {best_model_path}")
     except Exception as e:

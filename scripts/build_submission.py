@@ -38,6 +38,7 @@ import argparse
 import json
 import shutil
 import sys
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -104,7 +105,58 @@ def _vendor_deps() -> None:
         print(f"  🧹 removed {len(compiled)} compiled ext(s) from vendor/")
 
 
-def build(skip_weights: bool) -> None:
+def _fusion_model_specs(fusion: dict, ckpt_src: Path) -> list[dict]:
+    """Return explicit model members while keeping the legacy schema working."""
+    models = fusion.get("models") or []
+    if models:
+        specs = []
+        for i, item in enumerate(models):
+            source = str(item.get("source_checkpoint") or item.get("checkpoint") or "")
+            packaged = str(item.get("checkpoint") or source)
+            if not source or not packaged:
+                raise ValueError(f"fusion models[{i}] needs checkpoint/source_checkpoint")
+            specs.append({
+                "name": str(item.get("name") or Path(packaged).stem),
+                "source_checkpoint": source,
+                "checkpoint": packaged,
+                "base_encoder": str(item.get("base_encoder") or "").strip(),
+                "weight": float(item.get("weight", 0.0)),
+            })
+        return specs
+
+    names = list(fusion.get("encoder_names") or [])
+    weights = list(fusion.get("weights") or [])
+    checkpoints = list(fusion.get("checkpoints") or [])
+    specs = []
+    for i, name in enumerate(names):
+        source = str(checkpoints[i]) if i < len(checkpoints) else f"{name}_best.pt"
+        # Older configs occasionally listed a stale filename. Preserve the old
+        # encoder-derived fallback when the explicit source is absent.
+        if not (ckpt_src / source).exists() and (ckpt_src / f"{name}_best.pt").exists():
+            source = f"{name}_best.pt"
+        specs.append({
+            "name": str(name),
+            "source_checkpoint": source,
+            "checkpoint": f"{name}_best.pt",
+            "base_encoder": str(name),
+            "weight": float(weights[i]) if i < len(weights) else 0.0,
+        })
+    return specs
+
+
+def _write_zip(zip_path: Path) -> None:
+    """Zip SUB contents at archive root (submission.py must not be nested)."""
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    zip_path.unlink(missing_ok=True)
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED,
+                         compresslevel=6) as zf:
+        for path in sorted(p for p in SUB.rglob("*") if p.is_file()):
+            zf.write(path, path.relative_to(SUB).as_posix())
+    print(f"  ✓ ZIP: {zip_path} ({zip_path.stat().st_size / 1024**2:.2f} MiB)")
+
+
+def build(skip_weights: bool, fusion_config: Path | None = None,
+          zip_output: Path | None = None) -> None:
     print(f"Building submission package in {SUB}")
     SUB.mkdir(parents=True, exist_ok=True)
 
@@ -161,47 +213,44 @@ def build(skip_weights: bool) -> None:
     # Skip encoders whose fusion weight is ~0 — they contribute nothing to the
     # ensemble output, so shipping their checkpoint + weights only bloats the
     # package (e.g. a 129 MB ecapa_best.pt that is never loaded at eval time).
-    fw_src = ROOT / "data" / "processed" / "ensemble_fusion_weights.json"
-    active_encoders = None
-    if fw_src.exists():
-        try:
-            fw = json.loads(fw_src.read_text(encoding="utf-8"))
-            names = fw.get("encoder_names", [])
-            weights = fw.get("weights", [])
-            active_encoders = {
-                names[i] for i, w in enumerate(weights)
-                if i < len(names) and w > 1e-8
-            }
-        except Exception:
-            active_encoders = None
+    fw_src = fusion_config or (
+        ROOT / "data" / "processed" / "ensemble_fusion_weights.json")
+    if not fw_src.is_absolute():
+        fw_src = ROOT / fw_src
+    if not fw_src.exists():
+        raise FileNotFoundError(f"Fusion config not found: {fw_src}")
+    fw = json.loads(fw_src.read_text(encoding="utf-8"))
+    specs = _fusion_model_specs(fw, ckpt_src)
+    active_specs = [s for s in specs if s["weight"] > 1e-8]
+    if not active_specs:
+        raise ValueError("Fusion config has no positive-weight models")
 
-    ckpt_files = sorted(ckpt_src.glob("*_best.pt")) if ckpt_src.exists() else []
-    if active_encoders is not None:
-        skipped = [c for c in ckpt_files
-                   if _encoder_from_checkpoint_name(c.name) not in active_encoders]
-        ckpt_files = [c for c in ckpt_files
-                      if _encoder_from_checkpoint_name(c.name) in active_encoders]
-        for c in skipped:
-            print(f"  ⏭  checkpoints/{c.name} skipped (zero fusion weight)")
+    ckpt_files = []
+    for spec in active_specs:
+        src = ckpt_src / spec["source_checkpoint"]
+        if not src.exists():
+            raise FileNotFoundError(
+                f"Checkpoint for {spec['name']} not found: {src}")
+        ckpt_files.append((src, spec["checkpoint"], spec["base_encoder"]))
     # Rebuild checkpoints/ from scratch: remove stale *.pt from earlier builds
     # (e.g. eres2net/titanet left over after switching to a single-model
     # ensemble) so the package never ships dead weight.
     ckpt_dst = SUB / "checkpoints"
     ckpt_dst.mkdir(parents=True, exist_ok=True)
-    wanted = {c.name for c in ckpt_files}
+    wanted = {dst_name for _, dst_name, _ in ckpt_files}
     for stale in list(ckpt_dst.glob("*.pt")):
         if stale.name not in wanted:
             stale.unlink(missing_ok=True)
             print(f"  🧹 checkpoints/{stale.name} removed (stale)")
     if ckpt_files:
-        for c in ckpt_files:
-            shutil.copy2(c, ckpt_dst / c.name)
-            print(f"  ✓ checkpoints/{c.name}")
+        for src, dst_name, _ in ckpt_files:
+            shutil.copy2(src, ckpt_dst / dst_name)
+            print(f"  ✓ checkpoints/{dst_name} ← {src.name}")
     else:
         print("  ⚠ no *_best.pt checkpoints found — train the models first")
 
     # ── weights (only for encoders that have a trained checkpoint) ──
-    used_encoders = {_encoder_from_checkpoint_name(c.name) for c in ckpt_files}
+    used_encoders = {base for _, _, base in ckpt_files if base}
     if not skip_weights:
         (SUB / "weights").mkdir(parents=True, exist_ok=True)
         # Prune stale weight dirs from earlier builds (e.g. wavlm_large with no
@@ -239,7 +288,6 @@ def build(skip_weights: bool) -> None:
             print(f"  ✓ {f}")
 
     # ── fusion config (best weights for the leaderboard) ──
-    fw_src = ROOT / "data" / "processed" / "ensemble_fusion_weights.json"
     if fw_src.exists():
         shutil.copy2(fw_src, SUB / "ensemble_fusion_weights.json")
         print("  ✓ ensemble_fusion_weights.json")
@@ -248,18 +296,32 @@ def build(skip_weights: bool) -> None:
               "run ensemble_calibrate.py first")
 
     # ── centroids (cosine centroid + OOD-gate decision layer) ──
+    use_decision_layer = bool(fw.get("use_decision_layer", True))
+    use_open_set_rule = bool(fw.get("use_open_set_rule", False))
     cent_dst = SUB / "centroids"
     cent_dst.mkdir(parents=True, exist_ok=True)
-    wanted_npz = {f"centroids_{enc}.npz" for enc in used_encoders}
+    centroid_sources = fw.get("centroid_sources")
+    unknown_centroid_sources = fw.get("unknown_centroid_sources")
+    wanted_npz = ({f"centroids_{enc}.npz" for enc in used_encoders}
+                  if use_decision_layer else set())
+    if use_decision_layer and isinstance(unknown_centroid_sources, dict):
+        wanted_npz.update(
+            f"centroids_unknown_{enc}.npz"
+            for enc, source in unknown_centroid_sources.items()
+            if enc in used_encoders and source
+        )
     for stale in list(cent_dst.glob("*.npz")):
         if stale.name not in wanted_npz:
             stale.unlink(missing_ok=True)
             print(f"  🧹 centroids/{stale.name} removed (stale)")
     shipped_centroids = 0
-    for enc in sorted(used_encoders):
-        src = ROOT / "data" / "processed" / f"centroids_{enc}.npz"
+    for enc in sorted(used_encoders) if use_decision_layer else []:
+        configured = (centroid_sources or {}).get(enc) if isinstance(
+            centroid_sources, dict) else None
+        src = ROOT / configured if configured else (
+            ROOT / "data" / "processed" / f"centroids_{enc}.npz")
         if src.exists():
-            shutil.copy2(src, cent_dst / src.name)
+            shutil.copy2(src, cent_dst / f"centroids_{enc}.npz")
             shipped_centroids += 1
         else:
             print(f"  ⚠ centroids_{enc}.npz missing — run scripts/build_centroids.py "
@@ -279,12 +341,21 @@ def build(skip_weights: bool) -> None:
     if shipped_maps == 0:
         print("  ℹ no pseudo-identity maps — legacy 447-way model")
     shipped_cluster_centroids = 0
-    for enc in sorted(used_encoders):
-        for src in sorted((ROOT / "data" / "processed").glob(
-                f"centroids_unknown_{enc}*.npz")):
-            shutil.copy2(src, cent_dst / src.name)
+    for enc in sorted(used_encoders) if use_decision_layer else []:
+        if isinstance(unknown_centroid_sources, dict):
+            configured = unknown_centroid_sources.get(enc)
+            sources = [ROOT / configured] if configured else []
+        else:
+            sources = sorted((ROOT / "data" / "processed").glob(
+                f"centroids_unknown_{enc}*.npz"))
+        for src in sources:
+            if not src.exists():
+                raise FileNotFoundError(
+                    f"Unknown centroid source for {enc} not found: {src}")
+            dst_name = f"centroids_unknown_{enc}.npz"
+            shutil.copy2(src, cent_dst / dst_name)
             shipped_cluster_centroids += 1
-            print(f"  ✓ centroids/{src.name}")
+            print(f"  ✓ centroids/{dst_name} ← {src.name}")
     if shipped_cluster_centroids == 0:
         print("  ℹ no unknown-cluster centroids — legacy 447-way decision layer")
     if shipped_centroids == 0:
@@ -293,10 +364,16 @@ def build(skip_weights: bool) -> None:
         print(f"  ✓ centroids/ ({shipped_centroids} encoder(s))")
 
     # ── decision config (τ/α/κ/λ/T tuned on val) ──
-    dc_src = ROOT / "data" / "processed" / "decision_config.json"
-    if dc_src.exists():
+    configured_dc = fw.get("decision_config_source")
+    dc_src = ROOT / configured_dc if configured_dc else (
+        ROOT / "data" / "processed" / "decision_config.json")
+    if not use_decision_layer and not use_open_set_rule:
+        (SUB / "decision_config.json").unlink(missing_ok=True)
+        print("  ⏭  decision layer disabled by fusion manifest (head fusion only)")
+    elif dc_src.exists():
         shutil.copy2(dc_src, SUB / "decision_config.json")
-        print("  ✓ decision_config.json")
+        print("  ✓ decision_config.json"
+              f" ({'open-set evidence' if use_open_set_rule else 'centroid'})")
     else:
         print("  ⚠ decision_config.json missing — run scripts/tune_decision.py "
               "(plain argmax fallback)")
@@ -329,14 +406,27 @@ def build(skip_weights: bool) -> None:
     dc = SUB / "decision_config.json"
     print(f"  {'✓' if dc.exists() else '⚠ absent (plain argmax)'} decision_config.json")
 
+    if zip_output is not None:
+        if not zip_output.is_absolute():
+            zip_output = ROOT / zip_output
+        _write_zip(zip_output)
+        if zip_output.stat().st_size > 1024**3:
+            raise RuntimeError(
+                f"ZIP exceeds leaderboard 1 GiB limit: {zip_output.stat().st_size / 1024**3:.3f} GiB")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build submission package")
     parser.add_argument("--skip-weights", action="store_true",
                         help="copy code+config only (fast iteration)")
+    parser.add_argument("--fusion-config", type=Path, default=None,
+                        help="Explicit fusion manifest (legacy default: data/processed/ensemble_fusion_weights.json)")
+    parser.add_argument("--zip-output", type=Path, default=None,
+                        help="Also create a leaderboard ZIP with submission.py at archive root")
     args = parser.parse_args()
     sys.path.insert(0, str(ROOT))
-    build(skip_weights=args.skip_weights)
+    build(skip_weights=args.skip_weights, fusion_config=args.fusion_config,
+          zip_output=args.zip_output)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,8 @@
 {
-  "package_id": "no-proto-metric-only-60-40-top5",
+  "package_id": "no-proto-metric-only-60-40",
   "fusion_method": "weighted_average",
   "use_decision_layer": false,
-  "use_open_set_rule": true,
-  "decision_config_source": "configs/submissions/no-proto-metric-only-60-40-top5.decision.json",
-  "validation_macro_f1": 0.9753590766138184,
+  "validation_macro_f1": 0.9734066888749531,
   "encoder_names": [
     "campp_no_proto",
     "campp_metric_only"
@@ -33,5 +31,5 @@
       "weight": 0.4
     }
   ],
-  "note": "Cardinality-normalised top-5 pseudo-tail evidence plus the no-proto OOD head. Fixed median calibration threshold; no centroid files."
+  "note": "Head-probability fusion only; fold-0 validation optimum. Legacy centroid/decision config intentionally disabled."
 }

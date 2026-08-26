@@ -14,6 +14,7 @@ Usage (cmd.exe):
 """
 
 import csv
+import argparse
 import re
 import shutil
 import subprocess
@@ -23,7 +24,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(r"D:\Projects\My projects\IAAA_Compet\Speaker-identification")
-ZIP = ROOT / "submission_leaderboard.zip"
+DEFAULT_ZIP = ROOT / "submission_leaderboard.zip"
 RAW = ROOT / "data" / "raw"
 PYTHON = Path(
     r"D:\Projects\My projects\IAAA_Compet\leaderbordvenv\.venv\Scripts\python.exe"
@@ -36,12 +37,16 @@ SUFFIXES = {".mp3", ".wav", ".flac", ".ogg", ".m4a"}
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Verify one leaderboard submission ZIP")
+    parser.add_argument("--zip", type=Path, default=DEFAULT_ZIP)
+    args = parser.parse_args()
+    zip_path = args.zip.resolve()
     print("=" * 70)
-    print("  Verification of submission_leaderboard.zip")
+    print(f"  Verification of {zip_path.name}")
     print("=" * 70)
 
-    if not ZIP.exists():
-        print(f"  ZIP missing: {ZIP}")
+    if not zip_path.exists():
+        print(f"  ZIP missing: {zip_path}")
         return 1
     if not PYTHON.exists():
         print(f"  python missing: {PYTHON}")
@@ -55,7 +60,7 @@ def main() -> int:
 
     # ── 1. extract ──
     print("\n[1/5] Extracting zip ...")
-    with zipfile.ZipFile(ZIP) as z:
+    with zipfile.ZipFile(zip_path) as z:
         z.extractall(extract)
     entry = extract / "submission.py"
     if not entry.exists():

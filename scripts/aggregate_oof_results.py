@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.metrics import evaluate_macro_f1
+from src.metrics import evaluate_competition_probs, evaluate_macro_f1
 
 
 def aggregate(paths: list[str]) -> dict:
@@ -46,6 +46,13 @@ def aggregate(paths: list[str]) -> dict:
         num_classes=competition_classes,
         num_unknown_clusters=num_unknown_clusters,
     )
+    probability_metrics = None
+    if all("competition_probs" in r.files and r["competition_probs"].shape[1] > 0
+           for r in records):
+        competition_probs = torch.from_numpy(np.concatenate(
+            [r["competition_probs"] for r in records]))
+        probability_metrics = evaluate_competition_probs(
+            competition_probs, labels)
     return {
         "folds": len(records),
         "samples": int(len(files)),
@@ -54,6 +61,7 @@ def aggregate(paths: list[str]) -> dict:
         "num_unknown_clusters": num_unknown_clusters,
         "competition_classes": int(competition_classes),
         **metrics,
+        "probability_avg": probability_metrics,
         "inputs": [str(Path(p)) for p in paths],
     }
 

@@ -7,10 +7,12 @@ the ``PrototypicalLoss`` — all CPU-only, no GPU / no real encoder required.
 from __future__ import annotations
 
 import math
+import random
 import sys
 from pathlib import Path
 
 import pytest
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -24,6 +26,7 @@ from src.training_utils import (  # noqa: E402
     apply_encoder_finetune_mode,
     build_scheduler,
     encoder_will_train,
+    seed_everything,
 )
 from src.train import PrototypicalLoss  # noqa: E402
 
@@ -165,6 +168,34 @@ def test_ema_update_after_extend_stays_aligned():
     assert torch.allclose(
         sd["encoder.blocks.3.weight"], ema._shadow["encoder.blocks.3.weight"]
     )
+
+
+def test_ema_average_parameters_restores_raw_weights():
+    model = DummyModel()
+    ema = EMA(model, decay=0.5)
+    raw = model.head.weight.detach().clone()
+    with torch.no_grad():
+        model.head.weight.add_(2.0)
+    changed_raw = model.head.weight.detach().clone()
+    ema.update(model)
+    expected_ema = raw * 0.5 + changed_raw * 0.5
+
+    with ema.average_parameters(model):
+        assert torch.allclose(model.head.weight, expected_ema)
+    assert torch.allclose(model.head.weight, changed_raw)
+
+
+def test_seed_everything_repeats_python_numpy_and_torch():
+    policy = seed_everything(2026, deterministic=True)
+    first = (random.random(), np.random.rand(), torch.rand(3))
+    seed_everything(2026, deterministic=True)
+    second = (random.random(), np.random.rand(), torch.rand(3))
+
+    assert first[0] == second[0]
+    assert first[1] == second[1]
+    assert torch.equal(first[2], second[2])
+    assert policy["seed"] == 2026
+    assert policy["deterministic_algorithms"] is True
 
 
 # ── build_scheduler (per-group cosine floor) ──

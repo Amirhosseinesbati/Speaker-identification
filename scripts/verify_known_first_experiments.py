@@ -1,0 +1,186 @@
+"""Fail-fast preflight for the gated known-first CAM++ experiment block.
+
+The gate compares two fold-0 runs that are identical except for a 5% metric
+auxiliary over the 446 known + 554 pseudo identities.  Only the winning family
+is allowed to continue to folds 1 and 2.
+
+Usage:
+    uv run --no-sync python scripts/verify_known_first_experiments.py
+"""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import hashlib
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.experiment_config import load_profile  # noqa: E402
+from src.model_factory import resolve_speaker_head_layout  # noqa: E402
+
+
+FAMILIES = {
+    "control": [f"p0-campp-known446-ood-control-oof-f{i}" for i in range(3)],
+    "auxmetric": [f"p0-campp-known446-ood-auxmetric-oof-f{i}" for i in range(3)],
+}
+
+CLUSTER_MAPS = {
+    0: ("6b1277e2dd62a05a31398434900eb49fd4606e5833d4456ad7f5a14f4f0f9352", 1482),
+    1: ("f7ea9e0decca06638b7184b8a7efe512f2af4974cf29c456d8136bb935d73b58", 1482),
+    2: ("3228ff0966b4f7ab272e5bfea4889b5a0710ff2d06fcc12d2f266e4cd6c02a46", 1483),
+}
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {prefix.rstrip("."): value}
+    out: dict[str, Any] = {}
+    for key, item in value.items():
+        path = f"{prefix}{key}"
+        if isinstance(item, dict):
+            out.update(_flatten(item, f"{path}."))
+        else:
+            out[path] = item
+    return out
+
+
+def _diff_paths(left: dict, right: dict) -> set[str]:
+    a, b = _flatten(left), _flatten(right)
+    return {key for key in set(a) | set(b) if a.get(key) != b.get(key)}
+
+
+def _normalise_fold(config: dict) -> dict:
+    value = copy.deepcopy(config)
+    value.pop("experiment", None)
+    value.pop("logging", None)
+    value["data"]["split"].pop("fold", None)
+    value["model"].pop("unknown_cluster_path", None)
+    return value
+
+
+def verify() -> dict:
+    errors: list[str] = []
+    report: dict[str, Any] = {"status": "ok", "families": {}, "cluster_maps": {}}
+
+    for fold, (expected_hash, expected_files) in CLUSTER_MAPS.items():
+        path = ROOT / "data" / "processed" / f"unknown_clusters_oof_f{fold}.json"
+        if not path.is_file():
+            errors.append(f"missing cluster map: {path}")
+            continue
+        mapping = json.loads(path.read_text(encoding="utf-8"))
+        actual_hash = _sha256(path)
+        clusters = len(set(mapping.values()))
+        if actual_hash != expected_hash:
+            errors.append(f"cluster map f{fold} hash drift: {actual_hash}")
+        if len(mapping) != expected_files or clusters != 554:
+            errors.append(
+                f"cluster map f{fold} shape drift: files={len(mapping)}, clusters={clusters}"
+            )
+        report["cluster_maps"][str(fold)] = {
+            "sha256": actual_hash, "files": len(mapping), "clusters": clusters,
+        }
+
+    loaded: dict[str, list[dict]] = {}
+    for family, profiles in FAMILIES.items():
+        configs = [load_profile(name) for name in profiles]
+        loaded[family] = configs
+        reference = _normalise_fold(configs[0])
+        rows = []
+        for fold, (name, config) in enumerate(zip(profiles, configs)):
+            model_cfg = config["model"]
+            loss_cfg = config["training"]["loss"]
+            head_classes, output_pseudo, scope = resolve_speaker_head_layout(
+                config, 1000,
+            )
+            weights = (
+                float(loss_cfg["speaker"]["weight"])
+                + float(loss_cfg["ood"]["weight"])
+                + float(loss_cfg["proto"].get("weight", 0.0)
+                        if loss_cfg["proto"].get("enabled", False) else 0.0)
+            )
+            checks = {
+                "fold": config["data"]["split"].get("fold") == fold,
+                "cluster_path": model_cfg.get("unknown_cluster_path")
+                == f"data/processed/unknown_clusters_oof_f{fold}.json",
+                "known_scope": scope == "known",
+                "head_classes": head_classes == 446,
+                "output_pseudo_classes": output_pseudo == 0,
+                "metric_pseudo_classes": model_cfg.get("num_unknown_clusters") == 554,
+                "ood_head": model_cfg.get("ood_head") is True,
+                "loss_weights_sum_to_one": abs(weights - 1.0) < 1e-9,
+                "checkpoint_isolated": config["logging"]["checkpoint_dir"].endswith(name),
+            }
+            expected_proto = family == "auxmetric"
+            checks["proto_gate"] = bool(loss_cfg["proto"].get("enabled")) is expected_proto
+            if expected_proto:
+                checks["proto_scope_metric"] = loss_cfg["proto"].get("scope") == "metric"
+            for check, passed in checks.items():
+                if not passed:
+                    errors.append(f"{name}: failed check {check}")
+
+            unexpected = _diff_paths(reference, _normalise_fold(config))
+            if unexpected:
+                errors.append(f"{name}: unexpected within-family drift: {sorted(unexpected)}")
+            rows.append({"profile": name, "checks": checks})
+        report["families"][family] = rows
+
+    # Across the two fold-0 gate configs, only experiment metadata, logging and
+    # the three loss weights/proto settings may differ.
+    control = copy.deepcopy(loaded["control"][0])
+    auxiliary = copy.deepcopy(loaded["auxmetric"][0])
+    control.pop("experiment", None)
+    auxiliary.pop("experiment", None)
+    control.pop("logging", None)
+    auxiliary.pop("logging", None)
+    allowed = {
+        "training.loss.speaker.weight",
+        "training.loss.ood.weight",
+        "training.loss.proto.enabled",
+        "training.loss.proto.scope",
+        "training.loss.proto.weight",
+        "training.loss.proto.scale",
+        "training.loss.proto.margin",
+        "training.loss.proto.decay",
+    }
+    unexpected_gate = _diff_paths(control, auxiliary) - allowed
+    if unexpected_gate:
+        errors.append(f"fold-0 gate has confounders: {sorted(unexpected_gate)}")
+    report["fold0_gate_diff"] = sorted(_diff_paths(control, auxiliary))
+
+    if errors:
+        report["status"] = "failed"
+        report["errors"] = errors
+    return report
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json-out", default=None)
+    args = parser.parse_args()
+    report = verify()
+    rendered = json.dumps(report, indent=2, ensure_ascii=False)
+    print(rendered)
+    if args.json_out:
+        path = Path(args.json_out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rendered, encoding="utf-8")
+    return 0 if report["status"] == "ok" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
