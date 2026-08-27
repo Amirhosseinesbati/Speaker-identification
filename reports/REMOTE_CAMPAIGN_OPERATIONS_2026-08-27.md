@@ -83,9 +83,9 @@ Commits مرتبط:
 برابر `0600` ساخته شد. یک درخواست واقعی `MlflowClient.search_experiments` نیز بدون
 چاپ URI حاوی credential یا token موفق شد.
 
-اجرای پاک data gate در DagsHub با run id زیر ثبت شد:
+اجرای نهایی data gate پس از پوشش همهٔ خرابی‌ها در DagsHub با run id زیر ثبت شد:
 
-`ae2bcdec20b746d3a8f75f7a767b616e`
+`c48774e617494b21ab2c12e9b179750b`
 
 ## state machine و guardها
 
@@ -147,6 +147,13 @@ ledger runtime در `data/experiments/campaign_state.json` و event ledger در 
 | train known / unknown | 1337 / 1482 |
 | val known / unknown | 892 / 740 |
 
+ممیزی کامل checksum روی 4530 entry و 4470 cache object یکتا، طی 45 ثانیه حدود
+32.45 میلیارد بایت را hash کرد و 152 mismatch در workspace و 152 mismatch در
+cache گزارش داد. 87 مورد zero-byte، تعداد 30 مورد non-zero که با duration gate
+ریشه‌یابی شدند، چهار WAV مفقودِ جداگانه و 31 mismatch پنهان باقی‌مانده همگی با
+WAV سالم محلی پوشش داده شدند. archive سوم 31 entry داشت و SHA256 آن برابر
+`302539c82933a8c4d60ee2bb4c3f4ef20aea30dbda9be6e0d83d04bc8ee0fb8e` بود.
+
 نکتهٔ provenance: raw DVC remote همچنان منبع قابل‌اعتماد این subset نیست؛ سلامت
 مسیر آموزش فعلی از طریق WAVهای پردازش‌شدهٔ hash-verified برقرار شده است. ابزار جدید
 `audit_dvc_integrity.py` برای کنترل read-only checksum همهٔ workspace/cache objectها
@@ -161,6 +168,31 @@ ledger runtime در `data/experiments/campaign_state.json` و event ledger در 
   `rglob` تغییر یافت و تست regression برای layout nested اضافه شد.
 - dataloader به مسیرهای `musan/noise`، `musan/music` و `rirs` واقعی اشاره دارد؛ پس
   augmentationهای domain دیگر به‌علت نبود داده silently skip نمی‌شوند.
+- پس از گیت، archiveهای cache و انتقالیِ تأییدشده حذف شدند؛ دادهٔ استخراج‌شده و
+  نسخه‌های محلی حفظ شدند و فضای آزاد worker از 31 به 43 GiB رسید.
+
+## پروفایل batch اندازه‌گیری‌شدهٔ RTX 3090
+
+probe از forward، backward و optimizer step واقعی با 8 window هشت‌ثانیه‌ای و
+balanced batch sampler استفاده کرد. خلاصهٔ حالت configured (دو block آخر CAM++
+قابل‌آموزش) چنین بود:
+
+| batch | فایل/ثانیه | peak VRAM GiB |
+|---:|---:|---:|
+| 16 | 26.64 | 2.15 |
+| 24 | 28.88 | 3.15 |
+| 32 | 29.77 | 4.12 |
+| 40 | 30.10 | 5.13 |
+| 48 | **30.89** | 6.11 |
+| 64 | 28.54 | 8.08 |
+
+در حالت encoder کاملاً frozen، batch 48 برابر 52.86 و batch 64 برابر 53.42
+فایل/ثانیه بود؛ سود 64 کمتر از 1.1% است، اما بعد از unfreeze افت throughput دارد.
+پس batch پویا ارزش پیچیدگی و تغییر ناگهانی noise scale را ندارد. profile جدید
+`vastai_3090_campp` با batch 48، هشت worker و mixed precision به هر شش config
+کنترل/aux foldهای 0 تا 2 متصل شد. learning rate در gate اول ثابت می‌ماند تا
+مقایسهٔ control/aux با confound هم‌زمان LR آلوده نشود؛ LR scaling فقط برای خانوادهٔ
+برنده یک ablation جدا خواهد بود.
 
 هیچ train پیش از پایان این gate آغاز نمی‌شود.
 
@@ -185,5 +217,6 @@ ledger runtime در `data/experiments/campaign_state.json` و event ledger در 
 - دادهٔ WAV کامل و data gate نهایی با اعداد مرجع موفق است.
 - MUSAN و RIR کامل‌اند؛ اصلاح idempotency محلی آمادهٔ commit/push است.
 - DagsHub/MLflow احراز هویت شده و data run پاک ثبت شده است.
-- auditor checksum کامل DVC و batch probe هنوز باید روی worker اجرا شوند.
+- auditor کامل DVC اجرا شده و تمام 152 mismatch در مسیر WAV پوشش داده شده‌اند.
+- batch probe configured/frozen کامل و operational batch برابر 48 انتخاب شده است.
 - GPU هنوز وارد آموزش نشده است.
