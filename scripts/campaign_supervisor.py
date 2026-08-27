@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import stat
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -29,6 +31,13 @@ from src.campaign_state import CampaignStateError, CampaignStore  # noqa: E402
 DEFAULT_STATE = ROOT / "data" / "experiments" / "campaign_state.json"
 DEFAULT_EVENTS = ROOT / "data" / "experiments" / "campaign_events.jsonl"
 LOG_DIR = ROOT / "data" / "experiments" / "campaign_logs"
+MLFLOW_SECRET_FILE = Path("/root/.iaaa_mlflow.env")
+MLFLOW_SECRET_KEYS = {
+    "DAGSHUB_USER_TOKEN",
+    "DAGSHUB_REPO_OWNER",
+    "DAGSHUB_REPO_NAME",
+    "DAGSHUB_TRACKING_URI",
+}
 
 
 def _notify(message: str) -> None:
@@ -47,6 +56,31 @@ def _git(*args: str) -> str:
         text=True, encoding="utf-8", errors="replace",
     )
     return result.stdout.strip()
+
+
+def _worker_environment() -> dict[str, str]:
+    """Return child env plus locked-down MLflow settings, without logging values."""
+    environment = dict(os.environ)
+    if not MLFLOW_SECRET_FILE.exists():
+        return environment
+    mode = stat.S_IMODE(MLFLOW_SECRET_FILE.stat().st_mode)
+    if mode & 0o077:
+        raise CampaignStateError(
+            f"MLflow secret file permissions are too broad: {mode:o}"
+        )
+    for line in MLFLOW_SECRET_FILE.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key in MLFLOW_SECRET_KEYS and value.strip():
+            environment[key] = value.strip()
+    missing = sorted(MLFLOW_SECRET_KEYS - environment.keys())
+    if missing:
+        raise CampaignStateError(
+            "MLflow tracking secret is incomplete: " + ", ".join(missing)
+        )
+    environment.setdefault(
+        "MLFLOW_TRACKING_URI", environment["DAGSHUB_TRACKING_URI"],
+    )
+    return environment
 
 
 def _assert_reproducible_checkout(allow_dirty: bool) -> str:
@@ -194,6 +228,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 cwd=ROOT,
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
+                env=_worker_environment(),
                 timeout=timeout_seconds,
                 check=False,
             )

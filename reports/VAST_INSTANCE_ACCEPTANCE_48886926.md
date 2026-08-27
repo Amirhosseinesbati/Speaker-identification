@@ -34,6 +34,20 @@ traffic. Upload throughput will also be measured during the real workspace copy.
 
 ## Open issue
 
-`TELEGRAM_BOT_TOKEN` exists in the Vast account secret store but was not injected
-into this third-party container. It must be applied as a per-instance environment
-variable before enabling the notifier. No token value is stored in this report.
+Resolved. The bot credential and allowlisted private chat id are stored only in
+worker-side files with mode `0600`; no token value is stored in Git, command
+arguments or this report. A live Persian notification test succeeded.
+
+## Re-validation after campaign checkout
+
+The benchmark was repeated from the campaign Python environment after checkout:
+
+- PyTorch `2.13.0+cu130`; CUDA available; compute capability 8.6.
+- FP16 matrix multiplication median/minimum: 77.50 / 76.79 TFLOPS.
+- Host-to-device transfer: 12.58 GB/s.
+- External 100 MB download: 216.88 Mbps.
+- 16/16 CPU workers completed; 5.79 s wall time.
+- 23.56 GiB usable VRAM and 50 GiB free disk after deterministic WAV conversion.
+
+The small variance from the first acceptance run is normal. Both runs pass the
+worker gate with ample margin.
