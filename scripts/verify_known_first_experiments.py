@@ -32,18 +32,17 @@ FAMILIES = {
 }
 
 CLUSTER_MAPS = {
-    0: ("6b1277e2dd62a05a31398434900eb49fd4606e5833d4456ad7f5a14f4f0f9352", 1482),
-    1: ("f7ea9e0decca06638b7184b8a7efe512f2af4974cf29c456d8136bb935d73b58", 1482),
-    2: ("3228ff0966b4f7ab272e5bfea4889b5a0710ff2d06fcc12d2f266e4cd6c02a46", 1483),
+    0: ("321dd54d57c27e7ac8ac7beea8211aca1b3f236dfe7dfba35d49f97e562ab5f9", 1482),
+    1: ("e6cf053878275cd6d74ec643a73725888bb92d44eea01af3ae0f1dbd4d868d1f", 1482),
+    2: ("a7a8987cbace55cac08dd5d8fa601b8a7beddb3de7072fee0fa47460a20186bd", 1483),
 }
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    """Hash text with LF newlines so Windows/Linux checkouts agree."""
+    normalized = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    normalized = normalized.replace("\r", "\n")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:

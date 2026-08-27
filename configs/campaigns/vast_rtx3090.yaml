@@ -1,0 +1,49 @@
+campaign:
+  id: iaaa-speaker-rank1-20260827
+  target_leaderboard_macro_f1: 0.973
+  scientific_gate: fold0_control_vs_auxmetric
+
+worker:
+  instance_id: "48886926"
+  gpu: NVIDIA GeForce RTX 3090
+  min_vram_gib: 23.0
+  hourly_rate_usd: 0.171111
+
+budget:
+  max_price_usd_per_hour: 0.22
+  max_campaign_cost_usd: 20.0
+  max_run_hours: 12.0
+  waiting_keepalive_hours: 12.0
+  warning_fractions: [0.50, 0.75, 0.90]
+
+execution:
+  source_of_truth: git
+  require_clean_checkout: true
+  require_upstream_sync: true
+  compute_location: vast_worker_only
+  telegram_language: fa
+  notification_events:
+    - preflight_passed
+    - preflight_failed
+    - experiment_started
+    - experiment_completed
+    - experiment_failed
+    - scientific_gate_decision
+    - artifact_promoted
+    - waiting_for_leaderboard
+    - budget_warning
+
+optimization:
+  batch_policy: measure_then_promote
+  candidate_batch_sizes: [16, 24, 32, 40, 48, 64]
+  required_vram_headroom_fraction: 0.10
+  objective: maximize_files_per_second_without_oom
+  deterministic_science_runs: true
+
+promotion:
+  require_exact_probability_average: true
+  require_oof_artifact_alignment: true
+  require_submission_verifier: true
+  require_runtime_benchmark: true
+  max_submission_size_gib: 1.0
+  artifact_hash: sha256

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import stat
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -33,8 +34,15 @@ def _api(token: str, method: str, payload: dict | None = None) -> dict:
     request = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/{method}", data=data
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        result = json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            result = json.load(response)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+        # Never propagate urllib's exception text: it may contain the request
+        # URL and therefore the bot token embedded in that URL.
+        raise RuntimeError(
+            f"Telegram {method} transport failed ({type(exc).__name__})"
+        ) from None
     if not result.get("ok"):
         raise RuntimeError(f"Telegram {method} failed")
     return result
