@@ -1,6 +1,8 @@
 from pathlib import Path
 
 from scripts.mlflow_backfill_run import (
+    ArtifactEntry,
+    _log_artifact_with_retries,
     build_manifest,
     collect_artifacts,
     is_safe_artifact,
@@ -68,3 +70,32 @@ def test_manifest_has_hashes_counts_and_no_local_paths(tmp_path):
     }
     assert all(len(row["sha256"]) == 64 for row in manifest["artifacts"])
     assert all("local_path" not in row for row in manifest["artifacts"])
+
+
+def test_artifact_upload_can_assign_a_stable_remote_name(tmp_path):
+    source = tmp_path / "timestamped-control.log"
+    source.write_text("complete log", encoding="utf-8")
+    entry = ArtifactEntry(
+        local_path=source,
+        remote_path="campaign/logs/control_fold0.log",
+        size_bytes=source.stat().st_size,
+        sha256="unused-in-this-test",
+        source="campaign",
+    )
+
+    class RecordingClient:
+        call = None
+
+        def log_artifact(self, run_id, local_path, artifact_path):
+            uploaded = Path(local_path)
+            self.call = (run_id, uploaded.name, uploaded.read_text(), artifact_path)
+
+    client = RecordingClient()
+    _log_artifact_with_retries(client, "run-1", entry)
+
+    assert client.call == (
+        "run-1",
+        "control_fold0.log",
+        "complete log",
+        "campaign/logs",
+    )

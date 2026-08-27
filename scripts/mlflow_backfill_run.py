@@ -18,6 +18,7 @@ import json
 import math
 import os
 import re
+import shutil
 import tempfile
 import time
 from dataclasses import asdict, dataclass
@@ -285,14 +286,20 @@ def _log_artifact_with_retries(
 ) -> None:
     parent = str(Path(entry.remote_path).parent).replace("\\", "/")
     artifact_path = None if parent in {"", "."} else parent
-    for attempt in range(1, attempts + 1):
-        try:
-            client.log_artifact(run_id, str(entry.local_path), artifact_path)
-            return
-        except Exception:
-            if attempt >= attempts:
-                raise
-            time.sleep(float(attempt * 2))
+    desired_name = Path(entry.remote_path).name
+    with tempfile.TemporaryDirectory(prefix="mlflow_artifact_stage_") as tmp:
+        upload_path = entry.local_path
+        if desired_name != entry.local_path.name:
+            upload_path = Path(tmp) / desired_name
+            shutil.copyfile(entry.local_path, upload_path)
+        for attempt in range(1, attempts + 1):
+            try:
+                client.log_artifact(run_id, str(upload_path), artifact_path)
+                return
+            except Exception:
+                if attempt >= attempts:
+                    raise
+                time.sleep(float(attempt * 2))
 
 
 def _verify_remote_hashes(
