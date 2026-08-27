@@ -20,6 +20,7 @@ The WavLM variant downloaded is the ACTIVE config's
 
 Usage:
     uv run --no-sync python scripts/download_all_weights.py [--force]
+    uv run --no-sync python scripts/download_all_weights.py --encoders campp
 
 Note: the venv currently ships CPU-only torch — model *weights* download fine,
 but do NOT try to run inference in this venv; use the Vast.ai / GPU venv for
@@ -253,6 +254,16 @@ def main() -> None:
         "--force", action="store_true",
         help="Re-download even if a marker file already exists.",
     )
+    parser.add_argument(
+        "--encoders",
+        nargs="+",
+        choices=["ecapa", "campp", "eres2net", "titanet", "wavlm"],
+        default=["ecapa", "campp", "eres2net", "titanet", "wavlm"],
+        help=(
+            "Download only the encoder weights needed by the current campaign. "
+            "The default preserves the legacy all-encoder bootstrap."
+        ),
+    )
     args = parser.parse_args()
 
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -263,16 +274,21 @@ def main() -> None:
     print("=" * 60)
     print(f"  Output dir: {WEIGHTS_DIR}")
 
-    # Order matters: ECAPA first (fast, small), then the rest.
-    download_ecapa(force=args.force)
-    download_campp(force=args.force)
-    download_eres2net(force=args.force)
-    download_titanet(force=args.force)
-    # WavLM variant follows the active config (UI's WavLM-variant choice):
-    # large by default, base-plus / base when the config requests them.
-    download_wavlm(force=args.force)
+    selected = set(args.encoders)
+    # Order matters when all models are selected: start with the small models.
+    if "ecapa" in selected:
+        download_ecapa(force=args.force)
+    if "campp" in selected:
+        download_campp(force=args.force)
+    if "eres2net" in selected:
+        download_eres2net(force=args.force)
+    if "titanet" in selected:
+        download_titanet(force=args.force)
+    # WavLM variant follows the active config (UI's WavLM-variant choice).
+    if "wavlm" in selected:
+        download_wavlm(force=args.force)
 
-    print("\n  All weights downloaded. Verify with:")
+    print("\n  Selected weights downloaded. Verify with:")
     print(f"    find {WEIGHTS_DIR} -type f | head -50")
 
 
