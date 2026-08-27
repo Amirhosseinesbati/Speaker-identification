@@ -47,8 +47,8 @@ def musan_present(base: Path) -> bool:
     noise = base / "noise"
     music = base / "music"
     return (
-        noise.is_dir() and any(noise.glob("*.wav"))
-        and music.is_dir() and any(music.glob("*.wav"))
+        noise.is_dir() and any(noise.rglob("*.wav"))
+        and music.is_dir() and any(music.rglob("*.wav"))
     )
 
 
