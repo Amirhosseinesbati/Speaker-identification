@@ -92,12 +92,6 @@ hardware:
       device: cuda
       mixed_precision: true
       num_workers: 4
-    vastai_3090_campp:
-      batch_size: 48
-      description: Measured RTX 3090 CAM++ 8x8s sweet spot (10%+ VRAM headroom)
-      device: cuda
-      mixed_precision: true
-      num_workers: 8
     vastai_a4000:
       batch_size: 24
       description: RTX A4000 (16GB VRAM)

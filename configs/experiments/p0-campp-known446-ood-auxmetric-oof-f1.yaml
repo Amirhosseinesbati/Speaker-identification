@@ -15,7 +15,15 @@ model:
   speaker_head_config: {arcface: {embedding_dim: 192, margin: 0.4, scale: 30.0}}
   encoder_config: {campp: {freeze_encoder: false, unfreeze_last_n_blocks: 2}}
 audio: {num_train_windows: 8, speech_aware_crop_probability: 0.75, eval_speech_aware: true, short_audio_mode: pad}
-hardware: {mode: vastai_3090_campp}
+hardware:
+  mode: vastai_3090_campp
+  profiles:
+    vastai_3090_campp:
+      batch_size: 48
+      description: Measured RTX 3090 CAM++ 8x8s sweet spot
+      device: cuda
+      mixed_precision: true
+      num_workers: 8
 logging:
   checkpoint_dir: checkpoints/p0-campp-known446-ood-auxmetric-oof-f1
   log_dir: logs/p0-campp-known446-ood-auxmetric-oof-f1
