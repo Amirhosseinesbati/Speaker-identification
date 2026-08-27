@@ -40,6 +40,14 @@ MLFLOW_SECRET_KEYS = {
 }
 
 
+def _dotenv_value(raw_value: str) -> str:
+    """Decode the common quoted-value subset without evaluating shell syntax."""
+    value = raw_value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    return value
+
+
 def _notify(message: str) -> None:
     try:
         from telegram_notifier import send
@@ -70,8 +78,9 @@ def _worker_environment() -> dict[str, str]:
         )
     for line in MLFLOW_SECRET_FILE.read_text(encoding="utf-8").splitlines():
         key, separator, value = line.partition("=")
-        if separator and key in MLFLOW_SECRET_KEYS and value.strip():
-            environment[key] = value.strip()
+        decoded = _dotenv_value(value) if separator else ""
+        if separator and key in MLFLOW_SECRET_KEYS and decoded:
+            environment[key] = decoded
     missing = sorted(MLFLOW_SECRET_KEYS - environment.keys())
     if missing:
         raise CampaignStateError(

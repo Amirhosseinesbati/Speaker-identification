@@ -87,6 +87,28 @@ Commits مرتبط:
 
 `c48774e617494b21ab2c12e9b179750b`
 
+### رخداد رهگیری زندهٔ نخستین train
+
+در شروع control fold0، لاگ محلی عبارت «MLflow run started» را نشان می‌داد، اما
+DagsHub هیچ run هم‌زمان و هیچ نمودار epoch نداشت. بررسی مستقیم API ثابت کرد run
+ساعت شروع campaign در DagsHub ایجاد نشده است. علت، parser سادهٔ secret در
+`campaign_supervisor.py` بود: مقدارهای quoteشدهٔ فایل `.env` بدون حذف کوتیشن به
+process فرزند داده می‌شدند؛ در نتیجه tracking URI با کاراکتر `"` آغاز می‌شد و
+MLflow آن را به‌جای HTTPS به‌عنوان مسیر محلی می‌پذیرفت.
+
+برای جلوگیری از توقف یا تغییر provenance آموزش، یک recovery sidecar خارج از
+checkout worker راه‌اندازی شد. sidecar از `training_history` داخل
+`latest_model.pt` می‌خواند و metricهای scalar را epoch‌به‌epoch به run واقعی زیر
+می‌فرستد؛ مدل، optimizer، داده و process آموزش را تغییر نمی‌دهد:
+
+`8b2b01d4a2fe4fc988d3a9554082004f`
+
+پس از اصلاح کلید history، epochهای 1 تا 9 با موفقیت backfill شدند، API وضعیت run
+را `RUNNING` و 25 metric را تأیید کرد. parser دائمی اکنون فقط کوتیشن بیرونی
+matching را حذف می‌کند و هیچ shell expression یا secret را evaluate نمی‌کند؛
+تست regression برای مقادیر quoteشده، unquoted و unmatched اضافه شد. worker تا
+پایان run جاری pull نمی‌کند تا commit علمی `aba3e64` ثابت بماند.
+
 ## state machine و guardها
 
 ledger runtime در `data/experiments/campaign_state.json` و event ledger در JSONL نگهداری می‌شود. state به‌صورت atomic جایگزین و transitionها append-only ثبت می‌شوند.
