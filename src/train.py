@@ -33,7 +33,11 @@ setup_utf8_stdio()
 
 from src.data_pipeline import load_config, get_active_profile, get_dataloaders
 from src.model_factory import create_model_from_config
-from src.metrics import evaluate_macro_f1
+from src.metrics import (
+    evaluate_competition_probs,
+    evaluate_macro_f1,
+    fused_probs_from_logits,
+)
 from src.training_utils import (
     EMA,
     apply_encoder_finetune_mode,
@@ -548,6 +552,62 @@ def forward_multi_window(
     return ood_logit, spk_sum / W
 
 
+@torch.no_grad()
+def forward_multi_window_evaluation(
+    model: nn.Module,
+    waveforms: torch.Tensor,
+) -> Tuple[Optional[torch.Tensor], torch.Tensor, torch.Tensor]:
+    """Return diagnostic mean logits and submission-consistent probabilities.
+
+    The leaderboard path fuses each window's two heads into a competition
+    probability vector *before* averaging windows. Fusing averaged logits is
+    not equivalent because sigmoid and softmax are nonlinear. Keeping both
+    outputs lets validation retain loss/threshold diagnostics while model
+    selection uses exactly the distribution submitted to the competition.
+    """
+    num_unknown_clusters = int(getattr(model, "num_unknown_clusters", 0))
+    if waveforms.dim() == 3:
+        ood_logits, speaker_logits = model(waveforms, labels=None)
+        probabilities = fused_probs_from_logits(
+            ood_logits,
+            speaker_logits,
+            num_unknown_clusters=num_unknown_clusters,
+        )
+        return ood_logits, speaker_logits, probabilities
+
+    if waveforms.dim() != 4:
+        raise ValueError(
+            "Expected waveforms shaped (B,1,T) or (B,W,1,T), got "
+            f"{tuple(waveforms.shape)}"
+        )
+
+    num_windows = waveforms.shape[1]
+    ood_sum = None
+    speaker_sum = None
+    probability_sum = None
+    for window_idx in range(num_windows):
+        ood_logits, speaker_logits = model(
+            waveforms[:, window_idx], labels=None)
+        probabilities = fused_probs_from_logits(
+            ood_logits,
+            speaker_logits,
+            num_unknown_clusters=num_unknown_clusters,
+        )
+        if ood_logits is not None:
+            ood_sum = ood_logits if ood_sum is None else ood_sum + ood_logits
+        speaker_sum = (
+            speaker_logits if speaker_sum is None else speaker_sum + speaker_logits
+        )
+        probability_sum = (
+            probabilities
+            if probability_sum is None
+            else probability_sum + probabilities
+        )
+
+    mean_ood = None if ood_sum is None else ood_sum / num_windows
+    return mean_ood, speaker_sum / num_windows, probability_sum / num_windows
+
+
 # ─────────────────────────────────────────────────────────
 #  Training Epoch
 # ─────────────────────────────────────────────────────────
@@ -707,8 +767,9 @@ def validate_epoch(
     Forward is called WITHOUT labels so the ArcFace margin is never applied at
     eval time (margin would otherwise under-report the honest accuracy).
 
-    Also collects and returns the concatenated logits + labels so callers can
-    compute the competition metric (Macro-F1) via src.metrics.evaluate_macro_f1.
+    Also collects both mean logits (diagnostics/threshold tuning) and
+    per-window-averaged competition probabilities. Callers must select models
+    with the latter because it is the actual submission aggregation path.
     """
     model.eval()
     total_loss = 0.0
@@ -717,6 +778,7 @@ def validate_epoch(
     num_batches = len(dataloader)
 
     all_ood_logits, all_speaker_logits, all_labels = [], [], []
+    all_competition_probs = []
 
     progress_bar = tqdm(dataloader, desc="  Val", leave=False)
     for waveforms, labels in progress_bar:
@@ -724,7 +786,9 @@ def validate_epoch(
         labels = labels.to(device, non_blocking=True)
 
         # No labels → no ArcFace margin → honest eval logits
-        ood_logits, speaker_logits = forward_multi_window(model, waveforms, labels=None)
+        ood_logits, speaker_logits, competition_probs = (
+            forward_multi_window_evaluation(model, waveforms)
+        )
         loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
         total_loss += loss_dict["loss_total"]
@@ -738,6 +802,7 @@ def validate_epoch(
             all_ood_logits.append(ood_logits.cpu())
         all_speaker_logits.append(speaker_logits.cpu())
         all_labels.append(labels.cpu())
+        all_competition_probs.append(competition_probs.cpu())
 
         progress_bar.set_postfix({
             "loss": f"{loss_dict['loss_total']:.4f}",
@@ -752,6 +817,7 @@ def validate_epoch(
         "ood_logits": (torch.cat(all_ood_logits) if all_ood_logits else None),
         "speaker_logits": torch.cat(all_speaker_logits),
         "labels": torch.cat(all_labels),
+        "competition_probs": torch.cat(all_competition_probs),
     }
 
 
@@ -905,6 +971,8 @@ def train(config_path: str = "configs/default_config.yaml"):
         print("  🧾 Full-data selection: final epoch only; overlapping val is diagnostic")
 
     for epoch in range(1, train_cfg["epochs"] + 1):
+        if hasattr(train_loader.batch_sampler, "set_epoch"):
+            train_loader.batch_sampler.set_epoch(epoch - 1)
         epoch_start = time.time()
 
         print(f"\n  ── Epoch {epoch}/{train_cfg['epochs']} ──")
@@ -930,12 +998,15 @@ def train(config_path: str = "configs/default_config.yaml"):
 
         # Validate
         val_metrics = validate_epoch(model, val_loader, criterion, device)
-        val_m = evaluate_macro_f1(
+        val_logit_m = evaluate_macro_f1(
             val_metrics["ood_logits"], val_metrics["speaker_logits"],
             val_metrics["labels"],
             num_classes=num_output_classes,
             num_unknown_clusters=output_unknown_clusters,
         )
+        val_m = evaluate_competition_probs(
+            val_metrics["competition_probs"], val_metrics["labels"])
+        val_metrics["logit_avg_macro_f1"] = val_logit_m["macro_f1"]
         val_metrics["macro_f1"] = val_m["macro_f1"]
 
         # Score EMA independently.  The raw metric remains the early-stopping
@@ -945,12 +1016,15 @@ def train(config_path: str = "configs/default_config.yaml"):
         if ema is not None and ema.enabled:
             with ema.average_parameters(model):
                 ema_val_metrics = validate_epoch(model, val_loader, criterion, device)
-            ema_m = evaluate_macro_f1(
+            ema_logit_m = evaluate_macro_f1(
                 ema_val_metrics["ood_logits"], ema_val_metrics["speaker_logits"],
                 ema_val_metrics["labels"],
                 num_classes=num_output_classes,
                 num_unknown_clusters=output_unknown_clusters,
             )
+            ema_m = evaluate_competition_probs(
+                ema_val_metrics["competition_probs"], ema_val_metrics["labels"])
+            ema_val_metrics["logit_avg_macro_f1"] = ema_logit_m["macro_f1"]
             ema_val_metrics["macro_f1"] = ema_m["macro_f1"]
 
         # LR scheduling
@@ -966,10 +1040,13 @@ def train(config_path: str = "configs/default_config.yaml"):
               f"{val_metrics['ood_acc']:.3f} (val)")
         print(f"     Spk Acc:  {train_metrics['speaker_acc']:.3f} (train) / "
               f"{val_metrics['speaker_acc']:.3f} (val)")
-        print(f"     Macro-F1: {val_metrics['macro_f1']:.4f} (val)  |  "
+        print(f"     Macro-F1: {val_metrics['macro_f1']:.4f} (prob-avg val)  |  "
               f"LR: {current_lr:.2e} | Time: {epoch_time:.1f}s")
+        print(f"     Logit-avg diagnostic F1: "
+              f"{val_metrics['logit_avg_macro_f1']:.4f}")
         if ema_val_metrics is not None:
-            print(f"     EMA Macro-F1: {ema_val_metrics['macro_f1']:.4f} (independent val)")
+            print(f"     EMA Macro-F1: {ema_val_metrics['macro_f1']:.4f} "
+                  "(prob-avg independent val)")
 
         # Save best checkpoint (based on competition Macro-F1). Named by
         # encoder (<enc>_best.pt) so the submission package can ship one per

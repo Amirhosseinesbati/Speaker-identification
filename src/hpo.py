@@ -88,6 +88,9 @@ def apply_params_to_config(base: dict, params: dict, epochs: int) -> dict:
     tr["encoder_lr"] = float(params["encoder_lr"])
     tr["weight_decay"] = float(params["weight_decay"])
     tr["label_smoothing"] = float(params["label_smoothing"])
+    tr.setdefault("loss", {}).setdefault("speaker", {})[
+        "label_smoothing"
+    ] = float(params["label_smoothing"])
     tr["epochs"] = int(epochs)
     tr.setdefault("loss", {}).setdefault("ood", {})["weight"] = float(params["ood_loss_weight"])
     tr["ood_loss_weight"] = float(params["ood_loss_weight"])

@@ -453,7 +453,7 @@ def train_model(
     ).lower().strip()
     if num_unknown_clusters > 0 and speaker_target_scope != "known":
         # 1000-class mode: label-0 pool is ~empty — plain shuffle sampling.
-        sampler = None
+        balanced_batch_sampler = None
         print("  🧬 1000-class mode: uniform batch sampling (no OOD/known balance)")
     else:
         ood_ratio = audio_cfg.get("ood_batch_ratio", 0.5)
@@ -461,21 +461,28 @@ def train_model(
             int(config.get("model", {}).get("competition_num_known", 446))
             if speaker_target_scope == "known" else None
         )
-        balanced_indices = make_balanced_batch_sampler(
+        balanced_batch_sampler = make_balanced_batch_sampler(
             train_labels, hw_profile["batch_size"], ood_ratio=ood_ratio,
             competition_known_count=competition_known_count,
         )
-        sampler = torch.utils.data.SubsetRandomSampler(balanced_indices)
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=hw_profile["batch_size"],
-        sampler=sampler,
-        shuffle=sampler is None,
-        num_workers=hw_profile["num_workers"],
-        pin_memory=(hw_profile["device"] == "cuda"),
-        drop_last=True,
-    )
+    train_loader_kwargs = {
+        "num_workers": hw_profile["num_workers"],
+        "pin_memory": hw_profile["device"] == "cuda",
+    }
+    if balanced_batch_sampler is None:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=hw_profile["batch_size"],
+            shuffle=True,
+            drop_last=True,
+            **train_loader_kwargs,
+        )
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=balanced_batch_sampler,
+            **train_loader_kwargs,
+        )
     val_loader = DataLoader(
         val_dataset,
         batch_size=hw_profile["batch_size"],
@@ -601,6 +608,8 @@ def train_model(
     history = []
 
     for epoch in range(1, train_cfg["epochs"] + 1):
+        if hasattr(train_loader.batch_sampler, "set_epoch"):
+            train_loader.batch_sampler.set_epoch(epoch - 1)
         # Progressive unfreezing: at the transition epoch, restore the configured
         # fine-tune mode and add the newly-trainable encoder params to the EMA.
         if progressive and epoch == freeze_epochs + 1:
@@ -621,12 +630,15 @@ def train_model(
         )
         # Validate + competition metric (Macro-F1 over all 447 classes)
         val_metrics = validate_epoch(model, val_loader, criterion, device)
-        val_m = evaluate_macro_f1(
+        val_logit_m = evaluate_macro_f1(
             val_metrics["ood_logits"], val_metrics["speaker_logits"],
             val_metrics["labels"],
             num_classes=num_output_classes,
             num_unknown_clusters=output_unknown_clusters,
         )
+        val_m = evaluate_competition_probs(
+            val_metrics["competition_probs"], val_metrics["labels"])
+        val_metrics["logit_avg_macro_f1"] = val_logit_m["macro_f1"]
         val_metrics["macro_f1"] = val_m["macro_f1"]
         val_metrics["ood_f1"] = val_m["ood_f1"]
         val_metrics["known_acc"] = val_m["known_acc"]
@@ -639,12 +651,15 @@ def train_model(
         if ema is not None and ema.enabled:
             with ema.average_parameters(model):
                 ema_val_metrics = validate_epoch(model, val_loader, criterion, device)
-            ema_m = evaluate_macro_f1(
+            ema_logit_m = evaluate_macro_f1(
                 ema_val_metrics["ood_logits"], ema_val_metrics["speaker_logits"],
                 ema_val_metrics["labels"],
                 num_classes=num_output_classes,
                 num_unknown_clusters=output_unknown_clusters,
             )
+            ema_m = evaluate_competition_probs(
+                ema_val_metrics["competition_probs"], ema_val_metrics["labels"])
+            ema_val_metrics["logit_avg_macro_f1"] = ema_logit_m["macro_f1"]
             ema_val_metrics["macro_f1"] = ema_m["macro_f1"]
             ema_val_metrics["ood_f1"] = ema_m["ood_f1"]
             ema_val_metrics["known_acc"] = ema_m["known_acc"]
@@ -668,11 +683,15 @@ def train_model(
             "val_ood_acc": val_metrics["ood_acc"],
             "val_speaker_acc": val_metrics["speaker_acc"],
             "val_macro_f1": val_metrics["macro_f1"],
+            "val_logit_avg_macro_f1": val_metrics["logit_avg_macro_f1"],
             "val_ood_f1": val_metrics["ood_f1"],
             "val_known_acc": val_metrics["known_acc"],
             "val_overall_acc": val_metrics["overall_acc"],
             "val_ema_macro_f1": (
                 ema_val_metrics["macro_f1"] if ema_val_metrics is not None else 0.0),
+            "val_ema_logit_avg_macro_f1": (
+                ema_val_metrics["logit_avg_macro_f1"]
+                if ema_val_metrics is not None else 0.0),
             "val_ema_ood_f1": (
                 ema_val_metrics["ood_f1"] if ema_val_metrics is not None else 0.0),
             "val_ema_known_acc": (
@@ -689,7 +708,8 @@ def train_model(
               f"Loss: {train_metrics['loss']:.4f} / {val_metrics['loss']:.4f}  |  "
               f"OOD: {train_metrics['ood_acc']:.3f} / {val_metrics['ood_acc']:.3f}  |  "
                f"Spk: {train_metrics['speaker_acc']:.3f} / {val_metrics['speaker_acc']:.3f}  |  "
-               f"MacroF1: {val_metrics['macro_f1']:.4f}")
+               f"MacroF1(prob-avg): {val_metrics['macro_f1']:.4f}  |  "
+               f"logit-avg: {val_metrics['logit_avg_macro_f1']:.4f}")
         if ema_val_metrics is not None:
             print(f"  EMA (independent) — MacroF1: {ema_val_metrics['macro_f1']:.4f} | "
                   f"Known: {ema_val_metrics['known_acc']:.4f} | "

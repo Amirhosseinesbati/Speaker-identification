@@ -20,6 +20,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 import torch.nn as nn
@@ -41,6 +42,7 @@ from src.train import (  # noqa: E402
     TwoPartLoss,
     compute_ood_accuracy,
     forward_multi_window,
+    forward_multi_window_evaluation,
     tune_ood_threshold,
 )
 from src.metrics import fused_probs_from_logits  # noqa: E402
@@ -159,6 +161,27 @@ def test_forward_multi_window_without_ood():
     assert spk.shape == (2, 446)
 
 
+def test_multi_window_evaluation_averages_probabilities_per_window():
+    m = _model(num_unknown_clusters=0, ood_head=True)
+    m.eval()
+    x = torch.randn(2, 3, 1, 32)
+
+    mean_ood, mean_spk, mean_probs = forward_multi_window_evaluation(m, x)
+    manual_ood, manual_spk, manual_probs = [], [], []
+    for window_idx in range(x.shape[1]):
+        ood, spk = m(x[:, window_idx], labels=None)
+        manual_ood.append(ood)
+        manual_spk.append(spk)
+        manual_probs.append(fused_probs_from_logits(ood, spk))
+
+    torch.testing.assert_close(mean_ood, torch.stack(manual_ood).mean(0))
+    torch.testing.assert_close(mean_spk, torch.stack(manual_spk).mean(0))
+    torch.testing.assert_close(mean_probs, torch.stack(manual_probs).mean(0))
+    torch.testing.assert_close(
+        mean_probs.sum(1), torch.ones(x.shape[0]), atol=1e-6, rtol=1e-6,
+    )
+
+
 def test_known_only_arcface_accepts_pseudo_metric_labels_safely():
     m = _model(num_unknown_clusters=0, ood_head=True)
     m.train()
@@ -219,14 +242,33 @@ def test_known_first_sampler_treats_pseudo_ids_as_ood():
     labels = torch.tensor(
         [1, 2, 3, 4, 447, 448, 999, 1000], dtype=torch.long,
     ).numpy()
-    indices = make_balanced_batch_sampler(
+    sampler = make_balanced_batch_sampler(
         labels, batch_size=4, ood_ratio=0.5, seed=7,
         competition_known_count=446,
     )
-    sampled = labels[indices].reshape(-1, 4)
+    sampled = labels[np.asarray(list(sampler))]
     for batch in sampled:
         assert ((batch == 0) | (batch > 446)).sum() == 2
         assert ((batch > 0) & (batch <= 446)).sum() == 2
+
+
+def test_balanced_sampler_is_deterministic_per_epoch_and_changes_between_epochs():
+    labels = np.asarray([0] * 8 + list(range(1, 17)), dtype=np.int64)
+    sampler = make_balanced_batch_sampler(
+        labels, batch_size=6, ood_ratio=1 / 3, seed=13,
+    )
+
+    epoch_zero_first = list(sampler)
+    epoch_zero_second = list(sampler)
+    assert epoch_zero_first == epoch_zero_second
+    for batch_indices in epoch_zero_first:
+        batch = labels[np.asarray(batch_indices)]
+        assert (batch == 0).sum() == 2
+        assert (batch != 0).sum() == 4
+
+    sampler.set_epoch(1)
+    epoch_one = list(sampler)
+    assert epoch_one != epoch_zero_first
 
 
 # ── metrics / threshold helpers ──

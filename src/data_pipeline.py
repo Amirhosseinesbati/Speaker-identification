@@ -7,14 +7,14 @@ import os
 import re
 import warnings
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 import librosa
 import numpy as np
 import pandas as pd
 import torch
 import yaml
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -1245,16 +1245,100 @@ class SpeakerDataset(Dataset):
 #  DataLoader Factory
 # ─────────────────────────────────────────────────────────
 
+class BalancedOODBatchSampler(Sampler[List[int]]):
+    """Deterministic batch sampler with an exact OOD/known ratio per batch.
+
+    A flat list passed to ``SubsetRandomSampler`` is not sufficient: that
+    sampler shuffles the entire list again and destroys the batch boundaries.
+    This sampler yields the batches themselves, so the configured ratio is a
+    property of what the DataLoader consumes, not merely of an intermediate
+    array.
+    """
+
+    def __init__(
+        self,
+        train_labels: np.ndarray,
+        batch_size: int,
+        ood_ratio: float = 0.5,
+        seed: int = 42,
+        competition_known_count: Optional[int] = None,
+    ) -> None:
+        labels = np.asarray(train_labels)
+        if labels.ndim != 1:
+            raise ValueError(f"train_labels must be one-dimensional, got {labels.shape}")
+        if batch_size < 2:
+            raise ValueError("batch_size must be at least 2")
+        if not 0.0 < float(ood_ratio) < 1.0:
+            raise ValueError("ood_ratio must be strictly between 0 and 1")
+
+        if competition_known_count is None:
+            is_ood = labels == 0
+        else:
+            is_ood = ((labels == 0) | (labels > int(competition_known_count)))
+        self.ood_indices = np.flatnonzero(is_ood).astype(np.int64)
+        self.known_indices = np.flatnonzero(~is_ood).astype(np.int64)
+        if not len(self.ood_indices) or not len(self.known_indices):
+            raise ValueError(
+                "Balanced batch sampling requires non-empty OOD and known pools: "
+                f"ood={len(self.ood_indices)}, known={len(self.known_indices)}"
+            )
+
+        self.batch_size = int(batch_size)
+        self.n_ood = max(1, int(round(self.batch_size * float(ood_ratio))))
+        self.n_known = self.batch_size - self.n_ood
+        if self.n_known <= 0:
+            self.n_known = 1
+            self.n_ood = self.batch_size - 1
+        self.num_batches = max(1, len(labels) // self.batch_size)
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def __len__(self) -> int:
+        return self.num_batches
+
+    def set_epoch(self, epoch: int) -> None:
+        """Select the deterministic shuffle for a training epoch."""
+        self.epoch = int(epoch)
+
+    @staticmethod
+    def _draw(pool: np.ndarray, count: int, rng: np.random.RandomState) -> np.ndarray:
+        """Draw ``count`` items by cycling shuffled full-pool permutations."""
+        chunks: List[np.ndarray] = []
+        remaining = int(count)
+        while remaining > 0:
+            shuffled = rng.permutation(pool)
+            take = min(remaining, len(shuffled))
+            chunks.append(shuffled[:take])
+            remaining -= take
+        return np.concatenate(chunks).astype(np.int64, copy=False)
+
+    def __iter__(self) -> Iterator[List[int]]:
+        rng = np.random.RandomState(self.seed + self.epoch)
+        ood_stream = self._draw(
+            self.ood_indices, self.num_batches * self.n_ood, rng)
+        known_stream = self._draw(
+            self.known_indices, self.num_batches * self.n_known, rng)
+        for batch_idx in range(self.num_batches):
+            ood_start = batch_idx * self.n_ood
+            known_start = batch_idx * self.n_known
+            batch = np.concatenate([
+                ood_stream[ood_start:ood_start + self.n_ood],
+                known_stream[known_start:known_start + self.n_known],
+            ])
+            rng.shuffle(batch)
+            yield batch.tolist()
+
+
 def make_balanced_batch_sampler(
     train_labels: np.ndarray,
     batch_size: int,
     ood_ratio: float = 0.5,
     seed: int = 42,
     competition_known_count: Optional[int] = None,
-) -> List[int]:
+) -> BalancedOODBatchSampler:
     """
-    Build a flat index list so that every batch contains ~`ood_ratio` samples
-    from the unknown class and the rest from known speakers. In known-first
+    Build a real batch sampler so every emitted batch contains ~`ood_ratio`
+    samples from the unknown class and the rest from known speakers. In known-first
     experiments pseudo labels above ``competition_known_count`` are OOD too.
 
     Without this, a per-class WeightedRandomSampler gives the unknown class
@@ -1270,41 +1354,15 @@ def make_balanced_batch_sampler(
         seed:         RNG seed for reproducibility.
 
     Returns:
-        List of sample indices (length ≈ num_batches * batch_size) to be used
-        with torch.utils.data.SubsetRandomSampler.
+        ``BalancedOODBatchSampler`` for use as DataLoader ``batch_sampler``.
     """
-    rng = np.random.RandomState(seed)
-    if competition_known_count is None:
-        is_ood = train_labels == 0
-    else:
-        is_ood = ((train_labels == 0)
-                  | (train_labels > int(competition_known_count)))
-    ood_indices = np.where(is_ood)[0]
-    known_indices = np.where(~is_ood)[0]
-    if len(ood_indices) == 0 or len(known_indices) == 0:
-        raise ValueError(
-            "Balanced batch sampling requires non-empty OOD and known pools: "
-            f"ood={len(ood_indices)}, known={len(known_indices)}"
-        )
-
-    n_ood = max(1, int(round(batch_size * ood_ratio)))
-    n_known = batch_size - n_ood
-    if n_known <= 0:  # guard: ood_ratio too high
-        n_known = max(1, batch_size // 2)
-        n_ood = batch_size - n_known
-
-    num_batches = max(1, len(train_labels) // batch_size)
-    indices = []
-    for _ in range(num_batches):
-        batch_ood = rng.choice(ood_indices, size=n_ood, replace=True)
-        if len(known_indices) >= n_known:
-            batch_known = rng.choice(known_indices, size=n_known, replace=False)
-        else:
-            batch_known = rng.choice(known_indices, size=n_known, replace=True)
-        batch = np.concatenate([batch_ood, batch_known])
-        rng.shuffle(batch)
-        indices.extend(batch.tolist())
-    return indices
+    return BalancedOODBatchSampler(
+        train_labels=train_labels,
+        batch_size=batch_size,
+        ood_ratio=ood_ratio,
+        seed=seed,
+        competition_known_count=competition_known_count,
+    )
 
 
 def get_dataloaders(
@@ -1436,7 +1494,7 @@ def get_dataloaders(
         config.get("model", {}).get("speaker_target_scope", "metric")
     ).lower().strip()
     if num_unknown_clusters > 0 and speaker_target_scope != "known":
-        sampler = None
+        balanced_batch_sampler = None
         print("\n  🧬 1000-class mode: uniform batch sampling "
               "(no OOD/known balance)")
     else:
@@ -1445,7 +1503,7 @@ def get_dataloaders(
             int(config.get("model", {}).get("competition_num_known", 446))
             if speaker_target_scope == "known" else None
         )
-        balanced_indices = make_balanced_batch_sampler(
+        balanced_batch_sampler = make_balanced_batch_sampler(
             train_labels, batch_size, ood_ratio=ood_ratio, seed=42,
             competition_known_count=competition_known_count,
         )
@@ -1457,19 +1515,24 @@ def get_dataloaders(
         print(f"     OOD pool: {is_ood.sum():,} samples | "
               f"Known pool: {(~is_ood).sum():,} samples "
               f"across {len(class_map) - 1} speakers")
-        sampler = torch.utils.data.SubsetRandomSampler(
-            np.asarray(balanced_indices, dtype=np.int64)
+    train_loader_kwargs = {
+        "num_workers": num_workers,
+        "pin_memory": hw_profile["device"] == "cuda",
+    }
+    if balanced_batch_sampler is None:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            drop_last=True,
+            **train_loader_kwargs,
         )
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        sampler=sampler,
-        shuffle=sampler is None,
-        num_workers=num_workers,
-        pin_memory=True if hw_profile["device"] == "cuda" else False,
-        drop_last=True,
-    )
+    else:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=balanced_batch_sampler,
+            **train_loader_kwargs,
+        )
 
     val_loader = DataLoader(
         val_dataset,
