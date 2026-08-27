@@ -37,6 +37,14 @@ CLUSTER_MAPS = {
     2: ("a7a8987cbace55cac08dd5d8fa601b8a7beddb3de7072fee0fa47460a20186bd", 1483),
 }
 
+EXPECTED_HARDWARE = {
+    "mode": "vastai_3090_campp",
+    "batch_size": 48,
+    "num_workers": 8,
+    "mixed_precision": True,
+    "device": "cuda",
+}
+
 
 def _sha256(path: Path) -> str:
     """Hash text with LF newlines so Windows/Linux checkouts agree."""
@@ -70,6 +78,21 @@ def _normalise_fold(config: dict) -> dict:
     value["data"]["split"].pop("fold", None)
     value["model"].pop("unknown_cluster_path", None)
     return value
+
+
+def _hardware_checks(config: dict) -> dict[str, bool]:
+    """Assert the measured RTX 3090 recipe, not merely cross-run equality."""
+    hardware = config.get("hardware", {})
+    mode = hardware.get("mode")
+    profile = hardware.get("profiles", {}).get(mode, {})
+    return {
+        "hardware_mode": mode == EXPECTED_HARDWARE["mode"],
+        "batch_size": profile.get("batch_size") == EXPECTED_HARDWARE["batch_size"],
+        "num_workers": profile.get("num_workers") == EXPECTED_HARDWARE["num_workers"],
+        "mixed_precision": profile.get("mixed_precision")
+        is EXPECTED_HARDWARE["mixed_precision"],
+        "device": profile.get("device") == EXPECTED_HARDWARE["device"],
+    }
 
 
 def verify() -> dict:
@@ -124,6 +147,7 @@ def verify() -> dict:
                 "loss_weights_sum_to_one": abs(weights - 1.0) < 1e-9,
                 "checkpoint_isolated": config["logging"]["checkpoint_dir"].endswith(name),
             }
+            checks.update(_hardware_checks(config))
             expected_proto = family == "auxmetric"
             checks["proto_gate"] = bool(loss_cfg["proto"].get("enabled")) is expected_proto
             if expected_proto:
