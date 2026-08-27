@@ -153,7 +153,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     _notify(
         "🧭 ناظر کمپین فعال شد\n\n"
         f"شناسهٔ کمپین: {args.campaign_id}\n"
-        f"Instance: {args.instance_id}\n"
+        f"شناسهٔ نمونهٔ محاسباتی: {args.instance_id}\n"
         f"نسخهٔ کد: {commit[:8]}\n"
         f"سقف هزینه: ${args.max_cost:.2f}\n"
         f"حداکثر زمان هر اجرا: {args.max_run_hours:g} ساعت\n\n"
@@ -221,6 +221,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
     exit_code = 1
     reason = "experiment failed before process start"
+    telegram_reason = "فرایند آموزش پیش از آغاز اجرای اصلی متوقف شد"
     try:
         with log_path.open("w", encoding="utf-8", newline="\n") as log_handle:
             process = subprocess.run(
@@ -238,9 +239,15 @@ def cmd_run(args: argparse.Namespace) -> int:
             if exit_code == 0
             else f"experiment {args.profile} failed with exit code {exit_code}"
         )
+        telegram_reason = (
+            "اجرا با موفقیت کامل شد"
+            if exit_code == 0
+            else f"فرایند آموزش با کد خروج {exit_code} متوقف شد"
+        )
     except subprocess.TimeoutExpired:
         exit_code = 124
         reason = f"experiment {args.profile} exceeded its time limit"
+        telegram_reason = "زمان اجرای آزمایش از سقف مجاز عبور کرد"
 
     success = exit_code == 0
     artifacts = _artifact_receipts(args.profile) if success else []
@@ -255,7 +262,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         _notify(
             "✅ آزمایش با موفقیت تمام شد\n\n"
             f"پروفایل: {args.profile}\n"
-            f"artifactهای ثبت‌شده: {len(artifacts)}\n"
+            f"خروجی‌های ثبت‌شده: {len(artifacts)}\n"
             f"هزینهٔ تخمینی کمپین: ${budget['estimated_cost_usd']:.2f}\n"
             f"گزارش اجرا: {log_path.relative_to(ROOT)}\n\n"
             "وضعیت: تحلیل عمیق نتیجه"
@@ -265,7 +272,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             "⛔ آزمایش متوقف شد\n\n"
             f"پروفایل: {args.profile}\n"
             f"کد خروج: {exit_code}\n"
-            f"علت: {reason}\n"
+            f"علت: {telegram_reason}\n"
             f"گزارش: {log_path.relative_to(ROOT)}\n\n"
             "هیچ اجرای بعدی تا تحلیل علت آغاز نمی‌شود."
         )
@@ -294,7 +301,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
         f"حجم: {artifact.stat().st_size / 2**20:.1f} مگابایت\n"
         f"SHA256: {receipt['sha256'][:16]}…\n\n"
         "وضعیت: انتظار برای نتیجهٔ واقعی لیدربرد\n"
-        "Instance روشن می‌ماند و پس از دریافت امتیاز تحلیل ادامه پیدا می‌کند."
+        "سرور روشن می‌ماند و پس از دریافت امتیاز تحلیل ادامه پیدا می‌کند."
     )
     print(json.dumps(state, indent=2, ensure_ascii=False))
     return 0
