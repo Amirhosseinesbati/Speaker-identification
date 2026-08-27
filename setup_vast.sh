@@ -31,9 +31,10 @@ cleanup() {
     fi
 }
 
-# Enable trap: cleanup on EXIT, ERR, or any signal
-# Comment out the line below to keep the instance alive for debugging:
-#trap cleanup EXIT ERR
+# Campaign lifecycle is controlled by the supervisor. Never self-destroy on a
+# training/setup error because WAITING_FOR_LEADERBOARD must preserve the worker.
+# Manual or budget-guard cleanup is performed through the Vast control plane.
+# trap cleanup EXIT ERR
 
 # ============================================================================
 #  Phase 1: System Setup

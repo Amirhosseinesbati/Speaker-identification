@@ -1,5 +1,9 @@
 # 🔬 گزارش جامع Audit + نقشه‌ی راه رسیدن به رتبه‌ی ۱ (Score > 0.97)
 
+> **یادداشت 2026-08-27 — این سند اکنون historical است.** گزارش مرجع به‌روز، شامل EDA فایل‌به‌فایل، مرور علمی مستقل، ممیزی implementation فعلی، اشکال‌های P0 در sampler/validation/artifact/HPO و roadmap مرحله‌ای، در
+> [`DEEP_COMPETITION_DATA_CODE_AUDIT_AND_WINNING_ROADMAP_2026-08-27.md`](DEEP_COMPETITION_DATA_CODE_AUDIT_AND_WINNING_ROADMAP_2026-08-27.md)
+> قرار دارد. اعداد یا توصیه‌های این نسخه فقط وقتی معتبرند که در گزارش جدید تأیید شده باشند.
+
 **مسابقه:** IAAA Competition 2026 — Open-Set Speaker Identification
 **نسخه:** ۲.۰ (قطعی — بازنویسی کامل پس از بررسی تمام‌و‌کمال ساختار پروژه، زنجیره‌ی MLOps، گزارش‌های قبلی و مستندات سرور)
 **تاریخ:** 2026-08-14
