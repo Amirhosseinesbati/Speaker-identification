@@ -14,6 +14,8 @@ import json
 import os
 import pickle
 import signal
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -82,6 +84,15 @@ def main() -> int:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--poll-seconds", type=float, default=30.0)
     parser.add_argument("--max-hours", type=float, default=12.0)
+    parser.add_argument("--backfill-local-run-dir", type=Path)
+    parser.add_argument("--backfill-local-model-dir", type=Path)
+    parser.add_argument("--backfill-env-file", type=Path)
+    parser.add_argument(
+        "--backfill-extra-artifact",
+        action="append",
+        default=[],
+        metavar="LOCAL::REMOTE",
+    )
     args = parser.parse_args()
 
     tracking_uri = _clean_env(
@@ -192,6 +203,41 @@ def main() -> int:
             "status": final_status,
             "epochs_mirrored": logged_epoch,
         }), flush=True)
+
+    if final_status == "FINISHED" and args.backfill_local_run_dir:
+        backfill_script = Path(__file__).with_name("mlflow_backfill_run.py")
+        command = [
+            sys.executable,
+            str(backfill_script),
+            "--remote-run-id",
+            active.info.run_id,
+            "--local-run-dir",
+            str(args.backfill_local_run_dir),
+            "--profile",
+            args.profile,
+            "--git-commit",
+            args.git_commit,
+            "--config-sha256",
+            args.config_sha256,
+        ]
+        if args.backfill_local_model_dir:
+            command.extend(
+                ["--local-model-dir", str(args.backfill_local_model_dir)]
+            )
+        if args.backfill_env_file:
+            command.extend(["--env-file", str(args.backfill_env_file)])
+        for specification in args.backfill_extra_artifact:
+            command.extend(["--extra-artifact", specification])
+        print(
+            json.dumps(
+                {
+                    "status": "artifact_backfill_started",
+                    "run_id": active.info.run_id,
+                }
+            ),
+            flush=True,
+        )
+        subprocess.run(command, check=True)
     return 0 if final_status == "FINISHED" else 1
 
 

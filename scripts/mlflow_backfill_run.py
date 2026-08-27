@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
 import mlflow
-from mlflow.entities import Metric
+from mlflow.entities import Metric, Param, RunTag
 from mlflow.tracking import MlflowClient
 
 
@@ -446,13 +446,21 @@ def backfill(args: argparse.Namespace) -> dict[str, Any]:
 
     active = mlflow.start_run(run_id=args.remote_run_id)
     try:
-        for key, value in new_params.items():
-            client.log_param(args.remote_run_id, key, value)
+        new_param_entities = [Param(key, value) for key, value in new_params.items()]
+        for offset in range(0, len(new_param_entities), 100):
+            client.log_batch(
+                args.remote_run_id,
+                params=new_param_entities[offset : offset + 100],
+            )
         for rows in missing_metric_series.values():
             for batch in _chunks(rows):
                 client.log_batch(args.remote_run_id, metrics=list(batch))
-        for key, value in safe_tags.items():
-            client.set_tag(args.remote_run_id, key, value)
+        safe_tag_entities = [RunTag(key, value) for key, value in safe_tags.items()]
+        for offset in range(0, len(safe_tag_entities), 100):
+            client.log_batch(
+                args.remote_run_id,
+                tags=safe_tag_entities[offset : offset + 100],
+            )
 
         for index, entry in enumerate(artifacts_to_upload, start=1):
             _log_artifact_with_retries(client, args.remote_run_id, entry)
@@ -498,8 +506,10 @@ def backfill(args: argparse.Namespace) -> dict[str, Any]:
             recovery_tags["campaign.git_commit"] = args.git_commit
         if args.config_sha256:
             recovery_tags["campaign.config_sha256"] = args.config_sha256
-        for key, value in recovery_tags.items():
-            client.set_tag(args.remote_run_id, key, value)
+        client.log_batch(
+            args.remote_run_id,
+            tags=[RunTag(key, value) for key, value in recovery_tags.items()],
+        )
 
         mlflow.end_run(status=original_status if original_status in TERMINAL_STATUSES else "FINISHED")
         active = None
