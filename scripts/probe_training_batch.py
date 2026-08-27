@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data_pipeline import get_active_profile, get_dataloaders  # noqa: E402
+from src.batch_probe import select_recommended_batch  # noqa: E402
 from src.experiment_config import load_profile  # noqa: E402
 from src.heads import ood_head_enabled  # noqa: E402
 from src.model_factory import create_model_from_config  # noqa: E402
@@ -37,19 +38,6 @@ from src.training_utils import (  # noqa: E402
     build_amp,
     seed_everything,
 )
-
-
-def select_recommended_batch(
-    rows: list[dict[str, Any]], total_vram_gib: float, headroom_fraction: float,
-) -> int | None:
-    limit = total_vram_gib * (1.0 - headroom_fraction)
-    eligible = [
-        row for row in rows
-        if row.get("status") == "ok" and row["peak_vram_gib"] <= limit
-    ]
-    if not eligible:
-        return None
-    return int(max(eligible, key=lambda row: row["files_per_second"])["batch_size"])
 
 
 def _optimizer(model: torch.nn.Module, config: dict) -> torch.optim.Optimizer:

@@ -1,4 +1,4 @@
-from scripts.probe_training_batch import select_recommended_batch
+from src.batch_probe import select_recommended_batch
 
 
 def test_selects_fastest_batch_with_required_headroom():
