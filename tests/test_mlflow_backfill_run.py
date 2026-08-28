@@ -9,6 +9,7 @@ from scripts.mlflow_backfill_run import (
     is_secret_key,
     read_filestore_metrics,
     read_filestore_values,
+    validate_remote_artifact_path,
 )
 
 
@@ -20,6 +21,22 @@ def test_secret_keys_and_files_are_rejected():
     assert not is_safe_artifact(Path("nested/.env"))
     assert not is_safe_artifact(Path("config/api_token.txt"))
     assert is_safe_artifact(Path("configs/resolved.yaml"))
+
+
+def test_remote_artifact_path_is_normalized_and_rejects_unsafe_values():
+    assert (
+        validate_remote_artifact_path(
+            "provenance/auxmetric_fold0_analysis_manifest.json"
+        )
+        == "provenance/auxmetric_fold0_analysis_manifest.json"
+    )
+    for unsafe in ("", "../escape.json", "/absolute.json", "secrets/api_token.json"):
+        try:
+            validate_remote_artifact_path(unsafe)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"unsafe path accepted: {unsafe}")
 
 
 def test_read_filestore_values_omits_secrets(tmp_path):

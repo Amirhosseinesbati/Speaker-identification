@@ -126,6 +126,23 @@ def is_safe_artifact(path: Path) -> bool:
     return not any(is_secret_key(part) for part in path.parts)
 
 
+def validate_remote_artifact_path(value: str) -> str:
+    """Return a normalized, relative, non-secret MLflow artifact path."""
+
+    path = Path(value)
+    if (
+        not value.strip()
+        or path.is_absolute()
+        or bool(path.anchor)
+        or value.startswith(("/", "\\"))
+        or ".." in path.parts
+    ):
+        raise ValueError(f"Unsafe remote artifact path: {value}")
+    if path.name in {"", "."} or not is_safe_artifact(path):
+        raise ValueError(f"Potential secret artifact refused: {value}")
+    return path.as_posix()
+
+
 def read_filestore_values(directory: Path) -> dict[str, str]:
     if not directory.is_dir():
         return {}
@@ -209,15 +226,11 @@ def collect_extra_artifacts(
     for local_path, remote_path in specifications:
         if not local_path.is_file():
             continue
-        relative = Path(remote_path)
-        if relative.is_absolute() or ".." in relative.parts:
-            raise ValueError(f"Unsafe remote artifact path: {remote_path}")
-        if not is_safe_artifact(relative):
-            raise ValueError(f"Potential secret artifact refused: {remote_path}")
+        normalized_remote = validate_remote_artifact_path(remote_path)
         entries.append(
             ArtifactEntry(
                 local_path=local_path,
-                remote_path=relative.as_posix(),
+                remote_path=normalized_remote,
                 size_bytes=local_path.stat().st_size,
                 sha256=sha256_file(local_path),
                 source="campaign",
@@ -377,6 +390,9 @@ def backfill(args: argparse.Namespace) -> dict[str, Any]:
             )
         )
     entries.extend(collect_extra_artifacts(args.extra_artifact))
+    manifest_remote_path = validate_remote_artifact_path(
+        args.manifest_remote_path
+    )
 
     duplicate_paths = {
         entry.remote_path
@@ -385,6 +401,11 @@ def backfill(args: argparse.Namespace) -> dict[str, Any]:
     }
     if duplicate_paths:
         raise ValueError(f"Duplicate remote artifact paths: {sorted(duplicate_paths)}")
+    if manifest_remote_path in {entry.remote_path for entry in entries}:
+        raise ValueError(
+            "Manifest remote path collides with a source artifact: "
+            f"{manifest_remote_path}"
+        )
 
     manifest = build_manifest(
         entries,
@@ -439,6 +460,7 @@ def backfill(args: argparse.Namespace) -> dict[str, Any]:
         "safe_local_tags": len(safe_tags),
         "manifest_artifact_count": len(entries),
         "manifest_total_bytes": manifest["total_bytes"],
+        "manifest_remote_path": manifest_remote_path,
         "artifacts_to_upload": len(artifacts_to_upload),
         "bytes_to_upload": sum(entry.size_bytes for entry in artifacts_to_upload),
         "remote_artifacts_before": len(remote_before),
@@ -486,7 +508,7 @@ def backfill(args: argparse.Namespace) -> dict[str, Any]:
             )
 
         with tempfile.TemporaryDirectory(prefix="mlflow_backfill_") as tmp:
-            manifest_path = Path(tmp) / "artifact_manifest.json"
+            manifest_path = Path(tmp) / Path(manifest_remote_path).name
             manifest_path.write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -494,7 +516,11 @@ def backfill(args: argparse.Namespace) -> dict[str, Any]:
             client.log_artifact(
                 args.remote_run_id,
                 str(manifest_path),
-                artifact_path="provenance",
+                artifact_path=(
+                    None
+                    if str(Path(manifest_remote_path).parent) in {"", "."}
+                    else Path(manifest_remote_path).parent.as_posix()
+                ),
             )
 
         completed_at = datetime.now(timezone.utc).isoformat()
@@ -540,9 +566,8 @@ def backfill(args: argparse.Namespace) -> dict[str, Any]:
         and remote_after[entry.remote_path] is not None
         and remote_after[entry.remote_path] != entry.size_bytes
     }
-    manifest_path = "provenance/artifact_manifest.json"
-    if manifest_path not in remote_after:
-        missing_paths.append(manifest_path)
+    if manifest_remote_path not in remote_after:
+        missing_paths.append(manifest_remote_path)
 
     verified_params = verified_run.data.params
     missing_params = [key for key in new_params if key not in verified_params]
@@ -592,6 +617,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile")
     parser.add_argument("--git-commit")
     parser.add_argument("--config-sha256")
+    parser.add_argument(
+        "--manifest-remote-path",
+        default="provenance/artifact_manifest.json",
+        help=(
+            "Remote path for this backfill manifest. Use a unique path when "
+            "appending later analyses so the canonical manifest is not overwritten."
+        ),
+    )
     parser.add_argument(
         "--extra-artifact",
         action="append",
