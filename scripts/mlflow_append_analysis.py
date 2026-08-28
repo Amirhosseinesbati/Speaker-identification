@@ -49,7 +49,6 @@ def build_append_manifest(
     return {
         "schema_version": 1,
         "kind": "immutable_analysis_append",
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "remote_run_id": remote_run_id,
         "manifest_remote_path": manifest_remote_path,
         "artifact_count": len(entries),

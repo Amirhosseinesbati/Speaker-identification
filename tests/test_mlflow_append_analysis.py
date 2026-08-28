@@ -41,6 +41,11 @@ def test_append_manifest_is_hash_complete_and_has_no_local_paths(tmp_path):
     assert manifest["artifact_count"] == 2
     assert all(len(row["sha256"]) == 64 for row in manifest["artifacts"])
     assert all("local_path" not in row for row in manifest["artifacts"])
+    assert manifest == build_append_manifest(
+        entries,
+        remote_run_id="run-1",
+        manifest_remote_path=remote_path,
+    )
 
 
 def test_append_refuses_canonical_collision_and_duplicate_paths(tmp_path):
