@@ -81,7 +81,12 @@ def _known_margin(probabilities: np.ndarray) -> np.ndarray:
 
 
 def _audio_identity(path: Path) -> dict[str, Any]:
-    """Read lightweight WAV metadata plus byte- and decoded-PCM identities."""
+    """Read WAV identity plus streaming signal-level diagnostics.
+
+    The signal statistics make identical model outputs auditable: distinct
+    files can legitimately have different byte/PCM hashes while still being
+    effectively silent and therefore collapsing to the same embedding.
+    """
 
     try:
         file_digest = hashlib.sha256()
@@ -98,11 +103,54 @@ def _audio_identity(path: Path) -> dict[str, Any]:
             pcm_digest.update(
                 f"rate={rate};channels={channels};width={sample_width};".encode("ascii")
             )
+            sample_count = 0
+            sample_sum = 0.0
+            sample_abs_sum = 0.0
+            sample_square_sum = 0.0
+            sample_peak = 0.0
+            sample_nonzero = 0
             while True:
                 chunk = handle.readframes(65536)
                 if not chunk:
                     break
                 pcm_digest.update(chunk)
+                samples: np.ndarray | None = None
+                scale: float | None = None
+                if sample_width == 1:
+                    samples = np.frombuffer(chunk, dtype=np.uint8).astype(np.float64)
+                    samples -= 128.0
+                    scale = 128.0
+                elif sample_width == 2:
+                    samples = np.frombuffer(chunk, dtype="<i2").astype(np.float64)
+                    scale = 32768.0
+                elif sample_width == 4:
+                    samples = np.frombuffer(chunk, dtype="<i4").astype(np.float64)
+                    scale = 2147483648.0
+                if samples is not None and scale is not None:
+                    normalized = samples / scale
+                    sample_count += int(normalized.size)
+                    sample_sum += float(normalized.sum())
+                    sample_abs_sum += float(np.abs(normalized).sum())
+                    sample_square_sum += float(np.square(normalized).sum())
+                    sample_peak = max(
+                        sample_peak,
+                        float(np.abs(normalized).max(initial=0.0)),
+                    )
+                    sample_nonzero += int(np.count_nonzero(samples))
+            signal_stats = {
+                "pcm_mean": sample_sum / sample_count if sample_count else None,
+                "pcm_abs_mean": (
+                    sample_abs_sum / sample_count if sample_count else None
+                ),
+                "pcm_rms": (
+                    math.sqrt(sample_square_sum / sample_count)
+                    if sample_count else None
+                ),
+                "pcm_peak": sample_peak if sample_count else None,
+                "pcm_nonzero_fraction": (
+                    sample_nonzero / sample_count if sample_count else None
+                ),
+            }
             return {
                 "duration_seconds": float(frames / rate) if rate else None,
                 "sample_rate": int(rate),
@@ -111,6 +159,7 @@ def _audio_identity(path: Path) -> dict[str, Any]:
                 "file_sha256": file_digest.hexdigest(),
                 "pcm_sha256": pcm_digest.hexdigest(),
                 "audio_error": None,
+                **signal_stats,
             }
     except (FileNotFoundError, PermissionError, wave.Error, EOFError, OSError) as exc:
         return {
@@ -121,6 +170,11 @@ def _audio_identity(path: Path) -> dict[str, Any]:
             "file_sha256": None,
             "pcm_sha256": None,
             "audio_error": f"{type(exc).__name__}: {exc}",
+            "pcm_mean": None,
+            "pcm_abs_mean": None,
+            "pcm_rms": None,
+            "pcm_peak": None,
+            "pcm_nonzero_fraction": None,
         }
 
 
@@ -160,6 +214,10 @@ def _group_summary(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "probability_l1",
         "embedding_cosine",
         "duration_seconds",
+        "pcm_rms",
+        "pcm_peak",
+        "pcm_abs_mean",
+        "pcm_nonzero_fraction",
     )
     return {
         "samples": len(rows),
@@ -356,6 +414,11 @@ def _duplicate_groups(
                 "labels": [row["label"] for row in group],
                 "outcomes": [row["outcome"] for row in group],
                 "durations_seconds": [row["duration_seconds"] for row in group],
+                "pcm_rms": [row["pcm_rms"] for row in group],
+                "pcm_peak": [row["pcm_peak"] for row in group],
+                "pcm_nonzero_fraction": [
+                    row["pcm_nonzero_fraction"] for row in group
+                ],
             }
         )
     return sorted(duplicates, key=lambda group: (-group["samples"], group[field]))
@@ -382,6 +445,11 @@ def _probability_signature_groups(
                 "labels": [row["label"] for row in group],
                 "outcomes": [row["outcome"] for row in group],
                 "durations_seconds": [row["duration_seconds"] for row in group],
+                "pcm_rms": [row["pcm_rms"] for row in group],
+                "pcm_peak": [row["pcm_peak"] for row in group],
+                "pcm_nonzero_fraction": [
+                    row["pcm_nonzero_fraction"] for row in group
+                ],
             }
         )
     return sorted(
@@ -459,6 +527,11 @@ def analyze_disagreements(
                 "file_sha256": None,
                 "pcm_sha256": None,
                 "audio_error": None,
+                "pcm_mean": None,
+                "pcm_abs_mean": None,
+                "pcm_rms": None,
+                "pcm_peak": None,
+                "pcm_nonzero_fraction": None,
             }
         )
         rows.append(
@@ -507,6 +580,10 @@ def analyze_disagreements(
         "probability_l1",
         "embedding_cosine",
         "duration_seconds",
+        "pcm_rms",
+        "pcm_peak",
+        "pcm_abs_mean",
+        "pcm_nonzero_fraction",
     )
 
     cluster_summary: dict[str, dict[str, int]] = {}
@@ -579,6 +656,15 @@ def analyze_disagreements(
             ],
             "duplicate_file_bytes": _duplicate_groups(rows, "file_sha256"),
             "duplicate_decoded_pcm": _duplicate_groups(rows, "pcm_sha256"),
+            "exact_silence_files": [
+                row["file"] for row in rows if row["pcm_peak"] == 0.0
+            ],
+            "near_silence_rms_threshold": 1e-4,
+            "near_silence_files": [
+                row["file"]
+                for row in rows
+                if row["pcm_rms"] is not None and row["pcm_rms"] < 1e-4
+            ],
         },
         "identical_probability_rows": {
             "candidate": _probability_signature_groups(candidate_probs, rows),

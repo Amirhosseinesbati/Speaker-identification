@@ -5,8 +5,9 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import pytest
 
-from scripts.analyze_oof_disagreements import analyze_disagreements
+from scripts.analyze_oof_disagreements import _audio_identity, analyze_disagreements
 
 
 def _write_oof(path: Path, files, labels, probabilities, embeddings) -> None:
@@ -34,6 +35,26 @@ def _write_wav(path: Path, frames: int, rate: int = 16000) -> None:
         handle.setsampwidth(2)
         handle.setframerate(rate)
         handle.writeframes(b"\0\0" * frames)
+
+
+def test_audio_identity_reports_streaming_signal_statistics(tmp_path):
+    path = tmp_path / "signal.wav"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    samples = np.asarray([0, 16384, -16384, 32767], dtype="<i2")
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(samples.tobytes())
+
+    identity = _audio_identity(path)
+
+    normalized = samples.astype(np.float64) / 32768.0
+    assert identity["pcm_rms"] == pytest.approx(
+        float(np.sqrt(np.square(normalized).mean()))
+    )
+    assert identity["pcm_peak"] == pytest.approx(32767 / 32768)
+    assert identity["pcm_nonzero_fraction"] == pytest.approx(0.75)
 
 
 def test_disagreement_report_aligns_files_and_tracks_unknown_rescues(tmp_path):
@@ -93,6 +114,7 @@ def test_disagreement_report_aligns_files_and_tracks_unknown_rescues(tmp_path):
     assert report["duration_bins"][1]["samples"] == 3
     assert report["audio_identity"]["files_scanned"] == 4
     assert report["audio_identity"]["duplicate_decoded_pcm"] == []
+    assert report["audio_identity"]["exact_silence_files"] == files
 
 
 def test_fixed_gate_is_descriptive_and_uses_unknown_probability_delta(tmp_path):
@@ -154,6 +176,7 @@ def test_audio_and_probability_duplicate_groups_are_reported(tmp_path):
     assert file_groups[0]["files"] == ["a.wav", "b.wav"]
     assert pcm_groups[0]["files"] == ["a.wav", "b.wav"]
     assert candidate_groups[0]["files"] == ["a.wav", "b.wav"]
+    assert candidate_groups[0]["pcm_rms"] == [0.0, 0.0]
 
 
 def test_duration_gate_uses_candidate_only_for_short_unknown_switch(tmp_path):
