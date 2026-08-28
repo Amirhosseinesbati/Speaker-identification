@@ -51,6 +51,7 @@ def _competition_label(row: dict[str, str]) -> int:
 def _load_training_prior(
     labels_path: Path,
     validation_files: set[str],
+    corrupted_files: set[str],
 ) -> tuple[np.ndarray, dict[str, int]]:
     with labels_path.open("r", encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -62,8 +63,18 @@ def _load_training_prior(
         raise ValueError(
             f"{len(missing)} OOF files are absent from {labels_path}; first={missing[0]}"
         )
+    leaked_corrupt = sorted(validation_files & corrupted_files)
+    if leaked_corrupt:
+        raise ValueError(
+            f"OOF validation contains corrupted files; first={leaked_corrupt[0]}"
+        )
 
-    train_rows = [row for row in rows if row["audio_file"] not in validation_files]
+    clean_rows = [row for row in rows if row["audio_file"] not in corrupted_files]
+    train_rows = [
+        row for row in clean_rows if row["audio_file"] not in validation_files
+    ]
+    if len(train_rows) + len(validation_files) != len(clean_rows):
+        raise ValueError("Clean labels do not partition exactly into train and OOF rows")
     counts = Counter(_competition_label(row) for row in train_rows)
     prior = np.asarray([counts.get(label, 0) for label in range(NUM_CLASSES)], dtype=float)
     if prior.sum() <= 0:
@@ -71,6 +82,8 @@ def _load_training_prior(
     prior /= prior.sum()
     return prior, {
         "all_rows": len(rows),
+        "clean_rows": len(clean_rows),
+        "corrupted_rows_excluded": len(rows) - len(clean_rows),
         "train_rows": len(train_rows),
         "validation_rows": len(validation_files),
         "train_unknown_rows": counts.get(0, 0),
@@ -116,6 +129,7 @@ def audit(
     oof_path: Path,
     audio_dir: Path,
     labels_path: Path,
+    split_report_path: Path,
 ) -> dict[str, Any]:
     record = load_oof(oof_path)
     files = record["files"].astype(str)
@@ -123,7 +137,13 @@ def audit(
     probabilities = record["competition_probs"]
     predictions = probabilities.argmax(axis=1)
 
-    prior, partition = _load_training_prior(labels_path, set(files.tolist()))
+    split_report = json.loads(split_report_path.read_text(encoding="utf-8"))
+    corrupted_files = set(split_report["corrupted_files"]["files"])
+    prior, partition = _load_training_prior(
+        labels_path,
+        set(files.tolist()),
+        corrupted_files,
+    )
     prior_label = int(prior.argmax())
 
     identities = [_audio_identity(audio_dir / filename) for filename in files]
@@ -164,6 +184,8 @@ def audit(
         "schema_version": 1,
         "oof_path": str(oof_path),
         "oof_sha256": _sha256(oof_path),
+        "split_report_path": str(split_report_path),
+        "split_report_sha256": _sha256(split_report_path),
         "split": {
             "scheme": str(_scalar(record, "split_scheme")),
             "fold": int(_scalar(record, "split_fold")),
@@ -203,13 +225,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--oof", type=Path, required=True)
     parser.add_argument("--audio-dir", type=Path, required=True)
     parser.add_argument("--labels", type=Path, required=True)
+    parser.add_argument("--split-report", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    result = audit(args.oof, args.audio_dir, args.labels)
+    result = audit(args.oof, args.audio_dir, args.labels, args.split_report)
     payload = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
