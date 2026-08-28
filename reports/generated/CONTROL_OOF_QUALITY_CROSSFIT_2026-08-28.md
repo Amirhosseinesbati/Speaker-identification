@@ -80,7 +80,11 @@ support بسیار کوچک دارد و هم در چند مورد median duratio
 در نتیجه class-specific fallback یا prior می‌تواند به‌سادگی overfit کند و مجاز
 نیست. راه‌حل بعدی باید representation مکمل بسازد، نه جدول استثنا برای کلاس‌ها.
 
-## پیش‌ثبت تنها فرضیهٔ GPU بعدی ـ TitaNet known-first Fold 0
+## پیش‌ثبت تاریخی و لغوشده ـ TitaNet known-first Fold 0
+
+> وضعیت 2026-08-28: این پیشنهاد با تصمیم صریح کاربر لغو و با پیش‌ثبت
+> `ERES2NET_FOLD0_PREREGISTRATION_2026-08-28.md` جایگزین شد. TitaNet نباید
+> train شود. جزئیات زیر فقط برای حفظ سابقهٔ تصمیم علمی باقی مانده‌اند.
 
 ### فرضیه
 
@@ -133,6 +137,7 @@ candidate رد می‌شود. عبور Fold 0 فقط مجوز تحلیل و پی
 
 ## تصمیم فعلی
 
-تحلیل quality-aware تمام شد و همهٔ candidateهای decision-layer رد شدند. فرضیهٔ
-TitaNet Fold 0 فقط پیش‌ثبت شده است و **تا تأیید صریح کاربر، commit/push/pull و
-training آن انجام نمی‌شود**. Instance برای ادامهٔ مصوب روشن می‌ماند.
+تحلیل quality-aware تمام شد و همهٔ candidateهای decision-layer رد شدند. پیشنهاد
+TitaNet بعداً با تصمیم کاربر لغو شد. گام مجاز فعلی فقط ERes2NetV2 Fold 0 تحت
+قرارداد مستقل `ERES2NET_FOLD0_PREREGISTRATION_2026-08-28.md` است. Instance برای
+ادامهٔ مصوب روشن می‌ماند.

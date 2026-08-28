@@ -1,0 +1,70 @@
+_meta:
+  name: p1-eres2net-known446-ood-complement-oof-f0
+  base: default_config.yaml
+experiment:
+  priority: P1-COMPLEMENT-GATE
+  family: eres2net-known446-ood-complement-oof
+  purpose: Test whether ERes2NetV2 adds representation diversity to the locked CAM++ control
+  expected_decision: Fold 0 gate only; no later fold or submission is authorized by this profile
+  decision_policy: raw_probability_average_argmax
+  diagnostic_ensemble: fixed_probability_average_50_50_with_campp_fold0
+  stop_rules:
+    futility_epoch: 40
+    minimum_best_raw_macro_f1: 0.90
+    max_run_hours: 6.0
+    max_incremental_cost_usd: 2.50
+data:
+  clean_duplicates: true
+  split: {scheme: kfold, folds: 3, fold: 0, seed: 42}
+model:
+  encoder_type: eres2net
+  competition_num_known: 446
+  num_unknown_clusters: 554
+  unknown_cluster_path: data/processed/unknown_clusters_oof_f0.json
+  speaker_target_scope: known
+  ood_head: true
+  speaker_head_type: arcface
+  speaker_head_config:
+    arcface: {embedding_dim: 192, margin: 0.4, scale: 30.0}
+  encoder_config:
+    eres2net:
+      allow_hub_download: false
+      ckpt_name: eres2netv2.ckpt
+      freeze_encoder: false
+      local_path: weights/eres2net
+      unfreeze_last_n_blocks: 1
+audio:
+  num_train_windows: 8
+  speech_aware_crop_probability: 0.75
+  eval_speech_aware: true
+  short_audio_mode: pad
+hardware:
+  mode: vastai_3090_eres2net
+  profiles:
+    vastai_3090_eres2net:
+      batch_size: 48
+      description: Measured RTX 3090 ERes2NetV2 8x8s preflight winner
+      device: cuda
+      mixed_precision: true
+      num_workers: 8
+logging:
+  checkpoint_dir: checkpoints/p1-eres2net-known446-ood-complement-oof-f0
+  log_dir: logs/p1-eres2net-known446-ood-complement-oof-f0
+training:
+  seed: 42
+  deterministic_algorithms: true
+  epochs: 120
+  freeze_epochs: 20
+  early_stopping_patience: 15
+  learning_rate: 0.0003
+  encoder_lr: 5.0e-06
+  weight_decay: 0.0001
+  schedule: cosine
+  warmup_ratio: 0.1
+  min_lr_ratio: 0.05
+  ema_enabled: true
+  ema_decay: 0.999
+  loss:
+    speaker: {type: ce, label_smoothing: 0.05, weight: 0.85}
+    ood: {type: bce, pos_weight: 1.0, weight: 0.15}
+    proto: {enabled: false}
