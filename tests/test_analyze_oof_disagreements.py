@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import wave
 from pathlib import Path
 
@@ -113,3 +115,14 @@ def test_fixed_gate_is_descriptive_and_uses_unknown_probability_delta(tmp_path):
     assert gates[0]["overall_acc"] == 1.0
     assert gates[1]["candidate_selected"] == 0
     assert "same-fold" in report["selection_warning"]
+
+
+def test_script_help_runs_directly_from_project_root():
+    result = subprocess.run(
+        [sys.executable, "scripts/analyze_oof_disagreements.py", "--help"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--case-csv" in result.stdout
