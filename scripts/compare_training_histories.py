@@ -33,20 +33,55 @@ def _finite(value: Any) -> bool:
     return isinstance(value, (int, float)) and math.isfinite(float(value))
 
 
-def load_history(path: Path) -> list[dict[str, Any]]:
+def _load_payload(path: Path) -> Any:
     if path.suffix.lower() == ".json":
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    else:
-        import torch
+        return json.loads(path.read_text(encoding="utf-8"))
+    import torch
 
-        payload = torch.load(path, map_location="cpu", weights_only=False)
-    if isinstance(payload, dict):
-        payload = payload.get("training_history", payload.get("history"))
-    if not isinstance(payload, list) or not payload:
+    return torch.load(path, map_location="cpu", weights_only=False)
+
+
+def _primary_loss_scale(payload: Any) -> float:
+    if not isinstance(payload, dict):
+        return 1.0
+    config = payload.get("config", {}) or {}
+    training = config.get("training", {}) or {}
+    loss = training.get("loss", {}) or {}
+    speaker = loss.get("speaker", {}) or {}
+    ood = loss.get("ood", {}) or {}
+    speaker_weight = float(
+        speaker.get("weight", training.get("speaker_loss_weight", 1.0))
+    )
+    ood_weight = float(ood.get("weight", training.get("ood_loss_weight", 1.0)))
+    scale = speaker_weight + ood_weight
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError("Primary speaker/OOD loss weights must have a positive sum")
+    return scale
+
+
+def load_history_context(path: Path) -> tuple[list[dict[str, Any]], float]:
+    payload = _load_payload(path)
+    loss_scale = _primary_loss_scale(payload)
+    history_payload = payload
+    if isinstance(history_payload, dict):
+        history_payload = history_payload.get(
+            "training_history", history_payload.get("history")
+        )
+    if not isinstance(history_payload, list) or not history_payload:
         raise ValueError(f"No non-empty training history in {path}")
-    if not all(isinstance(row, dict) and _finite(row.get("epoch")) for row in payload):
+    if not all(
+        isinstance(row, dict) and _finite(row.get("epoch"))
+        for row in history_payload
+    ):
         raise ValueError(f"Malformed epoch rows in {path}")
-    return sorted(payload, key=lambda row: int(row["epoch"]))
+    return (
+        sorted(history_payload, key=lambda row: int(row["epoch"])),
+        loss_scale,
+    )
+
+
+def load_history(path: Path) -> list[dict[str, Any]]:
+    return load_history_context(path)[0]
 
 
 def _rows_by_epoch(history: Iterable[dict[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -78,7 +113,11 @@ def compare_histories(
     baseline: list[dict[str, Any]],
     *,
     tail_window: int = 10,
+    candidate_primary_loss_scale: float = 1.0,
+    baseline_primary_loss_scale: float = 1.0,
 ) -> dict[str, Any]:
+    if candidate_primary_loss_scale <= 0 or baseline_primary_loss_scale <= 0:
+        raise ValueError("Primary loss scales must be positive")
     candidate_by_epoch = _rows_by_epoch(candidate)
     baseline_by_epoch = _rows_by_epoch(baseline)
     common_epochs = sorted(set(candidate_by_epoch) & set(baseline_by_epoch))
@@ -136,6 +175,46 @@ def compare_histories(
     candidate_last = candidate_by_epoch[latest_epoch]
     baseline_last = baseline_by_epoch[latest_epoch]
 
+    def normalized_primary_loss(
+        row: dict[str, Any], key: str, scale: float
+    ) -> float | None:
+        normalized_key = f"{key}_primary_normalized"
+        if _finite(row.get(normalized_key)):
+            return float(row[normalized_key])
+        if key == "train_loss" and _finite(row.get("train_loss_primary")):
+            return float(row["train_loss_primary"]) / scale
+        if _finite(row.get(key)):
+            return float(row[key]) / scale
+        return None
+
+    normalized_latest = {}
+    normalized_tail = {}
+    for key in ("train_loss", "val_loss"):
+        candidate_value = normalized_primary_loss(
+            candidate_last, key, candidate_primary_loss_scale
+        )
+        baseline_value = normalized_primary_loss(
+            baseline_last, key, baseline_primary_loss_scale
+        )
+        if candidate_value is not None and baseline_value is not None:
+            normalized_latest[key] = {
+                "candidate": candidate_value,
+                "baseline": baseline_value,
+                "delta": candidate_value - baseline_value,
+            }
+        deltas = []
+        for epoch in tail_epochs:
+            candidate_value = normalized_primary_loss(
+                candidate_by_epoch[epoch], key, candidate_primary_loss_scale
+            )
+            baseline_value = normalized_primary_loss(
+                baseline_by_epoch[epoch], key, baseline_primary_loss_scale
+            )
+            if candidate_value is not None and baseline_value is not None:
+                deltas.append(candidate_value - baseline_value)
+        if deltas:
+            normalized_tail[key] = _summary(deltas)
+
     def gap(row: dict[str, Any], left: str, right: str) -> float | None:
         if not _finite(row.get(left)) or not _finite(row.get(right)):
             return None
@@ -149,6 +228,16 @@ def compare_histories(
         "latest": latest,
         "tail_delta": tail,
         "best": best,
+        "primary_loss_scale_correction": {
+            "candidate_weight_sum": candidate_primary_loss_scale,
+            "baseline_weight_sum": baseline_primary_loss_scale,
+            "latest": normalized_latest,
+            "tail_delta": normalized_tail,
+            "interpretation": (
+                "Use these normalized primary losses for cross-recipe comparison. "
+                "Raw loss may omit or differently weight auxiliary objectives."
+            ),
+        },
         "diagnostic_gaps": {
             "candidate_probability_minus_logit": gap(
                 candidate_last, "val_macro_f1", "val_logit_avg_macro_f1"
@@ -195,10 +284,14 @@ def main() -> int:
     args = build_parser().parse_args()
     if args.tail_window <= 0:
         raise ValueError("tail-window must be positive")
+    candidate_history, candidate_loss_scale = load_history_context(args.candidate)
+    baseline_history, baseline_loss_scale = load_history_context(args.baseline)
     result = compare_histories(
-        load_history(args.candidate),
-        load_history(args.baseline),
+        candidate_history,
+        baseline_history,
         tail_window=args.tail_window,
+        candidate_primary_loss_scale=candidate_loss_scale,
+        baseline_primary_loss_scale=baseline_loss_scale,
     )
     rendered = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     if args.output:

@@ -28,7 +28,7 @@ from src.training_utils import (  # noqa: E402
     encoder_will_train,
     seed_everything,
 )
-from src.train import PrototypicalLoss  # noqa: E402
+from src.train import PrototypicalLoss, TwoPartLoss, train_epoch  # noqa: E402
 
 
 class DummyEncoder(nn.Module):
@@ -286,3 +286,55 @@ def test_prototypical_loss_all_unknown_is_zero():
     labels = torch.zeros(4, dtype=torch.long)  # all unknown → masked out
     loss = pl(emb, labels)
     assert loss.item() == 0.0
+
+
+def test_train_epoch_logs_backpropagated_proto_objective():
+    class TinySpeakerModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.projection = nn.Linear(4, 3)
+            self.head_ood = nn.Linear(3, 1)
+            self.head_speaker = nn.Linear(3, 2)
+
+        def forward(self, waveforms, labels=None, return_embedding=False):
+            del labels
+            embedding = F.normalize(
+                self.projection(waveforms.flatten(1)), dim=1
+            )
+            outputs = (self.head_ood(embedding), self.head_speaker(embedding))
+            return (*outputs, embedding) if return_embedding else outputs
+
+    class ConstantProtoLoss(nn.Module):
+        def forward(self, embeddings, labels):
+            del labels
+            return embeddings.sum() * 0.0 + 2.0
+
+    model = TinySpeakerModel()
+    criterion = TwoPartLoss(
+        use_focal=False,
+        ood_weight=0.1425,
+        speaker_weight=0.8075,
+        competition_known_count=2,
+        speaker_target_scope="known",
+    )
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    batch = (torch.randn(2, 1, 4), torch.tensor([1, 2]))
+
+    metrics = train_epoch(
+        model,
+        [batch],
+        optimizer,
+        criterion,
+        torch.amp.GradScaler("cpu", enabled=False),
+        torch.device("cpu"),
+        autocast_fn=lambda: torch.autocast("cpu", enabled=False),
+        proto_criterion=ConstantProtoLoss(),
+        proto_weight=0.05,
+    )
+
+    assert metrics["loss_proto"] == pytest.approx(2.0)
+    assert metrics["loss_proto_weighted"] == pytest.approx(0.1)
+    assert metrics["loss"] == pytest.approx(metrics["loss_primary"] + 0.1)
+    assert metrics["loss_primary_normalized"] == pytest.approx(
+        metrics["loss_primary"] / 0.95
+    )

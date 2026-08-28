@@ -644,6 +644,9 @@ def train_epoch(
 
     model.train()
     total_loss = 0.0
+    total_loss_primary = 0.0
+    total_loss_proto = 0.0
+    total_loss_proto_weighted = 0.0
     total_ood_acc = 0.0
     total_speaker_acc = 0.0
     total_loss_ood = 0.0
@@ -666,6 +669,9 @@ def train_epoch(
         W = waveforms.shape[1] if waveforms.dim() == 4 else 1
 
         step_loss = 0.0
+        step_loss_primary = 0.0
+        step_loss_proto = 0.0
+        step_loss_proto_weighted = 0.0
         step_ood_acc = 0.0
         step_spk_acc = 0.0
         step_loss_ood = 0.0
@@ -678,9 +684,14 @@ def train_epoch(
                         wf, labels=labels, return_embedding=True)
                 else:
                     ood_logits, speaker_logits = model(wf, labels=labels)
-                loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
+                primary_loss, loss_dict = criterion(
+                    ood_logits, speaker_logits, labels
+                )
+                proto_loss = torch.zeros_like(primary_loss)
                 if proto_criterion is not None:
-                    loss = loss + proto_weight * proto_criterion(emb, labels)
+                    proto_loss = proto_criterion(emb, labels)
+                weighted_proto_loss = proto_weight * proto_loss
+                loss = primary_loss + weighted_proto_loss
 
             # Fail loudly on NaN/Inf instead of silently training a broken model
             if not torch.isfinite(loss):
@@ -695,7 +706,14 @@ def train_epoch(
             # AMP-scaled per-window backward; gradients accumulate over W.
             scaler.scale(loss / W).backward()
 
-            step_loss += loss_dict["loss_total"]
+            # ``loss`` is the objective actually backpropagated.  The old
+            # logger recorded only ``loss_dict['loss_total']`` and silently
+            # omitted the auxiliary prototype term, making AuxMetric training
+            # curves look artificially better than the control.
+            step_loss += float(loss.detach().item())
+            step_loss_primary += loss_dict["loss_total"]
+            step_loss_proto += float(proto_loss.detach().item())
+            step_loss_proto_weighted += float(weighted_proto_loss.detach().item())
             step_loss_ood += loss_dict["loss_ood"]
             step_loss_spk += loss_dict["loss_speaker"]
             step_ood_acc += compute_ood_accuracy(
@@ -729,6 +747,9 @@ def train_epoch(
 
         # Metrics (mean over windows)
         total_loss += step_loss / W
+        total_loss_primary += step_loss_primary / W
+        total_loss_proto += step_loss_proto / W
+        total_loss_proto_weighted += step_loss_proto_weighted / W
         total_ood_acc += step_ood_acc / W
         total_speaker_acc += step_spk_acc / W
         total_loss_ood += step_loss_ood / W
@@ -741,8 +762,18 @@ def train_epoch(
             "spk": f"{step_spk_acc / W:.3f}",
         })
 
+    primary_weight_sum = criterion.ood_weight + criterion.speaker_weight
+    mean_primary_loss = total_loss_primary / num_batches
     return {
         "loss": total_loss / num_batches,
+        "loss_primary": mean_primary_loss,
+        "loss_primary_normalized": (
+            mean_primary_loss / primary_weight_sum
+            if primary_weight_sum > 0
+            else mean_primary_loss
+        ),
+        "loss_proto": total_loss_proto / num_batches,
+        "loss_proto_weighted": total_loss_proto_weighted / num_batches,
         "loss_ood": total_loss_ood / num_batches,
         "loss_speaker": total_loss_spk / num_batches,
         "ood_acc": total_ood_acc / num_batches,
@@ -773,6 +804,8 @@ def validate_epoch(
     """
     model.eval()
     total_loss = 0.0
+    total_loss_ood = 0.0
+    total_loss_speaker = 0.0
     total_ood_acc = 0.0
     total_speaker_acc = 0.0
     num_batches = len(dataloader)
@@ -792,6 +825,8 @@ def validate_epoch(
         loss, loss_dict = criterion(ood_logits, speaker_logits, labels)
 
         total_loss += loss_dict["loss_total"]
+        total_loss_ood += loss_dict["loss_ood"]
+        total_loss_speaker += loss_dict["loss_speaker"]
         total_ood_acc += compute_ood_accuracy(
             ood_logits, labels, criterion.competition_known_count)
         speaker_acc, _ = compute_speaker_accuracy(
@@ -810,8 +845,17 @@ def validate_epoch(
             "spk": f"{speaker_acc:.3f}",
         })
 
+    primary_weight_sum = criterion.ood_weight + criterion.speaker_weight
+    mean_loss = total_loss / num_batches
     return {
-        "loss": total_loss / num_batches,
+        "loss": mean_loss,
+        "loss_primary_normalized": (
+            mean_loss / primary_weight_sum
+            if primary_weight_sum > 0
+            else mean_loss
+        ),
+        "loss_ood": total_loss_ood / num_batches,
+        "loss_speaker": total_loss_speaker / num_batches,
         "ood_acc": total_ood_acc / num_batches,
         "speaker_acc": total_speaker_acc / num_batches,
         "ood_logits": (torch.cat(all_ood_logits) if all_ood_logits else None),

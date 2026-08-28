@@ -2,7 +2,11 @@ import json
 
 import pytest
 
-from scripts.compare_training_histories import compare_histories, load_history
+from scripts.compare_training_histories import (
+    compare_histories,
+    load_history,
+    load_history_context,
+)
 
 
 def _row(epoch, raw, ema, logit, val_loss):
@@ -59,3 +63,45 @@ def test_load_history_accepts_checkpoint_style_json(tmp_path):
 def test_compare_rejects_disjoint_epochs():
     with pytest.raises(ValueError, match="common epochs"):
         compare_histories([_row(1, 0.7, 0.7, 0.6, 1.0)], [_row(2, 0.8, 0.8, 0.7, 0.9)])
+
+
+def test_compare_corrects_primary_loss_weight_scale():
+    candidate = [_row(1, 0.7, 0.7, 0.6, 1.9)]
+    baseline = [_row(1, 0.7, 0.7, 0.6, 2.0)]
+
+    report = compare_histories(
+        candidate,
+        baseline,
+        candidate_primary_loss_scale=0.95,
+        baseline_primary_loss_scale=1.0,
+    )
+
+    corrected = report["primary_loss_scale_correction"]["latest"]
+    assert corrected["val_loss"]["candidate"] == pytest.approx(2.0)
+    assert corrected["val_loss"]["baseline"] == pytest.approx(2.0)
+    assert corrected["val_loss"]["delta"] == pytest.approx(0.0)
+
+
+def test_load_history_context_infers_primary_weight_sum(tmp_path):
+    path = tmp_path / "checkpoint.json"
+    path.write_text(
+        json.dumps(
+            {
+                "config": {
+                    "training": {
+                        "loss": {
+                            "speaker": {"weight": 0.8075},
+                            "ood": {"weight": 0.1425},
+                        }
+                    }
+                },
+                "training_history": [_row(1, 0.7, 0.7, 0.6, 1.0)],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    history, scale = load_history_context(path)
+
+    assert len(history) == 1
+    assert scale == pytest.approx(0.95)

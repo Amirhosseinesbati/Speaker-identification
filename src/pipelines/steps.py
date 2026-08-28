@@ -675,11 +675,24 @@ def train_model(
         # Log metrics per epoch
         _mlflow_log_metrics({
             "train_loss": train_metrics["loss"],
+            "train_loss_primary": train_metrics["loss_primary"],
+            "train_loss_primary_normalized": train_metrics[
+                "loss_primary_normalized"
+            ],
+            "train_loss_proto": train_metrics["loss_proto"],
+            "train_loss_proto_weighted": train_metrics[
+                "loss_proto_weighted"
+            ],
             "train_loss_ood": train_metrics["loss_ood"],
             "train_loss_speaker": train_metrics["loss_speaker"],
             "train_ood_acc": train_metrics["ood_acc"],
             "train_speaker_acc": train_metrics["speaker_acc"],
             "val_loss": val_metrics["loss"],
+            "val_loss_primary_normalized": val_metrics[
+                "loss_primary_normalized"
+            ],
+            "val_loss_ood": val_metrics["loss_ood"],
+            "val_loss_speaker": val_metrics["loss_speaker"],
             "val_ood_acc": val_metrics["ood_acc"],
             "val_speaker_acc": val_metrics["speaker_acc"],
             "val_macro_f1": val_metrics["macro_f1"],
