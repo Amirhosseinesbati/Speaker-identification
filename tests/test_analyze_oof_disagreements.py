@@ -89,6 +89,10 @@ def test_disagreement_report_aligns_files_and_tracks_unknown_rescues(tmp_path):
     assert report["single_correct_auc_diagnostics"]["ood_probability_delta"][
         "samples"
     ] == 2
+    assert report["duration_bins"][0]["samples"] == 1
+    assert report["duration_bins"][1]["samples"] == 3
+    assert report["audio_identity"]["files_scanned"] == 4
+    assert report["audio_identity"]["duplicate_decoded_pcm"] == []
 
 
 def test_fixed_gate_is_descriptive_and_uses_unknown_probability_delta(tmp_path):
@@ -115,6 +119,64 @@ def test_fixed_gate_is_descriptive_and_uses_unknown_probability_delta(tmp_path):
     assert gates[0]["overall_acc"] == 1.0
     assert gates[1]["candidate_selected"] == 0
     assert "same-fold" in report["selection_warning"]
+
+
+def test_audio_and_probability_duplicate_groups_are_reported(tmp_path):
+    candidate_path = tmp_path / "candidate" / "oof_predictions.npz"
+    baseline_path = tmp_path / "baseline" / "oof_predictions.npz"
+    files = ["a.wav", "b.wav", "c.wav"]
+    labels = [0, 0, 1]
+    candidate_probs = [
+        [0.7, 0.1, 0.1, 0.1],
+        [0.7, 0.1, 0.1, 0.1],
+        [0.1, 0.7, 0.1, 0.1],
+    ]
+    baseline_probs = [
+        [0.2, 0.6, 0.1, 0.1],
+        [0.2, 0.6, 0.1, 0.1],
+        [0.1, 0.7, 0.1, 0.1],
+    ]
+    embeddings = np.eye(3, dtype=np.float32)
+    _write_oof(candidate_path, files, labels, candidate_probs, embeddings)
+    _write_oof(baseline_path, files, labels, baseline_probs, embeddings)
+    audio_dir = tmp_path / "audio"
+    _write_wav(audio_dir / "a.wav", frames=16000)
+    (audio_dir / "b.wav").write_bytes((audio_dir / "a.wav").read_bytes())
+    _write_wav(audio_dir / "c.wav", frames=32000)
+
+    report, _ = analyze_disagreements(
+        candidate_path, baseline_path, audio_dir=audio_dir
+    )
+
+    file_groups = report["audio_identity"]["duplicate_file_bytes"]
+    pcm_groups = report["audio_identity"]["duplicate_decoded_pcm"]
+    candidate_groups = report["identical_probability_rows"]["candidate"]
+    assert file_groups[0]["files"] == ["a.wav", "b.wav"]
+    assert pcm_groups[0]["files"] == ["a.wav", "b.wav"]
+    assert candidate_groups[0]["files"] == ["a.wav", "b.wav"]
+
+
+def test_duration_gate_uses_candidate_only_for_short_unknown_switch(tmp_path):
+    candidate_path = tmp_path / "candidate" / "oof_predictions.npz"
+    baseline_path = tmp_path / "baseline" / "oof_predictions.npz"
+    files = ["short.wav", "long.wav"]
+    labels = [0, 0]
+    candidate_probs = [[0.7, 0.1, 0.1, 0.1], [0.7, 0.1, 0.1, 0.1]]
+    baseline_probs = [[0.2, 0.6, 0.1, 0.1], [0.2, 0.6, 0.1, 0.1]]
+    embeddings = np.eye(2, dtype=np.float32)
+    _write_oof(candidate_path, files, labels, candidate_probs, embeddings)
+    _write_oof(baseline_path, files, labels, baseline_probs, embeddings)
+    audio_dir = tmp_path / "audio"
+    _write_wav(audio_dir / "short.wav", frames=16000)
+    _write_wav(audio_dir / "long.wav", frames=12 * 16000)
+
+    report, _ = analyze_disagreements(
+        candidate_path, baseline_path, audio_dir=audio_dir
+    )
+
+    gates = report["fixed_duration_gates_descriptive_only"]
+    assert [gate["candidate_selected"] for gate in gates] == [1, 1, 1]
+    assert all(gate["overall_acc"] == 0.5 for gate in gates)
 
 
 def test_script_help_runs_directly_from_project_root():

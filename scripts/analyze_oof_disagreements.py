@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import sys
 import wave
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -35,6 +37,8 @@ from scripts.compare_oof_predictions import (
 
 
 DEFAULT_THRESHOLDS = (0.0, 0.05, 0.10, 0.20)
+DEFAULT_DURATION_BINS = (0.0, 2.0, 5.0, 10.0, 30.0, 60.0, math.inf)
+DEFAULT_DURATION_GATES = (2.0, 5.0, 10.0)
 
 
 def _align_records(
@@ -76,13 +80,54 @@ def _known_margin(probabilities: np.ndarray) -> np.ndarray:
     return top_two[:, 1] - top_two[:, 0]
 
 
-def _duration_seconds(path: Path) -> float | None:
+def _audio_identity(path: Path) -> dict[str, Any]:
+    """Read lightweight WAV metadata plus byte- and decoded-PCM identities."""
+
     try:
+        file_digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                file_digest.update(chunk)
+
         with wave.open(str(path), "rb") as handle:
             rate = handle.getframerate()
-            return float(handle.getnframes() / rate) if rate else None
-    except (FileNotFoundError, wave.Error, EOFError):
-        return None
+            channels = handle.getnchannels()
+            sample_width = handle.getsampwidth()
+            frames = handle.getnframes()
+            pcm_digest = hashlib.sha256()
+            pcm_digest.update(
+                f"rate={rate};channels={channels};width={sample_width};".encode("ascii")
+            )
+            while True:
+                chunk = handle.readframes(65536)
+                if not chunk:
+                    break
+                pcm_digest.update(chunk)
+            return {
+                "duration_seconds": float(frames / rate) if rate else None,
+                "sample_rate": int(rate),
+                "channels": int(channels),
+                "sample_width_bytes": int(sample_width),
+                "file_sha256": file_digest.hexdigest(),
+                "pcm_sha256": pcm_digest.hexdigest(),
+                "audio_error": None,
+            }
+    except (FileNotFoundError, PermissionError, wave.Error, EOFError, OSError) as exc:
+        return {
+            "duration_seconds": None,
+            "sample_rate": None,
+            "channels": None,
+            "sample_width_bytes": None,
+            "file_sha256": None,
+            "pcm_sha256": None,
+            "audio_error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _duration_seconds(path: Path) -> float | None:
+    """Backward-compatible duration helper used by downstream imports."""
+
+    return _audio_identity(path)["duration_seconds"]
 
 
 def _quantiles(values: Iterable[float | None]) -> dict[str, float | int | None]:
@@ -187,6 +232,163 @@ def _fixed_gate_diagnostics(
     return diagnostics
 
 
+def _duration_label(lower: float, upper: float) -> str:
+    if math.isinf(upper):
+        return f">={lower:g}s"
+    return f"{lower:g}-{upper:g}s"
+
+
+def _duration_bin_diagnostics(
+    rows: Sequence[dict[str, Any]],
+    *,
+    edges: Sequence[float] = DEFAULT_DURATION_BINS,
+) -> list[dict[str, Any]]:
+    if len(edges) < 2 or any(right <= left for left, right in zip(edges, edges[1:])):
+        raise ValueError("Duration bin edges must be strictly increasing")
+    diagnostics: list[dict[str, Any]] = []
+    for lower, upper in zip(edges, edges[1:]):
+        selected = [
+            row
+            for row in rows
+            if row["duration_seconds"] is not None
+            and lower <= float(row["duration_seconds"]) < upper
+        ]
+        outcomes = {
+            name: sum(row["outcome"] == name for row in selected)
+            for name in (
+                "candidate_only_correct",
+                "baseline_only_correct",
+                "both_wrong",
+                "both_correct",
+            )
+        }
+        unknown = [row for row in selected if row["is_unknown"]]
+        known = [row for row in selected if not row["is_unknown"]]
+
+        def _accuracy(group: Sequence[dict[str, Any]], model: str) -> float | None:
+            if not group:
+                return None
+            return float(
+                sum(
+                    row["outcome"] in ({"both_correct", "candidate_only_correct"}
+                    if model == "candidate"
+                    else {"both_correct", "baseline_only_correct"})
+                    for row in group
+                )
+                / len(group)
+            )
+
+        diagnostics.append(
+            {
+                "bin": _duration_label(lower, upper),
+                "lower_seconds_inclusive": float(lower),
+                "upper_seconds_exclusive": None if math.isinf(upper) else float(upper),
+                "samples": len(selected),
+                "unknown_samples": len(unknown),
+                "known_samples": len(known),
+                **outcomes,
+                "candidate_accuracy": _accuracy(selected, "candidate"),
+                "baseline_accuracy": _accuracy(selected, "baseline"),
+                "candidate_unknown_accuracy": _accuracy(unknown, "candidate"),
+                "baseline_unknown_accuracy": _accuracy(unknown, "baseline"),
+                "candidate_known_accuracy": _accuracy(known, "candidate"),
+                "baseline_known_accuracy": _accuracy(known, "baseline"),
+            }
+        )
+    return diagnostics
+
+
+def _fixed_duration_gate_diagnostics(
+    rows: Sequence[dict[str, Any]],
+    labels: np.ndarray,
+    candidate_predictions: np.ndarray,
+    baseline_predictions: np.ndarray,
+    *,
+    num_classes: int,
+    thresholds: Sequence[float] = DEFAULT_DURATION_GATES,
+) -> list[dict[str, Any]]:
+    durations = np.asarray(
+        [
+            float(row["duration_seconds"])
+            if row["duration_seconds"] is not None
+            else math.inf
+            for row in rows
+        ],
+        dtype=np.float64,
+    )
+    candidate_predicts_unknown = candidate_predictions == 0
+    baseline_predicts_known = baseline_predictions != 0
+    diagnostics: list[dict[str, Any]] = []
+    for threshold in thresholds:
+        use_candidate = (
+            (durations < float(threshold))
+            & candidate_predicts_unknown
+            & baseline_predicts_known
+        )
+        predictions = np.where(use_candidate, candidate_predictions, baseline_predictions)
+        diagnostics.append(
+            {
+                "duration_less_than_seconds": float(threshold),
+                "candidate_selected": int(use_candidate.sum()),
+                **_metrics_from_predictions(predictions, labels, num_classes),
+            }
+        )
+    return diagnostics
+
+
+def _duplicate_groups(
+    rows: Sequence[dict[str, Any]], field: str
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        value = row.get(field)
+        if value:
+            grouped[str(value)].append(row)
+    duplicates: list[dict[str, Any]] = []
+    for value, group in grouped.items():
+        if len(group) < 2:
+            continue
+        duplicates.append(
+            {
+                field: value,
+                "samples": len(group),
+                "files": [row["file"] for row in group],
+                "labels": [row["label"] for row in group],
+                "outcomes": [row["outcome"] for row in group],
+                "durations_seconds": [row["duration_seconds"] for row in group],
+            }
+        )
+    return sorted(duplicates, key=lambda group: (-group["samples"], group[field]))
+
+
+def _probability_signature_groups(
+    probabilities: np.ndarray,
+    rows: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[int]] = defaultdict(list)
+    contiguous = np.ascontiguousarray(probabilities)
+    for index, probability in enumerate(contiguous):
+        grouped[hashlib.sha256(probability.tobytes()).hexdigest()].append(index)
+    result: list[dict[str, Any]] = []
+    for signature, indices in grouped.items():
+        if len(indices) < 2:
+            continue
+        group = [rows[index] for index in indices]
+        result.append(
+            {
+                "probability_sha256": signature,
+                "samples": len(group),
+                "files": [row["file"] for row in group],
+                "labels": [row["label"] for row in group],
+                "outcomes": [row["outcome"] for row in group],
+                "durations_seconds": [row["duration_seconds"] for row in group],
+            }
+        )
+    return sorted(
+        result, key=lambda group: (-group["samples"], group["probability_sha256"])
+    )
+
+
 def analyze_disagreements(
     candidate_path: Path,
     baseline_path: Path,
@@ -246,7 +448,19 @@ def analyze_disagreements(
             outcome = "baseline_only_correct"
         else:
             outcome = "both_wrong"
-        duration = _duration_seconds(audio_dir / filename) if audio_dir else None
+        audio = (
+            _audio_identity(audio_dir / filename)
+            if audio_dir
+            else {
+                "duration_seconds": None,
+                "sample_rate": None,
+                "channels": None,
+                "sample_width_bytes": None,
+                "file_sha256": None,
+                "pcm_sha256": None,
+                "audio_error": None,
+            }
+        )
         rows.append(
             {
                 "file": filename,
@@ -276,7 +490,7 @@ def analyze_disagreements(
                 "embedding_cosine": (
                     float(embedding_cosine[index]) if embedding_cosine is not None else None
                 ),
-                "duration_seconds": duration,
+                **audio,
             }
         )
 
@@ -348,10 +562,33 @@ def analyze_disagreements(
             num_classes=candidate_probs.shape[1],
             thresholds=fixed_thresholds,
         ),
+        "duration_bins": _duration_bin_diagnostics(rows),
+        "fixed_duration_gates_descriptive_only": _fixed_duration_gate_diagnostics(
+            rows,
+            labels,
+            candidate_predictions,
+            baseline_predictions,
+            num_classes=candidate_probs.shape[1],
+        ),
+        "audio_identity": {
+            "files_scanned": sum(row["file_sha256"] is not None for row in rows),
+            "audio_errors": [
+                {"file": row["file"], "error": row["audio_error"]}
+                for row in rows
+                if row["audio_error"] is not None
+            ],
+            "duplicate_file_bytes": _duplicate_groups(rows, "file_sha256"),
+            "duplicate_decoded_pcm": _duplicate_groups(rows, "pcm_sha256"),
+        },
+        "identical_probability_rows": {
+            "candidate": _probability_signature_groups(candidate_probs, rows),
+            "baseline": _probability_signature_groups(baseline_probs, rows),
+        },
         "selection_warning": (
-            "These diagnostics are same-fold evidence. Do not select a gate or "
-            "threshold from this report for submission; predeclare it and confirm "
-            "on another fold first."
+            "These diagnostics are same-fold evidence. Duration gates were added "
+            "after observing a short-utterance signal and are exploratory, not "
+            "preregistered. Do not select any gate or threshold from this report "
+            "for submission; predeclare it and confirm on another fold first."
         ),
     }
     disagreement_rows = [row for row in rows if row["outcome"] != "both_correct"]
