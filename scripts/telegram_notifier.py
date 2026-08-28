@@ -68,14 +68,24 @@ def _discover_private_chat(token: str) -> int:
     return chat_id
 
 
-def send(message: str, discover: bool = False) -> None:
+def send(message: str, discover: bool = False) -> int:
+    """Send one message and return the verified Telegram ``message_id``.
+
+    A successful HTTP response alone is not enough for campaign observability:
+    the marker written by the heartbeat needs the server-assigned message id so
+    retries can be distinguished from duplicate notifications.
+    """
     token = _load_token()
     if discover or not CHAT_FILE.exists():
         chat_id = _discover_private_chat(token)
     else:
         chat_id = int(CHAT_FILE.read_text(encoding="ascii").strip())
-    _api(token, "sendMessage", {"chat_id": chat_id, "text": message})
-    print("Telegram notification delivered to the allowlisted private chat.")
+    response = _api(token, "sendMessage", {"chat_id": chat_id, "text": message})
+    message_id = (response.get("result") or {}).get("message_id")
+    if not isinstance(message_id, int):
+        raise RuntimeError("Telegram sendMessage response has no integer message_id")
+    print(json.dumps({"status": "delivered", "message_id": message_id}))
+    return message_id
 
 
 def main() -> None:
