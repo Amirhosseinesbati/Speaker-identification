@@ -1,0 +1,118 @@
+_meta:
+  name: p3-campp-known446-ood-channelrobust-oof-f0
+  base: default_config.yaml
+experiment:
+  priority: P3-REPRESENTATION-GATE
+  family: campp-known446-ood-channelrobust
+  purpose: >-
+    Test whether a speaker-preserving channel/session augmentation policy
+    creates a CAM++ representation that is complementary to the externally
+    validated Control LME20 model without changing architecture, split, seed,
+    objective, optimiser, schedule, or inference policy.
+  expected_decision: >-
+    Run Fold 0 only.  Evaluate the candidate standalone and in a fixed 50/50
+    probability-evidence fusion with Control Fold 0 under the locked LME20
+    policy.  A pass authorises analysis only, never automatic later Folds or a
+    leaderboard submission.
+  preregistered_baseline:
+    control_raw_probability_macro_f1: 0.9469211906147802
+    control_lme20_macro_f1: 0.9611456662793696
+  preregistered_gate:
+    minimum_fixed_fusion_macro_gain: 0.002
+    maximum_known_accuracy_drop: 0.001
+    maximum_ood_f1_drop: 0.001
+    minimum_candidate_rescue_rate: 0.20
+    maximum_standalone_lme20_deficit: 0.010
+    expansion_if_passed: analysis_only
+    later_folds_automatic: false
+  stop_rules:
+    epoch_40_minimum_best_raw_probability_macro_f1: 0.90
+    maximum_runtime_hours: 6.0
+    maximum_incremental_cost_usd: 1.10
+data:
+  clean_duplicates: true
+  split: {scheme: kfold, folds: 3, fold: 0, seed: 42}
+model:
+  encoder_type: campp
+  competition_num_known: 446
+  num_unknown_clusters: 554
+  unknown_cluster_path: data/processed/unknown_clusters_oof_f0.json
+  speaker_target_scope: known
+  ood_head: true
+  speaker_head_type: arcface
+  speaker_head_config:
+    arcface: {embedding_dim: 192, margin: 0.4, scale: 30.0}
+  encoder_config:
+    campp: {freeze_encoder: false, unfreeze_last_n_blocks: 2}
+audio:
+  num_train_windows: 8
+  speech_aware_crop_probability: 0.75
+  eval_speech_aware: true
+  short_audio_mode: pad
+augmentation:
+  domain:
+    mp3_codec_roundtrip:
+      max_bitrate: 192
+      min_bitrate: 64
+      p: 0.3
+    musan:
+      music_p: 0.1
+      noise_p: 0.6
+      path: data/augmentation/musan
+      snr_db: [3.0, 20.0]
+    rirs_reverb:
+      p: 0.6
+      path: data/augmentation/rirs
+  spec:
+    time_mask:
+      max_mask_ratio: 0.1
+      p: 0.3
+  waveform:
+    gain:
+      db: [-6.0, 6.0]
+      p: 0.3
+    gaussian_noise:
+      amp: [0.001, 0.008]
+      p: 0.2
+    pitch_shift:
+      p: 0.0
+      semitones: [-1.0, 1.0]
+    polarity_inversion:
+      p: 0.5
+    shift:
+      frac: 0.1
+      p: 0.3
+    time_stretch:
+      p: 0.1
+      rate: [0.95, 1.05]
+hardware:
+  mode: vastai_3090_campp
+  profiles:
+    vastai_3090_campp:
+      batch_size: 48
+      description: Measured RTX 3090 CAM++ 8x8s sweet spot
+      device: cuda
+      mixed_precision: true
+      num_workers: 8
+logging:
+  checkpoint_dir: checkpoints/p3-campp-known446-ood-channelrobust-oof-f0
+  log_dir: logs/p3-campp-known446-ood-channelrobust-oof-f0
+training:
+  seed: 42
+  deterministic_algorithms: true
+  epochs: 200
+  freeze_epochs: 20
+  early_stopping_patience: 20
+  learning_rate: 0.0003
+  encoder_lr: 1.0e-05
+  weight_decay: 0.0001
+  schedule: cosine
+  warmup_ratio: 0.1
+  min_lr_ratio: 0.05
+  ema_enabled: true
+  ema_decay: 0.999
+  loss:
+    speaker: {type: ce, label_smoothing: 0.05, weight: 0.85}
+    ood: {type: bce, pos_weight: 1.0, weight: 0.15}
+    proto: {enabled: false}
+
