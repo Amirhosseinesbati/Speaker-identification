@@ -152,6 +152,32 @@ MLflow Run `557c7d5542e64cb6b21637e2d69a1f14` was independently verified
 `RUNNING` with 70 contiguous points for all four queried core metrics.  This
 update changes no continuation constant, terminal gate or worker checkout.
 
+### Live evidence update — epoch 73 gate preview
+
+The source remained healthy and active through complete epoch 73.  Raw
+probability-average Macro-F1 was `0.9327862045982851`, while diagnostic EMA
+was `0.9344044471561251`; the epoch-70 Raw checkpoint therefore remained the
+selected model.  At matched epoch 73 the candidate was only `0.0017522979`
+below Control Raw, with training loss `0.1166554` lower and validation loss
+only `0.0051964` higher.  EMA OOD-F1 also increased to `0.9455`, so the late
+adaptation signal had not collapsed even though no newer Raw best appeared.
+
+A second non-terminal execution of the locked continuation evaluator passed
+all three trend tests: the epoch-70 selected Raw checkpoint was within the
+final-eight window, the final-ten EMA OLS slope was `+0.0003315311` per epoch,
+and mean training loss improved by `0.0700048` between the preceding and final
+five-epoch windows while validation loss rose by `0.0172550`, below the locked
+`0.03` guardrail.  The by-epoch-60 Raw floor remained satisfied at
+`0.9338324913327573`.  MLflow independently contained 73 contiguous points
+for each queried core metric, and the selected checkpoint SHA256 remained
+`c52b0462f3dfebbfb387d6348c9c3aed7e372f2fd98417600d1b9b9049dc0b7f`.
+
+The preview still returned `eligible=false` solely because `complete` is not
+an allowed terminal reason; only an actual patience or six-hour timeout may
+trigger the stateful continuation.  This update strengthens the preregistered
+case for additional time without changing any threshold, budget, stopping
+rule, active worker checkout or downstream treatment.
+
 ## Literature rationale
 
 - Curriculum learning for speaker verification reports benefits from gradually
