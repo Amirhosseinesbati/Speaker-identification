@@ -1,9 +1,10 @@
-"""Terminal Fold-0 audit for the preregistered long80 paired-consistency A/B.
+"""Terminal Fold-0 audit for a preregistered paired-consistency A/B horizon.
 
 The evaluator performs no parameter search.  It compares selected Raw LME20
-decisions for the matched 80-epoch control and fixed-weight consistency branch,
-then evaluates the one preregistered 50/50 probability-evidence fusion with the
-externally validated CAM++ Control Fold 0.
+decisions for the matched control and fixed-weight consistency branch, then
+evaluates the one preregistered 50/50 probability-evidence fusion with the
+externally validated CAM++ Control Fold 0.  Both the historical 80-epoch pair
+and the superseding 120-epoch pair have immutable config hashes.
 """
 
 from __future__ import annotations
@@ -63,6 +64,34 @@ MATCHED_CONFIG_SHA256 = (
 TREATMENT_CONFIG_SHA256 = (
     "1d0625d1c4311dbe0544775cfeb8db91c2f07d0335eba748a7c87240ef4ba860"
 )
+LONG120_MATCHED_CONTROL_PROFILE = (
+    "p4-campp-known446-ood-channelrobust-paired-control-long120-oof-f0"
+)
+LONG120_TREATMENT_PROFILE = (
+    "p4-campp-known446-ood-channelrobust-consistency-c01-long120-oof-f0"
+)
+LONG120_MATCHED_CONFIG_SHA256 = (
+    "88eed2d8f3ab1a4e37f72ae1955ded78887e84332308fc965c66b777cae0b5e1"
+)
+LONG120_TREATMENT_CONFIG_SHA256 = (
+    "823891d4aa396b02d21563efc487acbe71f3bcff84572b96eb8a2d1554826f77"
+)
+HORIZON_SPECS = {
+    80: {
+        "matched_profile": MATCHED_CONTROL_PROFILE,
+        "treatment_profile": TREATMENT_PROFILE,
+        "matched_config_sha256": MATCHED_CONFIG_SHA256,
+        "treatment_config_sha256": TREATMENT_CONFIG_SHA256,
+        "milestones": (40,),
+    },
+    120: {
+        "matched_profile": LONG120_MATCHED_CONTROL_PROFILE,
+        "treatment_profile": LONG120_TREATMENT_PROFILE,
+        "matched_config_sha256": LONG120_MATCHED_CONFIG_SHA256,
+        "treatment_config_sha256": LONG120_TREATMENT_CONFIG_SHA256,
+        "milestones": (40, 80),
+    },
+}
 EXTERNAL_CONTROL_LME20_MACRO_F1 = 0.9611456662793696
 MINIMUM_MATCHED_MACRO_GAIN = 0.002
 MINIMUM_FUSION_MACRO_GAIN = 0.002
@@ -92,16 +121,23 @@ def _normalise_identity(config: dict) -> dict:
 def assert_paired_single_objective_contract(
     matched_config: dict,
     treatment_config: dict,
+    *,
+    expected_epochs: int = 80,
+    expected_milestones: tuple[int, ...] = (40,),
 ) -> None:
-    """Require identical long80 science except the enabled consistency term."""
+    """Require identical paired science except the enabled consistency term."""
     matched = _normalise_identity(matched_config)
     treatment = _normalise_identity(treatment_config)
     for name, config in (("matched", matched), ("treatment", treatment)):
         training = config.get("training", {}) or {}
-        if int(training.get("epochs", -1)) != 80:
-            raise RuntimeError(f"{name} is not an 80-epoch recipe")
-        if list(training.get("milestone_epochs", [])) != [40]:
-            raise RuntimeError(f"{name} does not preserve epoch 40")
+        if int(training.get("epochs", -1)) != expected_epochs:
+            raise RuntimeError(
+                f"{name} is not an {expected_epochs}-epoch recipe"
+            )
+        if tuple(training.get("milestone_epochs", [])) != expected_milestones:
+            raise RuntimeError(
+                f"{name} does not preserve milestones {expected_milestones}"
+            )
         if int(training.get("early_stopping_patience", -1)) != 0:
             raise RuntimeError(f"{name} enables metric early stopping")
         if str(training.get("selection_variant", "")).lower() != "raw":
@@ -134,7 +170,7 @@ def assert_paired_single_objective_contract(
             if matched.get(key) != treatment.get(key)
         )
         raise RuntimeError(
-            "Long80 branches differ outside consistency.enabled: "
+            "Paired branches differ outside consistency.enabled: "
             + ", ".join(changed)
         )
 
@@ -150,10 +186,14 @@ def embedding_spread(artifact: dict[str, np.ndarray]) -> float:
     return spread
 
 
-def milestone_diagnostic(path: Path, expected_profile: str) -> dict:
+def milestone_diagnostic(
+    path: Path,
+    expected_profile: str,
+    expected_epoch: int = 40,
+) -> dict:
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    if int(checkpoint.get("epoch", -1)) != 40:
-        raise RuntimeError(f"Milestone is not epoch 40: {path}")
+    if int(checkpoint.get("epoch", -1)) != expected_epoch:
+        raise RuntimeError(f"Milestone is not epoch {expected_epoch}: {path}")
     config = checkpoint.get("config", {}) or {}
     checkpoint_dir = str((config.get("logging", {}) or {}).get("checkpoint_dir", ""))
     if not checkpoint_dir.replace("\\", "/").endswith(expected_profile):
@@ -162,8 +202,10 @@ def milestone_diagnostic(path: Path, expected_profile: str) -> dict:
     if not isinstance(history, list) or not history:
         raise RuntimeError(f"Milestone history missing: {path}")
     row = history[-1]
-    if int(row.get("epoch", -1)) != 40:
-        raise RuntimeError(f"Milestone history does not end at epoch 40: {path}")
+    if int(row.get("epoch", -1)) != expected_epoch:
+        raise RuntimeError(
+            f"Milestone history does not end at epoch {expected_epoch}: {path}"
+        )
     keys = (
         "val_macro_f1",
         "val_logit_avg_macro_f1",
@@ -187,7 +229,7 @@ def milestone_diagnostic(path: Path, expected_profile: str) -> dict:
     return {
         "path": str(path),
         "sha256": sha256_file(path),
-        "epoch": 40,
+        "epoch": expected_epoch,
         "metrics": metrics,
     }
 
@@ -385,18 +427,22 @@ def main() -> int:
         type=Path,
         default=ROOT / "data" / "processed" / "unknown_clusters_oof_f0.json",
     )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=(
-            ROOT / "reports" / "generated"
-            / "campp_paired_consistency_long80_fold0.json"
-        ),
-    )
+    parser.add_argument("--horizon", type=int, choices=sorted(HORIZON_SPECS), default=120)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--batch-size", type=int, default=48)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
+
+    spec = HORIZON_SPECS[args.horizon]
+    matched_profile = str(spec["matched_profile"])
+    treatment_profile = str(spec["treatment_profile"])
+    milestones = tuple(int(value) for value in spec["milestones"])
+    if args.output is None:
+        args.output = (
+            ROOT / "reports" / "generated"
+            / f"campp_paired_consistency_long{args.horizon}_fold0.json"
+        )
 
     device = (
         torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -415,15 +461,17 @@ def main() -> int:
     train_frame, validation_frame = splits[0]
     expected_validation = set(validation_frame["audio_file"].astype(str))
 
-    profiles = (MATCHED_CONTROL_PROFILE, TREATMENT_PROFILE)
+    profiles = (matched_profile, treatment_profile)
     locked_config_hashes = {
-        MATCHED_CONTROL_PROFILE: MATCHED_CONFIG_SHA256,
-        TREATMENT_PROFILE: TREATMENT_CONFIG_SHA256,
+        matched_profile: str(spec["matched_config_sha256"]),
+        treatment_profile: str(spec["treatment_config_sha256"]),
     }
     for profile, expected_sha256 in locked_config_hashes.items():
         config_path = ROOT / "configs" / "experiments" / f"{profile}.yaml"
         if sha256_file(config_path) != expected_sha256:
-            raise RuntimeError(f"Locked long80 config SHA changed: {profile}")
+            raise RuntimeError(
+                f"Locked long{args.horizon} config SHA changed: {profile}"
+            )
     loaded: dict[str, dict] = {}
     for profile in profiles:
         checkpoint_dir = args.checkpoint_root / profile
@@ -450,9 +498,14 @@ def main() -> int:
         checkpoint = torch.load(
             checkpoint_path, map_location="cpu", weights_only=False
         )
-        milestone_path = (
-            checkpoint_dir / "campp_milestone_epoch040_raw.pt"
-        )
+        milestone_receipts = {
+            str(epoch): milestone_diagnostic(
+                checkpoint_dir / f"campp_milestone_epoch{epoch:03d}_raw.pt",
+                profile,
+                epoch,
+            )
+            for epoch in milestones
+        }
         loaded[profile] = {
             "checkpoint_path": checkpoint_path,
             "latest_path": latest_path,
@@ -462,21 +515,26 @@ def main() -> int:
             "artifact": artifact,
             "artifact_metadata": metadata,
             "checkpoint": checkpoint,
-            "milestone": milestone_diagnostic(milestone_path, profile),
-            "terminal_curve": terminal_curve_diagnostic(latest_path, profile),
+            "milestones": milestone_receipts,
+            "terminal_curve": terminal_curve_diagnostic(
+                latest_path, profile, expected_epoch=args.horizon
+            ),
         }
 
-    matched = loaded[MATCHED_CONTROL_PROFILE]
-    treatment = loaded[TREATMENT_PROFILE]
+    matched = loaded[matched_profile]
+    treatment = loaded[treatment_profile]
     if matched["checkpoint"]["class_map"] != treatment["checkpoint"]["class_map"]:
-        raise RuntimeError("Long80 class maps differ")
+        raise RuntimeError(f"Long{args.horizon} class maps differ")
     if (
         matched["checkpoint"]["config"]["data"]["split"]
         != treatment["checkpoint"]["config"]["data"]["split"]
     ):
-        raise RuntimeError("Long80 split provenance differs")
+        raise RuntimeError(f"Long{args.horizon} split provenance differs")
     assert_paired_single_objective_contract(
-        matched["checkpoint"]["config"], treatment["checkpoint"]["config"]
+        matched["checkpoint"]["config"],
+        treatment["checkpoint"]["config"],
+        expected_epochs=args.horizon,
+        expected_milestones=milestones,
     )
     source_checkpoint = (
         args.checkpoint_root / SOURCE_PROFILE / "campp_best_raw.pt"
@@ -538,12 +596,12 @@ def main() -> int:
 
     report = {
         "contract": {
-            "scope": "Fold 0 long80 matched A/B",
-            "matched_control_profile": MATCHED_CONTROL_PROFILE,
-            "treatment_profile": TREATMENT_PROFILE,
+            "scope": f"Fold 0 long{args.horizon} matched A/B",
+            "matched_control_profile": matched_profile,
+            "treatment_profile": treatment_profile,
             "single_training_treatment": "fixed cosine consistency weight 0.1",
-            "horizon": 80,
-            "diagnostic_milestone": 40,
+            "horizon": args.horizon,
+            "diagnostic_milestones": list(milestones),
             "decision": "selected Raw probability-average LME20 direct argmax",
             "fusion": "fixed 50/50 probability-evidence average",
             "parameter_search": False,
@@ -564,7 +622,7 @@ def main() -> int:
                 "oof_sha256": sha256_file(matched["oof_path"]),
                 "bundle_binding": matched["binding"],
                 "train_artifact": matched["artifact_metadata"],
-                "milestone": matched["milestone"],
+                "milestones": matched["milestones"],
                 "terminal_curve": matched["terminal_curve"],
             },
             "treatment": {
@@ -573,7 +631,7 @@ def main() -> int:
                 "oof_sha256": sha256_file(treatment["oof_path"]),
                 "bundle_binding": treatment["binding"],
                 "train_artifact": treatment["artifact_metadata"],
-                "milestone": treatment["milestone"],
+                "milestones": treatment["milestones"],
                 "terminal_curve": treatment["terminal_curve"],
             },
         },

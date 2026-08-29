@@ -5,6 +5,11 @@ import pytest
 import torch
 
 from scripts.audit_campp_paired_consistency_lme20 import (
+    HORIZON_SPECS,
+    LONG120_MATCHED_CONFIG_SHA256,
+    LONG120_MATCHED_CONTROL_PROFILE,
+    LONG120_TREATMENT_CONFIG_SHA256,
+    LONG120_TREATMENT_PROFILE,
     MATCHED_CONFIG_SHA256,
     MATCHED_CONTROL_PROFILE,
     ROOT,
@@ -40,6 +45,28 @@ def test_long80_raw_config_files_match_preregistered_hashes() -> None:
     for profile, digest in expected.items():
         path = ROOT / "configs" / "experiments" / f"{profile}.yaml"
         assert sha256_file(path) == digest
+
+
+def test_long120_contract_and_raw_config_hashes_are_preregistered() -> None:
+    spec = HORIZON_SPECS[120]
+    assert spec["matched_profile"] == LONG120_MATCHED_CONTROL_PROFILE
+    assert spec["treatment_profile"] == LONG120_TREATMENT_PROFILE
+    expected = {
+        LONG120_MATCHED_CONTROL_PROFILE: LONG120_MATCHED_CONFIG_SHA256,
+        LONG120_TREATMENT_PROFILE: LONG120_TREATMENT_CONFIG_SHA256,
+    }
+    for profile, digest in expected.items():
+        path = ROOT / "configs" / "experiments" / f"{profile}.yaml"
+        assert sha256_file(path) == digest
+
+    matched = load_profile(LONG120_MATCHED_CONTROL_PROFILE)
+    treatment = load_profile(LONG120_TREATMENT_PROFILE)
+    assert_paired_single_objective_contract(
+        matched,
+        treatment,
+        expected_epochs=120,
+        expected_milestones=(40, 80),
+    )
 
 
 def test_embedding_spread_is_finite_and_detects_collapse() -> None:

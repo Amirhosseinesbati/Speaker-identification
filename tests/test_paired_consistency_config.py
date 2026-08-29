@@ -13,6 +13,20 @@ CONTROL = "p4-campp-known446-ood-channelrobust-paired-control-oof-f0"
 CANDIDATE = "p4-campp-known446-ood-channelrobust-consistency-c01-oof-f0"
 LONG_CONTROL = "p4-campp-known446-ood-channelrobust-paired-control-long80-oof-f0"
 LONG_CANDIDATE = "p4-campp-known446-ood-channelrobust-consistency-c01-long80-oof-f0"
+LONG120_CONTROL = (
+    "p4-campp-known446-ood-channelrobust-paired-control-long120-oof-f0"
+)
+LONG120_CANDIDATE = (
+    "p4-campp-known446-ood-channelrobust-consistency-c01-long120-oof-f0"
+)
+LONG120_SHA256 = {
+    LONG120_CONTROL: (
+        "88eed2d8f3ab1a4e37f72ae1955ded78887e84332308fc965c66b777cae0b5e1"
+    ),
+    LONG120_CANDIDATE: (
+        "823891d4aa396b02d21563efc487acbe71f3bcff84572b96eb8a2d1554826f77"
+    ),
+}
 
 
 def _normalise_identity(config: dict) -> dict:
@@ -77,6 +91,55 @@ def test_long80_changes_only_horizon_and_identity_from_40_epoch_recipe() -> None
     assert long["training"].pop("selection_variant") == "raw"
     short["training"].pop("epochs")
     assert long == short
+
+
+def test_long120_pair_is_a_single_objective_change() -> None:
+    control = _normalise_identity(load_profile(LONG120_CONTROL))
+    candidate = _normalise_identity(load_profile(LONG120_CANDIDATE))
+
+    for config in (control, candidate):
+        assert config["training"]["epochs"] == 120
+        assert config["training"]["milestone_epochs"] == [40, 80]
+        assert config["training"]["early_stopping_patience"] == 0
+        assert config["training"]["selection_variant"] == "raw"
+        assert _training_milestone_epochs(config["training"]) == {40, 80}
+
+    candidate["training"]["loss"]["consistency"]["enabled"] = False
+    assert candidate == control
+
+
+def test_long120_changes_only_horizon_and_identity_from_40_epoch_recipe() -> None:
+    short = _normalise_identity(load_profile(CONTROL))
+    long = _normalise_identity(load_profile(LONG120_CONTROL))
+
+    assert short["training"]["epochs"] == 40
+    assert "milestone_epochs" not in short["training"]
+    assert long["training"].pop("epochs") == 120
+    assert long["training"].pop("milestone_epochs") == [40, 80]
+    assert long["training"].pop("selection_variant") == "raw"
+    short["training"].pop("epochs")
+    assert long == short
+
+
+def test_long120_is_the_same_science_as_long80_except_horizon() -> None:
+    long80 = _normalise_identity(load_profile(LONG_CONTROL))
+    long120 = _normalise_identity(load_profile(LONG120_CONTROL))
+
+    assert long80["training"].pop("epochs") == 80
+    assert long120["training"].pop("epochs") == 120
+    assert long80["training"].pop("milestone_epochs") == [40]
+    assert long120["training"].pop("milestone_epochs") == [40, 80]
+    assert long120 == long80
+
+
+def test_long120_raw_config_files_match_preregistered_hashes() -> None:
+    import hashlib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    for profile, expected in LONG120_SHA256.items():
+        path = root / "configs" / "experiments" / f"{profile}.yaml"
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == expected
 
 
 def test_milestone_validation_rejects_terminal_or_nonpositive_epochs() -> None:
