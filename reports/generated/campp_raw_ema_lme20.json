@@ -1,0 +1,369 @@
+{
+  "contract": {
+    "hypothesis": "the best EMA snapshot has complementary errors to the selected Raw snapshot despite lower standalone validation Macro-F1",
+    "single_changed_variable": "Raw-only head/prototype/max-score evidence -> fixed 50/50 Raw/EMA evidence average",
+    "snapshot_weight": 0.5,
+    "weights_selected": false,
+    "epochs_selected": false,
+    "folds": "fixed kfold/folds3/seed42 OOF",
+    "lme_beta": 20.0,
+    "alpha": 0.15,
+    "kappa": 16.0,
+    "tau": 0.5,
+    "lambda_unknown": 0.75,
+    "leaderboard_tuning": false,
+    "latest_snapshot": "provenance diagnostic only; not evaluated"
+  },
+  "provenance": {
+    "raw_cache_metadata": [
+      {
+        "fold": 0,
+        "checkpoint": "/workspace/iaaa-speaker/checkpoints/p0-campp-known446-ood-control-oof-f0/campp_best_raw.pt",
+        "checkpoint_sha256": "f50f67f549b913b57111043b43daca1ff8bcbbf49bebe5dccab91ade8b19ae0d",
+        "cluster_map": "/workspace/iaaa-speaker/data/processed/unknown_clusters_oof_f0.json",
+        "cluster_map_sha256": "321dd54d57c27e7ac8ac7beea8211aca1b3f236dfe7dfba35d49f97e562ab5f9",
+        "train_file_sha256": "e2aaa52efcdd8ef03f2eae25bb5102e75c5ca36d889c17c1c60df5167555528d",
+        "train_files": 2819,
+        "max_eval_windows": 8,
+        "embedding_dim": 192,
+        "known_train_files": 1337,
+        "unknown_train_files": 1482,
+        "known_size_min": 2,
+        "known_size_max": 5,
+        "unknown_size_min": 1,
+        "unknown_size_max": 10,
+        "artifact_sha256": "2c919d29eaf66df3cb35918b64f78324affd43ff0b009993eeb0e952d1540fc5"
+      },
+      {
+        "fold": 1,
+        "checkpoint": "/workspace/iaaa-speaker/checkpoints/p0-campp-known446-ood-control-oof-f1/campp_best_raw.pt",
+        "checkpoint_sha256": "41f42896cf8f3d6a47a584931e91477b63717b02bdd3066c46c1c57b0f6d46a9",
+        "cluster_map": "/workspace/iaaa-speaker/data/processed/unknown_clusters_oof_f1.json",
+        "cluster_map_sha256": "e6cf053878275cd6d74ec643a73725888bb92d44eea01af3ae0f1dbd4d868d1f",
+        "train_file_sha256": "c2a557c39ca2fbef4286fbbc3c564aec99182fb793eff548b1023dcbbc7725c9",
+        "train_files": 2824,
+        "max_eval_windows": 8,
+        "embedding_dim": 192,
+        "known_train_files": 1342,
+        "unknown_train_files": 1482,
+        "known_size_min": 3,
+        "known_size_max": 5,
+        "unknown_size_min": 1,
+        "unknown_size_max": 16,
+        "artifact_sha256": "0195091939e40f596d92e2d54e09acb10b285431e832d0a940253dd3e75c96ff"
+      },
+      {
+        "fold": 2,
+        "checkpoint": "/workspace/iaaa-speaker/checkpoints/p0-campp-known446-ood-control-oof-f2/campp_best_raw.pt",
+        "checkpoint_sha256": "25cb21d2c3043d56b801de5808dfd1d95469420f0d24db16b4efe987f30dea84",
+        "cluster_map": "/workspace/iaaa-speaker/data/processed/unknown_clusters_oof_f2.json",
+        "cluster_map_sha256": "a7a8987cbace55cac08dd5d8fa601b8a7beddb3de7072fee0fa47460a20186bd",
+        "train_file_sha256": "4b2551d557a2c6135bd32636f707a834342a86d9c34cc611d7697ee2942043fb",
+        "train_files": 3263,
+        "max_eval_windows": 8,
+        "embedding_dim": 192,
+        "known_train_files": 1780,
+        "unknown_train_files": 1483,
+        "known_size_min": 3,
+        "known_size_max": 5,
+        "unknown_size_min": 1,
+        "unknown_size_max": 13,
+        "artifact_sha256": "c5a9e0798cb72f233d8185a93f9fd67c21487e5e041d0b120ae90a851aa52c7e"
+      }
+    ],
+    "ema_cache_metadata": [
+      {
+        "schema_version": 1,
+        "fold": 0,
+        "variant": "best_ema",
+        "raw_checkpoint_sha256": "f50f67f549b913b57111043b43daca1ff8bcbbf49bebe5dccab91ade8b19ae0d",
+        "ema_checkpoint_sha256": "595a2b59d3eb6c96e2c10d5fc6e5a2ceaa9392bc99b0367d45f1075c7d5a0c26",
+        "raw_artifact_sha256": "2c919d29eaf66df3cb35918b64f78324affd43ff0b009993eeb0e952d1540fc5",
+        "raw_oof_sha256": "221aa9edb00e13cbf98a629a4dddede8eb5835460fafe513fb5ffc9d1ea89394",
+        "train_file_sha256": "01528d8a162406398a90d9fdfab0a3e90b60d1667b3964c928af2d219a2a69fa",
+        "validation_file_sha256": "94a756be2fc528b4cc0d079a07d8d4ad680f0c392ede9f8b3148e393ce6e19ca",
+        "artifact_sha256": "24c321e07a6ce6c75d0ec76b187490a20538cfc538af0e3f2cb69679e6d02e02",
+        "train_files": 2819,
+        "validation_files": 1632,
+        "embedding_batching": {
+          "enrollment": "model.embed window-major production cache path",
+          "validation": "per-file predict_proba_and_embed production path"
+        },
+        "cache_status": "built"
+      },
+      {
+        "schema_version": 1,
+        "fold": 1,
+        "variant": "best_ema",
+        "raw_checkpoint_sha256": "41f42896cf8f3d6a47a584931e91477b63717b02bdd3066c46c1c57b0f6d46a9",
+        "ema_checkpoint_sha256": "1f2351a846dcc0c1870d809a608600dcc41e907a9a0d6bfef522ae1fe482c176",
+        "raw_artifact_sha256": "0195091939e40f596d92e2d54e09acb10b285431e832d0a940253dd3e75c96ff",
+        "raw_oof_sha256": "f6a9c90efea242dc68ee261e26d15372bebf0413758ee0d81047165a7ec29e7d",
+        "train_file_sha256": "78e26ee15e841762305ff96e146232fcdf9b388518c23155a72d1c4aec9e9578",
+        "validation_file_sha256": "8e7cb57747c9e18218f0e3f8943676f0c63c233b04348147c004a6c94618833e",
+        "artifact_sha256": "47523eb4a5d2d18d91d8d2d4ab6c2aba6ff471a968dbeb079d8b75022826e5f6",
+        "train_files": 2824,
+        "validation_files": 1627,
+        "embedding_batching": {
+          "enrollment": "model.embed window-major production cache path",
+          "validation": "per-file predict_proba_and_embed production path"
+        },
+        "cache_status": "built"
+      },
+      {
+        "schema_version": 1,
+        "fold": 2,
+        "variant": "best_ema",
+        "raw_checkpoint_sha256": "25cb21d2c3043d56b801de5808dfd1d95469420f0d24db16b4efe987f30dea84",
+        "ema_checkpoint_sha256": "352c47e85415afcd06d74b969720238dfa959dbd15a9d1060573f7d277d02dcd",
+        "raw_artifact_sha256": "c5a9e0798cb72f233d8185a93f9fd67c21487e5e041d0b120ae90a851aa52c7e",
+        "raw_oof_sha256": "69aeb460046b77402731baaf827fe81f4b5dcd79da56e6bf36df48e0e3f4166d",
+        "train_file_sha256": "62d4c3859c697daf59496ea3fc1170af21d00b9fda8f0dd66281fcc9a9396a45",
+        "validation_file_sha256": "729fa5d1a19aff942152115af2ed89a99858ea456d56ac139882491636c95c18",
+        "artifact_sha256": "93873bc0ba20b24134e523a6c243caeb20eeb2e87bd193794b8ecbd2eb7d79de",
+        "train_files": 3263,
+        "validation_files": 1188,
+        "embedding_batching": {
+          "enrollment": "model.embed window-major production cache path",
+          "validation": "per-file predict_proba_and_embed production path"
+        },
+        "cache_status": "built"
+      }
+    ],
+    "unique_oof_files": 4447,
+    "oof_file_sha256": "eefbfea401252c5b58355106e44d02808cf5b44bdea2fd2940ab4a07b8aa6791"
+  },
+  "folds": [
+    {
+      "fold": 0,
+      "raw": {
+        "macro_f1": 0.9611456662702521,
+        "accuracy": 0.9705882352941176,
+        "known_accuracy": 0.9585201793721974,
+        "ood_f1": 0.9765572672471534,
+        "ood_precision": 0.9681274900398407,
+        "ood_recall": 0.9851351351351352,
+        "known_to_unknown": 24,
+        "known_to_wrong_known": 13,
+        "unknown_to_known": 11
+      },
+      "ema_diagnostic": {
+        "macro_f1": 0.9603359707526652,
+        "accuracy": 0.9705882352941176,
+        "known_accuracy": 0.9551569506726457,
+        "ood_f1": 0.970178926441352,
+        "ood_precision": 0.951885565669701,
+        "ood_recall": 0.9891891891891892,
+        "known_to_unknown": 37,
+        "known_to_wrong_known": 3,
+        "unknown_to_known": 8
+      },
+      "ensemble": {
+        "macro_f1": 0.9600406509488928,
+        "accuracy": 0.9712009803921569,
+        "known_accuracy": 0.9551569506726457,
+        "ood_f1": 0.9715043074884029,
+        "ood_precision": 0.953185955786736,
+        "ood_recall": 0.9905405405405405,
+        "known_to_unknown": 36,
+        "known_to_wrong_known": 4,
+        "unknown_to_known": 7
+      },
+      "delta": {
+        "macro_f1": -0.001105015321359315,
+        "accuracy": 0.0006127450980392135,
+        "known_accuracy": -0.0033632286995516347,
+        "ood_f1": -0.00505295975875053
+      },
+      "ema_delta": {
+        "macro_f1": -0.0008096955175869169,
+        "accuracy": 0.0,
+        "known_accuracy": -0.0033632286995516347,
+        "ood_f1": -0.0063783408058014635
+      },
+      "rescued_errors": 4,
+      "introduced_errors": 3,
+      "changed_predictions": 16,
+      "both_wrong": 44,
+      "raw_ema_probability_max_abs_diff": 0.08078500118533888,
+      "raw_ema_prediction_disagreements": 18
+    },
+    {
+      "fold": 1,
+      "raw": {
+        "macro_f1": 0.9589145283147796,
+        "accuracy": 0.9674247080516287,
+        "known_accuracy": 0.9526493799323562,
+        "ood_f1": 0.9681274900398406,
+        "ood_precision": 0.9516971279373369,
+        "ood_recall": 0.9851351351351352,
+        "known_to_unknown": 37,
+        "known_to_wrong_known": 5,
+        "unknown_to_known": 11
+      },
+      "ema_diagnostic": {
+        "macro_f1": 0.9593665449510247,
+        "accuracy": 0.9692685925015365,
+        "known_accuracy": 0.9526493799323562,
+        "ood_f1": 0.970178926441352,
+        "ood_precision": 0.951885565669701,
+        "ood_recall": 0.9891891891891892,
+        "known_to_unknown": 37,
+        "known_to_wrong_known": 5,
+        "unknown_to_known": 8
+      },
+      "ensemble": {
+        "macro_f1": 0.9593650171988519,
+        "accuracy": 0.9686539643515673,
+        "known_accuracy": 0.9526493799323562,
+        "ood_f1": 0.9694960212201591,
+        "ood_precision": 0.9518229166666666,
+        "ood_recall": 0.9878378378378379,
+        "known_to_unknown": 37,
+        "known_to_wrong_known": 5,
+        "unknown_to_known": 9
+      },
+      "delta": {
+        "macro_f1": 0.0004504888840722865,
+        "accuracy": 0.0012292562999385304,
+        "known_accuracy": 0.0,
+        "ood_f1": 0.001368531180318544
+      },
+      "ema_delta": {
+        "macro_f1": 0.00045201663624505617,
+        "accuracy": 0.0018438844499077955,
+        "known_accuracy": 0.0,
+        "ood_f1": 0.0020514364015113973
+      },
+      "rescued_errors": 2,
+      "introduced_errors": 0,
+      "changed_predictions": 2,
+      "both_wrong": 51,
+      "raw_ema_probability_max_abs_diff": 0.07356050292816996,
+      "raw_ema_prediction_disagreements": 3
+    },
+    {
+      "fold": 2,
+      "raw": {
+        "macro_f1": 0.9406726611789009,
+        "accuracy": 0.9747474747474747,
+        "known_accuracy": 0.9398663697104677,
+        "ood_f1": 0.9806795469686875,
+        "ood_precision": 0.9658792650918635,
+        "ood_recall": 0.9959404600811907,
+        "known_to_unknown": 26,
+        "known_to_wrong_known": 1,
+        "unknown_to_known": 3
+      },
+      "ema_diagnostic": {
+        "macro_f1": 0.9410439970171514,
+        "accuracy": 0.9739057239057239,
+        "known_accuracy": 0.9398663697104677,
+        "ood_f1": 0.9800000000000001,
+        "ood_precision": 0.9658344283837057,
+        "ood_recall": 0.9945872801082544,
+        "known_to_unknown": 26,
+        "known_to_wrong_known": 1,
+        "unknown_to_known": 4
+      },
+      "ensemble": {
+        "macro_f1": 0.941045517256455,
+        "accuracy": 0.9747474747474747,
+        "known_accuracy": 0.9398663697104677,
+        "ood_f1": 0.9806795469686875,
+        "ood_precision": 0.9658792650918635,
+        "ood_recall": 0.9959404600811907,
+        "known_to_unknown": 26,
+        "known_to_wrong_known": 1,
+        "unknown_to_known": 3
+      },
+      "delta": {
+        "macro_f1": 0.00037285607755410677,
+        "accuracy": 0.0,
+        "known_accuracy": 0.0,
+        "ood_f1": 0.0
+      },
+      "ema_delta": {
+        "macro_f1": 0.0003713358382504417,
+        "accuracy": -0.0008417508417507547,
+        "known_accuracy": 0.0,
+        "ood_f1": -0.0006795469686874389
+      },
+      "rescued_errors": 1,
+      "introduced_errors": 1,
+      "changed_predictions": 2,
+      "both_wrong": 29,
+      "raw_ema_probability_max_abs_diff": 0.13392835932688252,
+      "raw_ema_prediction_disagreements": 2
+    }
+  ],
+  "aggregate": {
+    "raw": {
+      "macro_f1": 0.9633564052154656,
+      "accuracy": 0.9705419383854283,
+      "known_accuracy": 0.952423698384201,
+      "ood_f1": 0.975111111111111,
+      "ood_precision": 0.9618588338448049,
+      "ood_recall": 0.9887336638125281,
+      "known_to_unknown": 87,
+      "known_to_wrong_known": 19,
+      "unknown_to_known": 25
+    },
+    "ema_diagnostic": {
+      "macro_f1": 0.9630179830439196,
+      "accuracy": 0.9709916797841242,
+      "known_accuracy": 0.9510771992818672,
+      "ood_f1": 0.9734395750332006,
+      "ood_precision": 0.9565028273162245,
+      "ood_recall": 0.9909869310500226,
+      "known_to_unknown": 100,
+      "known_to_wrong_known": 9,
+      "unknown_to_known": 20
+    },
+    "ensemble": {
+      "macro_f1": 0.9630353626436409,
+      "accuracy": 0.971216550483472,
+      "known_accuracy": 0.9510771992818672,
+      "ood_f1": 0.9738822487826471,
+      "ood_precision": 0.9569377990430622,
+      "ood_recall": 0.9914375844975214,
+      "known_to_unknown": 99,
+      "known_to_wrong_known": 10,
+      "unknown_to_known": 19
+    },
+    "delta": {
+      "macro_f1": -0.0003210425718247478,
+      "accuracy": 0.0006746120980436476,
+      "known_accuracy": -0.0013464991023338646,
+      "ood_f1": -0.0012288623284639755
+    },
+    "ema_delta": {
+      "macro_f1": -0.0003384221715460045,
+      "accuracy": 0.0004497413986958021,
+      "known_accuracy": -0.0013464991023338646,
+      "ood_f1": -0.0016715360779104849
+    },
+    "rescued_errors": 7,
+    "introduced_errors": 4,
+    "changed_predictions": 20,
+    "both_wrong": 124,
+    "raw_ema_prediction_disagreements": 23
+  },
+  "acceptance_gate": {
+    "passed": false,
+    "conditions": {
+      "all_three_folds_macro_positive": false,
+      "aggregate_macro_gain_at_least_0_001": false,
+      "all_fold_known_guardrails": false,
+      "all_fold_ood_guardrails": false,
+      "aggregate_known_guardrail": false,
+      "aggregate_ood_guardrail": false
+    },
+    "thresholds": {
+      "minimum_aggregate_macro_gain": 0.001,
+      "maximum_known_or_ood_drop": 0.001,
+      "fold_direction": "strictly positive Macro-F1 in all three folds"
+    }
+  },
+  "decision": "reject"
+}
