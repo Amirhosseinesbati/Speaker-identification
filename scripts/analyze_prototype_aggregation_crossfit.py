@@ -286,6 +286,92 @@ def diagnostic_ranking(variants: dict[str, list[FoldEvidence]]) -> list[dict]:
     )
 
 
+def select_parameters_for_fixed_aggregation(
+    folds: list[FoldEvidence], calibration_folds: tuple[int, int]
+) -> tuple[dict[str, float], dict]:
+    baselines = {
+        fold: metric_bundle(folds[fold].labels, folds[fold].baseline_predictions)
+        for fold in calibration_folds
+    }
+    ranked = []
+    for params in parameter_grid():
+        gains = []
+        metrics = {}
+        for fold in calibration_folds:
+            candidate = metric_bundle(folds[fold].labels, predict(folds[fold], params))
+            metrics[fold] = candidate
+            gains.append(candidate["macro_f1"] - baselines[fold]["macro_f1"])
+        distance = (
+            abs(params["alpha"] - HISTORICAL_PARAMS["alpha"])
+            + abs(params["kappa"] - HISTORICAL_PARAMS["kappa"]) / 32.0
+            + abs(params["tau"] - HISTORICAL_PARAMS["tau"])
+            + abs(
+                params["lambda_unknown"]
+                - HISTORICAL_PARAMS["lambda_unknown"]
+            )
+        )
+        rank = (min(gains), float(np.mean(gains)), -distance)
+        ranked.append((rank, params, gains, metrics))
+    rank, params, gains, metrics = max(ranked, key=lambda row: row[0])
+    return params, {
+        "calibration_folds": list(calibration_folds),
+        "minimum_gain": float(min(gains)),
+        "mean_gain": float(np.mean(gains)),
+        "per_fold_metrics": {str(key): value for key, value in metrics.items()},
+        "rank_tuple": [float(value) for value in rank],
+    }
+
+
+def per_aggregation_crossfit(
+    variants: dict[str, list[FoldEvidence]]
+) -> list[dict]:
+    rows = []
+    for name, folds in variants.items():
+        predictions = []
+        selections = []
+        for target in range(NUM_FOLDS):
+            calibration = tuple(
+                fold for fold in range(NUM_FOLDS) if fold != target
+            )
+            params, selection = select_parameters_for_fixed_aggregation(
+                folds, calibration  # type: ignore[arg-type]
+            )
+            prediction = predict(folds[target], params)
+            baseline = metric_bundle(
+                folds[target].labels, folds[target].baseline_predictions
+            )
+            candidate = metric_bundle(folds[target].labels, prediction)
+            predictions.append(prediction)
+            selections.append({
+                "target_fold": target,
+                "parameters": params,
+                "calibration": selection,
+                "held_out": {
+                    "baseline": baseline,
+                    "candidate": candidate,
+                    "delta": metric_delta(candidate, baseline),
+                },
+            })
+        evaluation = evaluate_policy(folds, predictions)
+        deltas = [row["delta"]["macro_f1"] for row in evaluation["folds"]]
+        rows.append({
+            "variant": name,
+            "selections": selections,
+            "evaluation": evaluation,
+            "minimum_fold_gain": float(min(deltas)),
+            "mean_fold_gain": float(np.mean(deltas)),
+        })
+    return sorted(
+        rows,
+        key=lambda row: (
+            row["minimum_fold_gain"],
+            row["mean_fold_gain"],
+            row["evaluation"]["aggregate"]["candidate"]["macro_f1"],
+        ),
+        reverse=True,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -350,6 +436,7 @@ def main() -> int:
         )
         for name, folds in variants.items()
     }
+    aggregation_crossfit = per_aggregation_crossfit(variants)
     ranking = diagnostic_ranking(variants)
     report = {
         "contract": {
@@ -371,6 +458,7 @@ def main() -> int:
             "parameters": HISTORICAL_PARAMS,
             "variants": fixed_historical,
         },
+        "per_aggregation_crossfit": aggregation_crossfit,
         "all_oof_diagnostic_ranking": ranking,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -387,6 +475,15 @@ def main() -> int:
             for row in selections
         ],
         "crossfit_aggregate": crossfit["aggregate"],
+        "top_per_aggregation_crossfit": [
+            {
+                "variant": row["variant"],
+                "minimum_fold_gain": row["minimum_fold_gain"],
+                "aggregate_macro_f1": row["evaluation"]["aggregate"]["candidate"]["macro_f1"],
+                "aggregate_delta": row["evaluation"]["aggregate"]["delta"],
+            }
+            for row in aggregation_crossfit[:6]
+        ],
         "top_all_oof_diagnostics": [
             {
                 "variant": row["variant"],
