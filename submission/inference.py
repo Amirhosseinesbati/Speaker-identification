@@ -304,6 +304,99 @@ def _collapse_centroid_probs(probs: np.ndarray, num_classes: int) -> np.ndarray:
     return out / (out.sum(axis=1, keepdims=True) + 1e-12)
 
 
+def load_prototypes(
+    prototypes_dir: str,
+    encoder_names: Sequence[str],
+    *,
+    expected_groups: int = 1000,
+) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """Load full-data enrollment embeddings and their internal speaker ids.
+
+    Files are named ``prototypes_<encoder>.npz`` and contain unit-normalised
+    ``embeddings`` plus dense ``speaker_ids`` in 1..1000 (446 competition-known
+    identities followed by 554 pseudo-unknown identities).  Unlike centroid
+    loading, every enrollment utterance remains available to the set scorer.
+    """
+    output: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    directory = Path(prototypes_dir)
+    for encoder in encoder_names:
+        path = directory / f"prototypes_{encoder}.npz"
+        if not path.exists():
+            continue
+        with np.load(path, allow_pickle=False) as data:
+            embeddings = data["embeddings"].astype(np.float32)
+            speaker_ids = data["speaker_ids"].astype(np.int64)
+        if embeddings.ndim != 2 or len(embeddings) != len(speaker_ids):
+            raise RuntimeError(f"Invalid prototype artifact shape: {path}")
+        unique_ids = np.unique(speaker_ids)
+        expected_ids = np.arange(1, int(expected_groups) + 1, dtype=np.int64)
+        if not np.array_equal(unique_ids, expected_ids):
+            raise RuntimeError(f"Prototype speaker ids are not dense in {path}")
+        norms = np.linalg.norm(embeddings, axis=1)
+        if not np.isfinite(embeddings).all() or not np.allclose(
+            norms, 1.0, atol=2e-4
+        ):
+            raise RuntimeError(f"Prototype embeddings are not finite/unit norm: {path}")
+        output[encoder] = (embeddings, speaker_ids)
+    return output
+
+
+def prototype_logmeanexp_probs(
+    embeddings: np.ndarray,
+    enrollment_embeddings: np.ndarray,
+    enrollment_speaker_ids: np.ndarray,
+    num_classes: int,
+    *,
+    beta: float,
+    kappa: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Score a test embedding against every enrollment, then pool per identity.
+
+    ``log(mean(exp(beta * cosine))) / beta`` smoothly interpolates between the
+    mean and nearest enrollment while normalising for unequal group sizes. The
+    554 pseudo-unknown group probabilities are collapsed into competition class
+    zero after the 1000-way softmax.
+    """
+    embeddings = np.asarray(embeddings, dtype=np.float32)
+    enrollment_embeddings = np.asarray(enrollment_embeddings, dtype=np.float32)
+    enrollment_speaker_ids = np.asarray(enrollment_speaker_ids, dtype=np.int64)
+    if beta <= 0.0 or kappa <= 0.0:
+        raise RuntimeError("prototype beta and kappa must be positive")
+    if embeddings.ndim != 2 or enrollment_embeddings.ndim != 2:
+        raise RuntimeError("prototype scorer expects two embedding matrices")
+    if len(enrollment_embeddings) == 0 or len(enrollment_speaker_ids) == 0:
+        raise RuntimeError("prototype enrollment is empty")
+    if len(enrollment_embeddings) != len(enrollment_speaker_ids):
+        raise RuntimeError("prototype embeddings/speaker ids length mismatch")
+    if embeddings.shape[1] != enrollment_embeddings.shape[1]:
+        raise RuntimeError("test/enrollment embedding dimensions differ")
+    unique_ids = np.unique(enrollment_speaker_ids)
+    if not np.array_equal(unique_ids, np.arange(1, unique_ids[-1] + 1)):
+        raise RuntimeError("prototype speaker ids must be dense and start at one")
+
+    similarities = embeddings @ enrollment_embeddings.T
+    scores = np.empty((len(embeddings), len(unique_ids)), dtype=np.float64)
+    for column, speaker_id in enumerate(unique_ids):
+        values = similarities[:, enrollment_speaker_ids == speaker_id].astype(
+            np.float64, copy=False
+        )
+        scaled = float(beta) * values
+        maximum = scaled.max(axis=1, keepdims=True)
+        scores[:, column] = (
+            maximum[:, 0]
+            + np.log(np.exp(scaled - maximum).mean(axis=1))
+        ) / float(beta)
+
+    internal = np.zeros((len(embeddings), 1 + len(unique_ids)), dtype=np.float64)
+    internal[:, 1:] = _softmax(float(kappa) * scores, axis=1)
+    probabilities = (
+        _collapse_centroid_probs(internal, num_classes)
+        if internal.shape[1] > num_classes
+        else internal
+    )
+    return probabilities, scores.max(axis=1)
+
+
 # ────────────────────────────────────────────────────────────────
 #  Ensemble scoring
 # ────────────────────────────────────────────────────────────────
@@ -316,6 +409,7 @@ def score_ensemble(
     max_eval_windows: Optional[int] = None,
     no_amp: bool = False,
     centroids: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None,
+    prototypes: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None,
     decision_params: Optional[dict] = None,
 ) -> dict:
     """Score every file in ``data_dir`` and fuse the ensemble probabilities.
@@ -399,6 +493,10 @@ def score_ensemble(
     # ── Decision-layer setup ──
     do_decision = centroids is not None and decision_params is not None
     decision_params = decision_params or {}
+    prototype_config = decision_params.get("prototype_aggregation") or {}
+    do_prototype = prototypes is not None and bool(prototype_config)
+    if do_decision and do_prototype:
+        raise RuntimeError("Centroid and prototype decision layers are mutually exclusive")
     open_set_rule = decision_params.get("open_set_rule") or {}
     do_open_set_rule = bool(open_set_rule)
     alpha = float(decision_params.get("alpha", 0.5))
@@ -442,11 +540,20 @@ def score_ensemble(
 
     # Per-model embeddings only for models that have a centroid (decision path).
     all_model_embs: Dict[int, np.ndarray] = {}
-    if do_decision:
+    if do_decision or do_prototype:
         for mi, enc in enumerate(encoder_names):
-            if enc in centroids:
-                dim = int(centroids[enc][0].shape[1])
+            source = (
+                centroids.get(enc) if do_decision and centroids is not None
+                else prototypes.get(enc) if prototypes is not None else None
+            )
+            if source is not None:
+                dim = int(source[0].shape[1])
                 all_model_embs[mi] = np.zeros((n_files, dim), dtype=np.float32)
+    if do_prototype and len(all_model_embs) != len(models):
+        missing = sorted(
+            enc for enc in encoder_names if prototypes is None or enc not in prototypes
+        )
+        raise RuntimeError(f"Missing prototype artifacts for active encoders: {missing}")
 
     # ── File-outer loop: decode each file ONCE, run every model on it ──
     # All models are already resident (loaded above). Looping over files on
@@ -466,7 +573,7 @@ def score_ensemble(
                 model, waveform, device, sample_rate=sample_rate,
                 duration_seconds=duration_seconds, eval_hop_ratio=eval_hop_ratio,
                 max_eval_windows=max_windows, use_amp=not no_amp,
-                temperature=temperature if do_decision else 1.0,
+                temperature=temperature if (do_decision or do_prototype) else 1.0,
                 speech_aware=eval_speech_aware,
                 speech_relative_db=speech_relative_db,
                 short_audio_mode=short_audio_mode,
@@ -558,8 +665,43 @@ def score_ensemble(
         labels[score > float(open_set_rule["threshold"])] = 0
         open_set_score = score
 
+    # ── Multi-enrollment log-mean-exp decision layer ──
+    if do_prototype and all_model_embs:
+        if str(prototype_config.get("type", "")).lower() != "logmeanexp":
+            raise RuntimeError("Only prototype_aggregation.type=logmeanexp is supported")
+        beta = float(prototype_config.get("beta", 20.0))
+        p_weights = np.asarray(
+            [fusion_weights[mi] if fusion_weights is not None
+             else 1.0 / len(models)
+             for mi in all_model_embs],
+            dtype=np.float64,
+        )
+        p_weights /= p_weights.sum() + 1e-12
+        probability_list, max_score_list = [], []
+        for mi in all_model_embs:
+            enrollment, group_ids = prototypes[encoder_names[mi]]
+            probability, max_score = prototype_logmeanexp_probs(
+                all_model_embs[mi], enrollment, group_ids, num_classes,
+                beta=beta, kappa=kappa,
+            )
+            probability_list.append(probability)
+            max_score_list.append(max_score)
+        ensemble_prototype = np.tensordot(
+            p_weights, np.stack(probability_list), axes=(0, 0)
+        )
+        ensemble_max_score = np.tensordot(
+            p_weights, np.stack(max_score_list), axes=(0, 0)
+        )
+        fused2 = alpha * final_probs + (1.0 - alpha) * ensemble_prototype
+        fused2[:, 0] *= lambda_unknown
+        fused2 /= fused2.sum(axis=1, keepdims=True) + 1e-12
+        labels = fused2.argmax(axis=1).astype(np.int64)
+        labels[ensemble_max_score < tau] = 0
+        final_probs = fused2
+        max_cosine = ensemble_max_score
+
     # ── Centroid + OOD-gate decision layer ──
-    if do_decision and all_model_embs:
+    elif do_decision and all_model_embs:
         # Ensemble weights for the centroid path (same as head, renormalised
         # over the models that actually have a centroid).
         c_weights = np.asarray(
@@ -599,6 +741,12 @@ def score_ensemble(
         labels[ens_max_cosine < tau] = 0  # hard OOD gate
         final_probs = fused2
         max_cosine = ens_max_cosine
+
+    # Decode failures must be deterministic unknowns, never arbitrary knowns.
+    if not np.all(scored):
+        labels[~scored] = 0
+        final_probs[~scored] = 0.0
+        final_probs[~scored, 0] = 1.0
 
     return {
         "files": files,

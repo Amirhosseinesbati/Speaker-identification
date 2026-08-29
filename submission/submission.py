@@ -85,9 +85,13 @@ _print_gpu_diagnostics()
 # Import the shared inference core. `inference.py` sits next to this file both
 # in the repo (submission/) and at the zip root (when the package is shipped).
 try:
-    from inference import score_ensemble, load_centroids  # zip-root layout (leaderboard)
+    from inference import (  # zip-root layout (leaderboard)
+        load_centroids,
+        load_prototypes,
+        score_ensemble,
+    )
 except ImportError:                       # repo layout (python -m submission.submission)
-    from submission.inference import score_ensemble, load_centroids
+    from submission.inference import load_centroids, load_prototypes, score_ensemble
 
 DEFAULT_FUSION_WEIGHTS = PKG_DIR / "ensemble_fusion_weights.json"
 SUPPORTED_AUDIO_SUFFIXES = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
@@ -202,6 +206,30 @@ def _load_centroids(checkpoint_paths: List[str]) -> Optional[dict]:
     return centroids or None
 
 
+def _checkpoint_encoders(checkpoint_paths: List[str]) -> List[str]:
+    """Read the true base encoder names from active packaged checkpoints."""
+    encoders = []
+    for path in (value for value in checkpoint_paths if value):
+        try:
+            checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+            encoders.append(str(
+                (checkpoint.get("config", {}).get("model", {}) or {})
+                .get("encoder_type", _encoder_name(path))
+            ))
+        except Exception:
+            encoders.append(_encoder_name(path))
+    return encoders
+
+
+def _load_prototypes(checkpoint_paths: List[str]) -> Optional[dict]:
+    """Load packaged multi-enrollment artifacts, or return plain-head mode."""
+    directory = PKG_DIR / "prototypes"
+    if not directory.exists():
+        return None
+    prototypes = load_prototypes(str(directory), _checkpoint_encoders(checkpoint_paths))
+    return prototypes or None
+
+
 def _load_decision_params() -> Optional[dict]:
     """Load tuned decision-layer params from ``decision_config.json``.
 
@@ -232,13 +260,16 @@ def predict(data_dir: str) -> np.ndarray:
     fusion_weights = json.loads(
         DEFAULT_FUSION_WEIGHTS.read_text(encoding="utf-8")
     )["weights"]
+    prototypes = _load_prototypes(checkpoint_path)
 
     result = score_ensemble(
         data_dir=data_dir,
         checkpoint_path=checkpoint_path,
         fusion_method="weighted_average",
         fusion_weights=fusion_weights,
-        centroids=_load_centroids(checkpoint_path),
+        # Prototype and legacy centroid layers are intentionally exclusive.
+        centroids=None if prototypes else _load_centroids(checkpoint_path),
+        prototypes=prototypes,
         decision_params=_load_decision_params(),
     )
 

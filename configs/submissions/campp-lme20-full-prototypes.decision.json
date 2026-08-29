@@ -1,0 +1,23 @@
+{
+  "decision_params": {
+    "alpha": 0.15,
+    "kappa": 16.0,
+    "tau": 0.5,
+    "lambda_unknown": 0.75,
+    "temperature": 1.0,
+    "prototype_aggregation": {
+      "type": "logmeanexp",
+      "beta": 20.0
+    }
+  },
+  "provenance": {
+    "selection": "leave-one-fold-out cross-fit; fixed modal parameter set selected by calibration folds only",
+    "folds": 3,
+    "split_seed": 42,
+    "competition_known_speakers": 446,
+    "pseudo_unknown_groups": 554,
+    "total_internal_groups": 1000,
+    "leaderboard_tuning": false,
+    "report": "reports/generated/campp_prototype_aggregation_crossfit.json"
+  }
+}

@@ -295,9 +295,43 @@ def build(skip_weights: bool, fusion_config: Path | None = None,
         print("  ⚠ data/processed/ensemble_fusion_weights.json missing — "
               "run ensemble_calibrate.py first")
 
-    # ── centroids (cosine centroid + OOD-gate decision layer) ──
+    # ── decision artifacts ──
     use_decision_layer = bool(fw.get("use_decision_layer", True))
     use_open_set_rule = bool(fw.get("use_open_set_rule", False))
+    use_prototype_layer = bool(fw.get("use_prototype_layer", False))
+    if use_decision_layer and use_prototype_layer:
+        raise ValueError("Centroid and prototype decision layers are mutually exclusive")
+
+    # Multi-enrollment artifacts preserve every train embedding and its dense
+    # internal identity id.  The scorer performs log-mean-exp pooling at eval.
+    prototype_sources = fw.get("prototype_sources") or {}
+    if use_prototype_layer and not isinstance(prototype_sources, dict):
+        raise ValueError("prototype_sources must map encoder name to .npz source")
+    proto_dst = SUB / "prototypes"
+    proto_dst.mkdir(parents=True, exist_ok=True)
+    wanted_prototypes = (
+        {f"prototypes_{enc}.npz" for enc in used_encoders}
+        if use_prototype_layer else set()
+    )
+    for stale in list(proto_dst.glob("*.npz")):
+        if stale.name not in wanted_prototypes:
+            stale.unlink(missing_ok=True)
+            print(f"  🧹 prototypes/{stale.name} removed (stale)")
+    shipped_prototypes = 0
+    if use_prototype_layer:
+        for enc in sorted(used_encoders):
+            configured = prototype_sources.get(enc)
+            if not configured:
+                raise ValueError(f"Missing prototype source for active encoder {enc}")
+            source = ROOT / configured
+            if not source.exists():
+                raise FileNotFoundError(f"Prototype source for {enc} not found: {source}")
+            destination = proto_dst / f"prototypes_{enc}.npz"
+            shutil.copy2(source, destination)
+            shipped_prototypes += 1
+            print(f"  ✓ prototypes/{destination.name} ← {source.name}")
+
+    # ── centroids (cosine centroid + OOD-gate decision layer) ──
     cent_dst = SUB / "centroids"
     cent_dst.mkdir(parents=True, exist_ok=True)
     centroid_sources = fw.get("centroid_sources")
@@ -367,13 +401,17 @@ def build(skip_weights: bool, fusion_config: Path | None = None,
     configured_dc = fw.get("decision_config_source")
     dc_src = ROOT / configured_dc if configured_dc else (
         ROOT / "data" / "processed" / "decision_config.json")
-    if not use_decision_layer and not use_open_set_rule:
+    if not use_decision_layer and not use_open_set_rule and not use_prototype_layer:
         (SUB / "decision_config.json").unlink(missing_ok=True)
         print("  ⏭  decision layer disabled by fusion manifest (head fusion only)")
     elif dc_src.exists():
         shutil.copy2(dc_src, SUB / "decision_config.json")
-        print("  ✓ decision_config.json"
-              f" ({'open-set evidence' if use_open_set_rule else 'centroid'})")
+        layer_name = (
+            "prototype-logmeanexp" if use_prototype_layer
+            else "open-set evidence" if use_open_set_rule
+            else "centroid"
+        )
+        print(f"  ✓ decision_config.json ({layer_name})")
     else:
         print("  ⚠ decision_config.json missing — run scripts/tune_decision.py "
               "(plain argmax fallback)")
@@ -403,6 +441,10 @@ def build(skip_weights: bool, fusion_config: Path | None = None,
         print(f"  {'✓' if p.exists() and any(p.iterdir()) else '✗ MISSING'} weights/{w}/")
     cdir = SUB / "centroids"
     print(f"  {'✓' if cdir.exists() and any(cdir.iterdir()) else '✗ MISSING'} centroids/")
+    pdir = SUB / "prototypes"
+    prototype_ok = pdir.exists() and len(list(pdir.glob("*.npz"))) == shipped_prototypes
+    if use_prototype_layer:
+        print(f"  {'✓' if prototype_ok and shipped_prototypes else '✗ MISSING'} prototypes/")
     dc = SUB / "decision_config.json"
     print(f"  {'✓' if dc.exists() else '⚠ absent (plain argmax)'} decision_config.json")
 

@@ -1,0 +1,34 @@
+{
+  "package_id": "campp-lme20-full-prototypes-v1",
+  "method": "weighted_average",
+  "encoder_names": [
+    "campp"
+  ],
+  "weights": [
+    1.0
+  ],
+  "models": [
+    {
+      "name": "campp-control-fold0-raw",
+      "source_checkpoint": "p0-campp-known446-ood-control-oof-f0/campp_best_raw.pt",
+      "checkpoint": "campp_best.pt",
+      "base_encoder": "campp",
+      "weight": 1.0
+    }
+  ],
+  "use_decision_layer": false,
+  "use_open_set_rule": false,
+  "use_prototype_layer": true,
+  "prototype_sources": {
+    "campp": "data/processed/campp_lme20_full_prototypes.npz"
+  },
+  "decision_config_source": "configs/submissions/campp-lme20-full-prototypes.decision.json",
+  "evidence": {
+    "selection": "fixed modal rule from two of three leave-one-fold-out selections",
+    "oof_macro_f1": 0.9633564052,
+    "oof_baseline_macro_f1": 0.9438885981,
+    "oof_known_accuracy_delta": 0.0013464991,
+    "oof_ood_f1_delta": 0.0203165906,
+    "leaderboard_tuning": false
+  }
+}
