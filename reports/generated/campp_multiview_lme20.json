@@ -1,0 +1,400 @@
+{
+  "contract": {
+    "hypothesis": "retain real temporal views and score all query/enrollment pairs",
+    "single_changed_variable": "file-mean embedding LME20 -> view-pair LME20",
+    "duplicate_padding_views_excluded": true,
+    "view_pair_normalisation": "divide by query_views * enrollment_views",
+    "within_group_weighting": "equal weight per real temporal view; longer files may add more views",
+    "embedding_batching": "production-matched: window-major enrollment, file-major query",
+    "weights": "fixed selected Raw CAM++ Control Fold0/1/2 checkpoints",
+    "folds": "fixed kfold/folds3/seed42 OOF",
+    "lme_beta": 20.0,
+    "alpha": 0.15,
+    "kappa": 16.0,
+    "tau": 0.5,
+    "lambda_unknown": 0.75,
+    "parameter_selection": "none",
+    "leaderboard_tuning": false
+  },
+  "provenance": {
+    "pad_cache_metadata": [
+      {
+        "fold": 0,
+        "checkpoint": "/workspace/iaaa-speaker/checkpoints/p0-campp-known446-ood-control-oof-f0/campp_best_raw.pt",
+        "checkpoint_sha256": "f50f67f549b913b57111043b43daca1ff8bcbbf49bebe5dccab91ade8b19ae0d",
+        "cluster_map": "/workspace/iaaa-speaker/data/processed/unknown_clusters_oof_f0.json",
+        "cluster_map_sha256": "321dd54d57c27e7ac8ac7beea8211aca1b3f236dfe7dfba35d49f97e562ab5f9",
+        "train_file_sha256": "e2aaa52efcdd8ef03f2eae25bb5102e75c5ca36d889c17c1c60df5167555528d",
+        "train_files": 2819,
+        "max_eval_windows": 8,
+        "embedding_dim": 192,
+        "known_train_files": 1337,
+        "unknown_train_files": 1482,
+        "known_size_min": 2,
+        "known_size_max": 5,
+        "unknown_size_min": 1,
+        "unknown_size_max": 10,
+        "artifact_sha256": "2c919d29eaf66df3cb35918b64f78324affd43ff0b009993eeb0e952d1540fc5"
+      },
+      {
+        "fold": 1,
+        "checkpoint": "/workspace/iaaa-speaker/checkpoints/p0-campp-known446-ood-control-oof-f1/campp_best_raw.pt",
+        "checkpoint_sha256": "41f42896cf8f3d6a47a584931e91477b63717b02bdd3066c46c1c57b0f6d46a9",
+        "cluster_map": "/workspace/iaaa-speaker/data/processed/unknown_clusters_oof_f1.json",
+        "cluster_map_sha256": "e6cf053878275cd6d74ec643a73725888bb92d44eea01af3ae0f1dbd4d868d1f",
+        "train_file_sha256": "c2a557c39ca2fbef4286fbbc3c564aec99182fb793eff548b1023dcbbc7725c9",
+        "train_files": 2824,
+        "max_eval_windows": 8,
+        "embedding_dim": 192,
+        "known_train_files": 1342,
+        "unknown_train_files": 1482,
+        "known_size_min": 3,
+        "known_size_max": 5,
+        "unknown_size_min": 1,
+        "unknown_size_max": 16,
+        "artifact_sha256": "0195091939e40f596d92e2d54e09acb10b285431e832d0a940253dd3e75c96ff"
+      },
+      {
+        "fold": 2,
+        "checkpoint": "/workspace/iaaa-speaker/checkpoints/p0-campp-known446-ood-control-oof-f2/campp_best_raw.pt",
+        "checkpoint_sha256": "25cb21d2c3043d56b801de5808dfd1d95469420f0d24db16b4efe987f30dea84",
+        "cluster_map": "/workspace/iaaa-speaker/data/processed/unknown_clusters_oof_f2.json",
+        "cluster_map_sha256": "a7a8987cbace55cac08dd5d8fa601b8a7beddb3de7072fee0fa47460a20186bd",
+        "train_file_sha256": "4b2551d557a2c6135bd32636f707a834342a86d9c34cc611d7697ee2942043fb",
+        "train_files": 3263,
+        "max_eval_windows": 8,
+        "embedding_dim": 192,
+        "known_train_files": 1780,
+        "unknown_train_files": 1483,
+        "known_size_min": 3,
+        "known_size_max": 5,
+        "unknown_size_min": 1,
+        "unknown_size_max": 13,
+        "artifact_sha256": "c5a9e0798cb72f233d8185a93f9fd67c21487e5e041d0b120ae90a851aa52c7e"
+      }
+    ],
+    "view_cache_metadata": [
+      {
+        "schema_version": 2,
+        "fold": 0,
+        "checkpoint": "/workspace/iaaa-speaker/checkpoints/p0-campp-known446-ood-control-oof-f0/campp_best_raw.pt",
+        "checkpoint_sha256": "f50f67f549b913b57111043b43daca1ff8bcbbf49bebe5dccab91ade8b19ae0d",
+        "pad_artifact_sha256": "2c919d29eaf66df3cb35918b64f78324affd43ff0b009993eeb0e952d1540fc5",
+        "oof_sha256": "221aa9edb00e13cbf98a629a4dddede8eb5835460fafe513fb5ffc9d1ea89394",
+        "train_file_sha256": "01528d8a162406398a90d9fdfab0a3e90b60d1667b3964c928af2d219a2a69fa",
+        "validation_file_sha256": "94a756be2fc528b4cc0d079a07d8d4ad680f0c392ede9f8b3148e393ce6e19ca",
+        "artifact_sha256": "4296a9eaa9a69c2d6cc52534839e61bb4ff7937d28a1786de18fe78c7587a1e7",
+        "audio_dir": "/workspace/iaaa-speaker/data/processed/audio_wav",
+        "sample_rate": 16000,
+        "duration_seconds": 8.0,
+        "eval_hop_ratio": 0.5,
+        "max_eval_windows": 8,
+        "train_files": 2819,
+        "validation_files": 1632,
+        "train_real_views": 21251,
+        "validation_real_views": 12260,
+        "train_count_distribution": {
+          "1": 117,
+          "2": 38,
+          "3": 28,
+          "4": 9,
+          "5": 14,
+          "6": 14,
+          "7": 8,
+          "8": 2591
+        },
+        "validation_count_distribution": {
+          "1": 68,
+          "2": 23,
+          "3": 19,
+          "4": 11,
+          "5": 4,
+          "6": 12,
+          "7": 7,
+          "8": 1488
+        },
+        "aggregate_reproduction": {
+          "tolerance": 2e-05,
+          "train_max_abs_diff": 2.9802322387695312e-08,
+          "validation_max_abs_diff": 0.0
+        },
+        "embedding_batching": {
+          "enrollment": "window_major (matches model.embed cache path)",
+          "validation": "file_major (matches predict_proba_and_embed OOF path)"
+        },
+        "cache_status": "built"
+      },
+      {
+        "schema_version": 2,
+        "fold": 1,
+        "checkpoint": "/workspace/iaaa-speaker/checkpoints/p0-campp-known446-ood-control-oof-f1/campp_best_raw.pt",
+        "checkpoint_sha256": "41f42896cf8f3d6a47a584931e91477b63717b02bdd3066c46c1c57b0f6d46a9",
+        "pad_artifact_sha256": "0195091939e40f596d92e2d54e09acb10b285431e832d0a940253dd3e75c96ff",
+        "oof_sha256": "f6a9c90efea242dc68ee261e26d15372bebf0413758ee0d81047165a7ec29e7d",
+        "train_file_sha256": "78e26ee15e841762305ff96e146232fcdf9b388518c23155a72d1c4aec9e9578",
+        "validation_file_sha256": "8e7cb57747c9e18218f0e3f8943676f0c63c233b04348147c004a6c94618833e",
+        "artifact_sha256": "fd11c5f7083efc276a1b3014c59947db723f7d41280fb3ca95cebf11f720e380",
+        "audio_dir": "/workspace/iaaa-speaker/data/processed/audio_wav",
+        "sample_rate": 16000,
+        "duration_seconds": 8.0,
+        "eval_hop_ratio": 0.5,
+        "max_eval_windows": 8,
+        "train_files": 2824,
+        "validation_files": 1627,
+        "train_real_views": 21213,
+        "validation_real_views": 12298,
+        "train_count_distribution": {
+          "1": 120,
+          "2": 40,
+          "3": 32,
+          "4": 15,
+          "5": 10,
+          "6": 20,
+          "7": 9,
+          "8": 2578
+        },
+        "validation_count_distribution": {
+          "1": 65,
+          "2": 21,
+          "3": 15,
+          "4": 5,
+          "5": 8,
+          "6": 6,
+          "7": 6,
+          "8": 1501
+        },
+        "aggregate_reproduction": {
+          "tolerance": 2e-05,
+          "train_max_abs_diff": 2.9802322387695312e-08,
+          "validation_max_abs_diff": 0.0
+        },
+        "embedding_batching": {
+          "enrollment": "window_major (matches model.embed cache path)",
+          "validation": "file_major (matches predict_proba_and_embed OOF path)"
+        },
+        "cache_status": "built"
+      },
+      {
+        "schema_version": 2,
+        "fold": 2,
+        "checkpoint": "/workspace/iaaa-speaker/checkpoints/p0-campp-known446-ood-control-oof-f2/campp_best_raw.pt",
+        "checkpoint_sha256": "25cb21d2c3043d56b801de5808dfd1d95469420f0d24db16b4efe987f30dea84",
+        "pad_artifact_sha256": "c5a9e0798cb72f233d8185a93f9fd67c21487e5e041d0b120ae90a851aa52c7e",
+        "oof_sha256": "69aeb460046b77402731baaf827fe81f4b5dcd79da56e6bf36df48e0e3f4166d",
+        "train_file_sha256": "62d4c3859c697daf59496ea3fc1170af21d00b9fda8f0dd66281fcc9a9396a45",
+        "validation_file_sha256": "729fa5d1a19aff942152115af2ed89a99858ea456d56ac139882491636c95c18",
+        "artifact_sha256": "57bcd5a8d0b4539e594000be84fb6e2177697b3723e13658b4ae53d41aa9db6f",
+        "audio_dir": "/workspace/iaaa-speaker/data/processed/audio_wav",
+        "sample_rate": 16000,
+        "duration_seconds": 8.0,
+        "eval_hop_ratio": 0.5,
+        "max_eval_windows": 8,
+        "train_files": 3263,
+        "validation_files": 1188,
+        "train_real_views": 24569,
+        "validation_real_views": 8942,
+        "train_count_distribution": {
+          "1": 136,
+          "2": 44,
+          "3": 34,
+          "4": 16,
+          "5": 12,
+          "6": 18,
+          "7": 13,
+          "8": 2990
+        },
+        "validation_count_distribution": {
+          "1": 49,
+          "2": 17,
+          "3": 13,
+          "4": 4,
+          "5": 6,
+          "6": 8,
+          "7": 2,
+          "8": 1089
+        },
+        "aggregate_reproduction": {
+          "tolerance": 2e-05,
+          "train_max_abs_diff": 2.9802322387695312e-08,
+          "validation_max_abs_diff": 0.0
+        },
+        "embedding_batching": {
+          "enrollment": "window_major (matches model.embed cache path)",
+          "validation": "file_major (matches predict_proba_and_embed OOF path)"
+        },
+        "cache_status": "built"
+      }
+    ],
+    "unique_oof_files": 4447,
+    "oof_file_sha256": "eefbfea401252c5b58355106e44d02808cf5b44bdea2fd2940ab4a07b8aa6791"
+  },
+  "folds": [
+    {
+      "fold": 0,
+      "baseline": {
+        "macro_f1": 0.9611456662702521,
+        "accuracy": 0.9705882352941176,
+        "known_accuracy": 0.9585201793721974,
+        "ood_f1": 0.9765572672471534,
+        "ood_precision": 0.9681274900398407,
+        "ood_recall": 0.9851351351351352,
+        "known_to_unknown": 24,
+        "known_to_wrong_known": 13,
+        "unknown_to_known": 11
+      },
+      "candidate": {
+        "macro_f1": 0.9586984534492518,
+        "accuracy": 0.9705882352941176,
+        "known_accuracy": 0.952914798206278,
+        "ood_f1": 0.9715420251489079,
+        "ood_precision": 0.9520103761348897,
+        "ood_recall": 0.9918918918918919,
+        "known_to_unknown": 37,
+        "known_to_wrong_known": 5,
+        "unknown_to_known": 6
+      },
+      "delta": {
+        "macro_f1": -0.002447212821000355,
+        "accuracy": 0.0,
+        "known_accuracy": -0.005605381165919354,
+        "ood_f1": -0.005015242098245554
+      },
+      "rescued_errors": 6,
+      "introduced_errors": 6,
+      "changed_predictions": 22,
+      "enrollment_real_views": 21251,
+      "query_real_views": 12260,
+      "group_view_count_min": 1,
+      "group_view_count_median": 24.0,
+      "group_view_count_max": 43
+    },
+    {
+      "fold": 1,
+      "baseline": {
+        "macro_f1": 0.9589145283147796,
+        "accuracy": 0.9674247080516287,
+        "known_accuracy": 0.9526493799323562,
+        "ood_f1": 0.9681274900398406,
+        "ood_precision": 0.9516971279373369,
+        "ood_recall": 0.9851351351351352,
+        "known_to_unknown": 37,
+        "known_to_wrong_known": 5,
+        "unknown_to_known": 11
+      },
+      "candidate": {
+        "macro_f1": 0.9575054557928893,
+        "accuracy": 0.9661954517516902,
+        "known_accuracy": 0.9503945885005637,
+        "ood_f1": 0.96684350132626,
+        "ood_precision": 0.94921875,
+        "ood_recall": 0.9851351351351352,
+        "known_to_unknown": 39,
+        "known_to_wrong_known": 5,
+        "unknown_to_known": 11
+      },
+      "delta": {
+        "macro_f1": -0.0014090725218903755,
+        "accuracy": -0.0012292562999385304,
+        "known_accuracy": -0.0022547914317925244,
+        "ood_f1": -0.0012839887135805972
+      },
+      "rescued_errors": 3,
+      "introduced_errors": 5,
+      "changed_predictions": 8,
+      "enrollment_real_views": 21213,
+      "query_real_views": 12298,
+      "group_view_count_min": 1,
+      "group_view_count_median": 24.0,
+      "group_view_count_max": 47
+    },
+    {
+      "fold": 2,
+      "baseline": {
+        "macro_f1": 0.9406726611789009,
+        "accuracy": 0.9747474747474747,
+        "known_accuracy": 0.9398663697104677,
+        "ood_f1": 0.9806795469686875,
+        "ood_precision": 0.9658792650918635,
+        "ood_recall": 0.9959404600811907,
+        "known_to_unknown": 26,
+        "known_to_wrong_known": 1,
+        "unknown_to_known": 3
+      },
+      "candidate": {
+        "macro_f1": 0.9421654923442542,
+        "accuracy": 0.9747474747474747,
+        "known_accuracy": 0.9420935412026726,
+        "ood_f1": 0.9813084112149533,
+        "ood_precision": 0.9683794466403162,
+        "ood_recall": 0.9945872801082544,
+        "known_to_unknown": 24,
+        "known_to_wrong_known": 2,
+        "unknown_to_known": 4
+      },
+      "delta": {
+        "macro_f1": 0.0014928311653532589,
+        "accuracy": 0.0,
+        "known_accuracy": 0.0022271714922049712,
+        "ood_f1": 0.0006288642462657368
+      },
+      "rescued_errors": 2,
+      "introduced_errors": 2,
+      "changed_predictions": 5,
+      "enrollment_real_views": 24569,
+      "query_real_views": 8942,
+      "group_view_count_min": 1,
+      "group_view_count_median": 27.0,
+      "group_view_count_max": 40
+    }
+  ],
+  "aggregate": {
+    "baseline": {
+      "macro_f1": 0.9633564052154656,
+      "accuracy": 0.9705419383854283,
+      "known_accuracy": 0.952423698384201,
+      "ood_f1": 0.975111111111111,
+      "ood_precision": 0.9618588338448049,
+      "ood_recall": 0.9887336638125281,
+      "known_to_unknown": 87,
+      "known_to_wrong_known": 19,
+      "unknown_to_known": 25
+    },
+    "candidate": {
+      "macro_f1": 0.9619709819616807,
+      "accuracy": 0.9700921969867327,
+      "known_accuracy": 0.9497307001795332,
+      "ood_f1": 0.9732123090546823,
+      "ood_precision": 0.9564838990426457,
+      "ood_recall": 0.9905362776025236,
+      "known_to_unknown": 100,
+      "known_to_wrong_known": 12,
+      "unknown_to_known": 21
+    },
+    "delta": {
+      "macro_f1": -0.0013854232537848787,
+      "accuracy": -0.0004497413986956911,
+      "known_accuracy": -0.0026929982046678402,
+      "ood_f1": -0.0018988020564287833
+    },
+    "rescued_errors": 11,
+    "introduced_errors": 13,
+    "changed_predictions": 35
+  },
+  "acceptance_gate": {
+    "passed": false,
+    "conditions": {
+      "all_three_folds_macro_positive": false,
+      "aggregate_macro_gain_at_least_0_001": false,
+      "all_fold_known_guardrails": false,
+      "all_fold_ood_guardrails": false,
+      "aggregate_known_guardrail": false,
+      "aggregate_ood_guardrail": false
+    },
+    "thresholds": {
+      "minimum_aggregate_macro_gain": 0.001,
+      "maximum_known_or_ood_drop": 0.001,
+      "fold_direction": "strictly positive Macro-F1 in all three folds"
+    }
+  },
+  "decision": "reject"
+}
