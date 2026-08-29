@@ -9,6 +9,7 @@ it compares Control, the selected channel-robust candidate, and one fixed
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import sys
@@ -48,6 +49,83 @@ MAXIMUM_KNOWN_DROP = 0.001
 MAXIMUM_OOD_DROP = 0.001
 MINIMUM_CANDIDATE_RESCUE_RATE = 0.20
 MAXIMUM_STANDALONE_DEFICIT = 0.010
+
+
+def assert_augmentation_only_contract(
+    control_config: dict, candidate_config: dict
+) -> None:
+    """Require the terminal treatment to differ only in augmentation/identity."""
+    control = copy.deepcopy(control_config)
+    candidate = copy.deepcopy(candidate_config)
+    for config in (control, candidate):
+        config.pop("_meta", None)
+        config.pop("experiment", None)
+        config.pop("logging", None)
+    if candidate.get("augmentation") == control.get("augmentation"):
+        raise RuntimeError("Candidate augmentation treatment is missing")
+    candidate["augmentation"] = copy.deepcopy(control.get("augmentation"))
+    if candidate != control:
+        changed = sorted(
+            key for key in set(control) | set(candidate)
+            if control.get(key) != candidate.get(key)
+        )
+        raise RuntimeError(
+            "Candidate changed fields outside augmentation: " + ", ".join(changed)
+        )
+
+
+def validate_raw_bundle_binding(
+    candidate_dir: Path,
+    raw_checkpoint_path: Path,
+    oof_path: Path,
+) -> dict:
+    """Bind the selected bundle and OOF to the exact selected Raw weights."""
+    bundle_dir = oof_path.parent
+    manifest_path = bundle_dir / "manifest.json"
+    selected_checkpoint_path = candidate_dir / "campp_best.pt"
+    if not manifest_path.is_file():
+        raise RuntimeError(f"Candidate bundle manifest missing: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if Path(str(manifest.get("checkpoint", ""))).name != selected_checkpoint_path.name:
+        raise RuntimeError("Candidate bundle manifest points to an unexpected checkpoint")
+    selected_sha = sha256_file(selected_checkpoint_path)
+    raw_sha = sha256_file(raw_checkpoint_path)
+    oof_sha = sha256_file(oof_path)
+    if manifest.get("checkpoint_sha256") != selected_sha:
+        raise RuntimeError("Candidate selected-checkpoint manifest SHA mismatch")
+    if manifest.get("oof_predictions_sha256") != oof_sha:
+        raise RuntimeError("Candidate OOF manifest SHA mismatch")
+
+    selected = torch.load(
+        selected_checkpoint_path, map_location="cpu", weights_only=False
+    )
+    raw = torch.load(raw_checkpoint_path, map_location="cpu", weights_only=False)
+    if selected.get("weight_variant") != "raw" or raw.get("weight_variant") != "raw":
+        raise RuntimeError("Candidate selected checkpoint is not Raw")
+    if int(selected.get("epoch", -1)) != int(raw.get("epoch", -2)):
+        raise RuntimeError("Candidate selected/Raw epochs differ")
+    if not np.isclose(
+        float(selected.get("val_macro_f1", np.nan)),
+        float(raw.get("val_macro_f1", np.nan)),
+        atol=1e-12,
+        rtol=0.0,
+    ):
+        raise RuntimeError("Candidate selected/Raw metrics differ")
+    selected_state = selected.get("model_state_dict") or {}
+    raw_state = raw.get("model_state_dict") or {}
+    if selected_state.keys() != raw_state.keys() or not all(
+        torch.equal(selected_state[key], raw_state[key]) for key in selected_state
+    ):
+        raise RuntimeError("Candidate selected/Raw model states differ")
+    return {
+        "manifest_sha256": sha256_file(manifest_path),
+        "selected_checkpoint_sha256": selected_sha,
+        "raw_checkpoint_sha256": raw_sha,
+        "oof_predictions_sha256": oof_sha,
+        "selected_epoch": int(selected["epoch"]),
+        "selected_val_macro_f1": float(selected["val_macro_f1"]),
+        "weight_variant": "raw",
+    }
 
 
 def align_oof(reference: dict, candidate: dict) -> dict:
@@ -198,6 +276,9 @@ def main() -> int:
     candidate_oof_path = (
         candidate_dir / "campp_best_bundle" / "oof_predictions.npz"
     )
+    candidate_bundle_binding = validate_raw_bundle_binding(
+        candidate_dir, candidate_checkpoint_path, candidate_oof_path
+    )
     candidate_oof = align_oof(
         raw_oof,
         load_oof(candidate_oof_path, 0, expected_validation),
@@ -230,6 +311,9 @@ def main() -> int:
     candidate_split = candidate_checkpoint["config"]["data"]["split"]
     if control_split != candidate_split:
         raise RuntimeError("Control and candidate split provenance differ")
+    assert_augmentation_only_contract(
+        control_checkpoint["config"], candidate_checkpoint["config"]
+    )
     del control_checkpoint, candidate_checkpoint
 
     control_evidence = probability_evidence(
@@ -284,6 +368,7 @@ def main() -> int:
             "control_checkpoint_sha256": sha256_file(control_checkpoint_path),
             "candidate_checkpoint_sha256": sha256_file(candidate_checkpoint_path),
             "candidate_oof_sha256": sha256_file(candidate_oof_path),
+            "candidate_bundle_binding": candidate_bundle_binding,
             "control_artifact": raw_metadata[0],
             "candidate_artifact": candidate_metadata,
             "validation_files": int(len(labels)),
@@ -320,4 +405,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
