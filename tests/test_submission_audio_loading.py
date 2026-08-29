@@ -40,3 +40,22 @@ def test_real_mpeg_signature_keeps_decoder_fallback(monkeypatch, tmp_path: Path)
     waveform = _load_waveform(audio, 16_000)
     assert waveform is not None
     assert tuple(waveform.shape) == (1, 16_000)
+
+
+def test_pcm_bytes_that_resemble_frame_sync_do_not_reach_mpeg_decoder(
+    monkeypatch, tmp_path: Path
+) -> None:
+    audio = tmp_path / "headerless-pcm.mp3"
+    audio.write_bytes(b"\xff\xe3\xff\xe3" + b"\x00" * 32)
+
+    monkeypatch.setattr(
+        sf, "read", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError())
+    )
+    monkeypatch.setattr(
+        librosa,
+        "load",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("headerless PCM must not reach mpg123/librosa")
+        ),
+    )
+    assert _load_waveform(audio, 16_000) is None

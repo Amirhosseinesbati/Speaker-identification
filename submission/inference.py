@@ -99,9 +99,12 @@ def _load_waveform(audio_path: Path, sample_rate: int) -> Optional[torch.Tensor]
         with audio_path.open("rb") as handle:
             magic = handle.read(12)
         is_riff_wave = len(magic) >= 12 and magic[:4] == b"RIFF" and magic[8:12] == b"WAVE"
-        is_mpeg = magic[:3] == b"ID3" or (
-            len(magic) >= 2 and magic[0] == 0xFF and magic[1] & 0xE0 == 0xE0
-        )
+        # The one genuine MPEG file in the audited corpus carries an ID3
+        # header.  A two-byte frame-sync heuristic is unsafe here because
+        # headerless signed PCM routinely begins with the same 0xFFE? bit
+        # pattern.  SoundFile is still attempted first and can decode valid
+        # headerless-ID3 MPEG streams when its backend supports them.
+        is_mpeg = magic[:3] == b"ID3"
         if is_riff_wave or audio_path.suffix.lower() == ".wav":
             wav, sr = sf.read(str(audio_path), dtype="float32")
             if wav.ndim > 1:
