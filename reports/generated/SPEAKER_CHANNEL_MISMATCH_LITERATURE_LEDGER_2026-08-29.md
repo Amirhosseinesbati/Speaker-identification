@@ -22,15 +22,35 @@ used to choose thresholds, fusion weights, epochs, or augmentation strength.
 
 The active profile is `p3-campp-known446-ood-channelrobust-oof-f0`, commit
 `eb433629b85a07a0665056d1bf6fcd84694cf1ca`.  It changes only the augmentation
-policy relative to Control Fold 0.  At the live epoch-8 snapshot it was ahead of
-the matched Control curve by `+0.0135` probability-average Macro-F1 and
-`+0.0073` logit-average Macro-F1, with validation loss lower by `0.0304`.
-These are early optimisation diagnostics, not acceptance evidence.
+policy relative to Control Fold 0.  Its early epoch-8 advantage did not persist
+through the frozen-encoder phase.  At the matched epoch-21 snapshot, immediately
+after progressive encoder unfreezing, the treatment had probability-average
+Macro-F1 `0.8893` versus Control `0.8942` (`-0.0049`), logit-average `0.8787`
+versus `0.8930` (`-0.0143`), and validation loss `1.0794` versus `1.0734`.
+The run remained healthy and active, so this is evidence to watch the post-
+unfreeze trajectory, not a terminal rejection.
 
 The treatment still passes only if the preregistered standalone LME20,
 fixed-50/50 complementarity, Known/OOD, rescue-rate, and provenance gates all
 pass after the run.  Failure rejects the candidate and forbids automatic Fold
 expansion.
+
+## Decision-selector oracle ceiling
+
+The locked three-Fold residual audit contains `4447` OOF files and `131` LME20
+errors.  Relative to the raw head, LME20 corrected `120` head errors while the
+head was correct on only `14` LME20 errors.  Therefore an impossible oracle
+that chooses perfectly between the head and LME20 can save at most 14 additional
+files, an accuracy ceiling of `14 / 4447 = 0.00314819`; this is not a guaranteed
+Macro-F1 gain.  A learned selector would also need to preserve the 120 LME20-only
+rescues.  The error-feature distributions overlap: mean fused confidence is
+`0.4372` for Known-to-Unknown and `0.4302` for Unknown-to-Known errors.
+
+This evidence deprioritises another generic head/LME selector or global
+threshold sweep.  The remaining high-value hypothesis class is representation
+or condition modelling that changes the residual topology itself.  Any later
+selector must first demonstrate cross-fit separability and must remain subject
+to simultaneous Known/OOD guardrails.
 
 ## Backup decision order
 
@@ -44,4 +64,3 @@ expansion.
 5. Domain-adversarial training is a later option only if the proxy/prototype
    route cannot explain the residual topology and the remaining budget permits
    a controlled ablation.
-
