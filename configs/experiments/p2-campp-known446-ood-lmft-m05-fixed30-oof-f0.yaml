@@ -1,0 +1,84 @@
+_meta:
+  name: p2-campp-known446-ood-lmft-m05-fixed30-oof-f0
+  base: default_config.yaml
+experiment:
+  priority: P2-DIAGNOSTIC-CORRECTION
+  family: campp-known446-ood-lmft
+  purpose: >-
+    Correct the premature-stop flaw in the first Fold 0 LMFT diagnostic by
+    running the same warm-start, margin, split, augmentation, windowing, loss,
+    and learning rates for the complete preregistered 30-epoch horizon.
+  expected_decision: >-
+    Treat the original 9-epoch result as inconclusive. Accept this LMFT recipe
+    only if Raw probability-average improves Fold 0 Macro-F1 by at least 0.002,
+    Known Accuracy and OOD-F1 each fall by no more than 0.001, and the gain is
+    supported by at least two completed epochs. Passing authorizes analysis
+    only; it does not authorize another Fold or a submission.
+  fixed_horizon:
+    epochs: 30
+    metric_early_stopping: false
+    min_supporting_epochs: 2
+  preregistered_baseline:
+    epoch: 0
+    source_checkpoint_epoch: 112
+    raw_probability_macro_f1: 0.9469211906147802
+    known_accuracy: 0.9573991031390134
+    ood_f1: 0.9586206896551724
+  preregistered_gate:
+    min_macro_f1_gain: 0.002
+    max_known_accuracy_drop: 0.001
+    max_ood_f1_drop: 0.001
+    min_supporting_epochs: 2
+    expansion_if_passed: analysis_only
+    later_folds_automatic: false
+data:
+  clean_duplicates: true
+  split: {scheme: kfold, folds: 3, fold: 0, seed: 42}
+model:
+  encoder_type: campp
+  competition_num_known: 446
+  num_unknown_clusters: 554
+  unknown_cluster_path: data/processed/unknown_clusters_oof_f0.json
+  speaker_target_scope: known
+  ood_head: true
+  speaker_head_type: arcface
+  speaker_head_config:
+    arcface: {embedding_dim: 192, margin: 0.5, scale: 30.0}
+  encoder_config:
+    campp: {freeze_encoder: false, unfreeze_last_n_blocks: 1}
+audio:
+  num_train_windows: 8
+  speech_aware_crop_probability: 0.75
+  eval_speech_aware: true
+  short_audio_mode: pad
+hardware:
+  mode: vastai_3090_campp
+  profiles:
+    vastai_3090_campp:
+      batch_size: 48
+      description: Measured RTX 3090 CAM++ 8x8s sweet spot
+      device: cuda
+      mixed_precision: true
+      num_workers: 8
+logging:
+  checkpoint_dir: checkpoints/p2-campp-known446-ood-lmft-m05-fixed30-oof-f0
+  log_dir: logs/p2-campp-known446-ood-lmft-m05-fixed30-oof-f0
+training:
+  seed: 42
+  deterministic_algorithms: true
+  warm_start_checkpoint: checkpoints/p0-campp-known446-ood-control-oof-f0/campp_best_raw.pt
+  epochs: 30
+  freeze_epochs: 0
+  early_stopping_patience: 0
+  learning_rate: 5.0e-05
+  encoder_lr: 2.0e-06
+  weight_decay: 0.0001
+  schedule: cosine
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.05
+  ema_enabled: true
+  ema_decay: 0.999
+  loss:
+    speaker: {type: ce, label_smoothing: 0.05, weight: 0.85}
+    ood: {type: bce, pos_weight: 1.0, weight: 0.15}
+    proto: {enabled: false}
