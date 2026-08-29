@@ -63,3 +63,24 @@ def test_pcm_bytes_that_resemble_frame_sync_do_not_reach_mpeg_decoder(
         ),
     )
     assert _load_waveform(audio, 16_000) is None
+
+
+def test_plausible_headerless_pcm16_stereo_is_recovered(
+    monkeypatch, tmp_path: Path
+) -> None:
+    audio = tmp_path / "headerless-pcm.mp3"
+    mono = (np.sin(np.linspace(0, 30, 16_000)) * 12_000).astype("<i2")
+    audio.write_bytes(np.column_stack([mono, mono]).tobytes())
+    monkeypatch.setattr(
+        sf,
+        "read",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("headerless PCM must not reach SoundFile/mpg123")
+        ),
+    )
+    waveform = _load_waveform(audio, 16_000)
+    assert waveform is not None
+    assert tuple(waveform.shape) == (1, 16_000)
+    np.testing.assert_allclose(
+        waveform.numpy()[0], mono.astype(np.float32) / 32768.0, atol=1e-7
+    )
