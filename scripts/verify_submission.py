@@ -52,7 +52,10 @@ def main() -> int:
     parser.add_argument("--samples", type=int, default=N_SAMPLES)
     args = parser.parse_args()
     zip_path = args.zip.resolve()
-    python_path = args.python.resolve()
+    # Preserve virtualenv symlinks on Linux. Path.resolve() dereferences
+    # ``.venv/bin/python`` to the system interpreter and silently loses that
+    # environment's site-packages when the replay runs from a different cwd.
+    python_path = Path(os.path.abspath(args.python))
     print("=" * 70)
     print(f"  Verification of {zip_path.name}")
     print("=" * 70)
