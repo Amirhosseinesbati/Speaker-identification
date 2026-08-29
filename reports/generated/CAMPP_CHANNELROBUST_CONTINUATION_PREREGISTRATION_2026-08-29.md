@@ -232,6 +232,32 @@ conditions, this evidence mechanically authorizes the preregistered stateful
 continuation of at most three additional hours and `$0.55`; it does not alter
 the terminal scientific acceptance gate.
 
+### Live evidence update — epoch 81 Raw best and epoch 87 gate preview
+
+Additional time produced a material late Raw improvement rather than merely a
+longer flat tail.  Epoch 81 reached probability-average Macro-F1
+`0.9398682067905463`, replacing epoch 75 as the selected Raw checkpoint.  The
+checkpoint is tagged `weight_variant=raw`, stores optimiser and scheduler
+state with `last_epoch=81`, and has SHA256
+`b43045556057da1da383b755f8b1343954b3acf849c529011cbb2109e946ac32`.
+MLflow independently contained 87 contiguous points for each queried core
+metric while the source remained `RUNNING`.
+
+At complete epoch 87, the non-terminal locked continuation preview still
+passed the required two of three trend tests.  The selected epoch-81 Raw model
+was inside the final-eight window.  Mean training loss improved by
+`0.0528839676` between the preceding and final five-epoch windows, while mean
+validation loss improved by `0.0036792776`, satisfying the loss-adaptation
+guardrail.  The final-ten EMA slope was `-0.0001484550` and therefore did not
+pass its individual positive-slope test.  The by-epoch-60 Raw floor remained
+satisfied.
+
+This mixed evidence is exactly why the source is neither stopped early nor
+declared successful: it continues under its original patience/six-hour bound.
+The preview returned `eligible=false` solely because `complete` is not an
+allowed terminal reason.  Only a real patience or timeout terminal state may
+activate the already fixed stateful continuation decision.
+
 ## Literature rationale
 
 - Curriculum learning for speaker verification reports benefits from gradually

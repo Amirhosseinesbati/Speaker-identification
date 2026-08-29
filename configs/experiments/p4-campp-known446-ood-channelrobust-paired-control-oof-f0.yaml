@@ -1,0 +1,89 @@
+_meta:
+  name: p4-campp-known446-ood-channelrobust-paired-control-oof-f0
+  base: default_config.yaml
+experiment:
+  priority: P4-CONDITIONAL-REPRESENTATION-ABLATION
+  family: campp-known446-ood-channelrobust-paired-ablation
+  purpose: >-
+    Matched no-consistency branch for a conditional Fold-0 A/B test.  Warm
+    start the selected Channel-Robust Raw checkpoint, reset optimisation state,
+    retain the locked channel augmentation policy, and run a fixed horizon so
+    the paired-consistency branch differs only by its auxiliary objective.
+  activation_condition: >-
+    Run only if the source Channel-Robust treatment and its preregistered
+    stateful continuation fail the original terminal LME20/fusion gate.
+  fixed_horizon: {epochs: 40, metric_early_stopping: false}
+  stop_rules:
+    maximum_runtime_hours: 2.5
+    maximum_incremental_cost_usd: 0.45
+    immediate: [nan, provenance_mismatch, artifact_corruption, second_oom]
+data:
+  clean_duplicates: true
+  split: {scheme: kfold, folds: 3, fold: 0, seed: 42}
+model:
+  encoder_type: campp
+  competition_num_known: 446
+  num_unknown_clusters: 554
+  unknown_cluster_path: data/processed/unknown_clusters_oof_f0.json
+  speaker_target_scope: known
+  ood_head: true
+  speaker_head_type: arcface
+  speaker_head_config:
+    arcface: {embedding_dim: 192, margin: 0.4, scale: 30.0}
+  encoder_config:
+    campp: {freeze_encoder: false, unfreeze_last_n_blocks: 2}
+audio:
+  num_train_windows: 8
+  speech_aware_crop_probability: 0.75
+  eval_speech_aware: true
+  short_audio_mode: pad
+augmentation:
+  domain:
+    mp3_codec_roundtrip: {max_bitrate: 192, min_bitrate: 64, p: 0.3}
+    musan:
+      music_p: 0.1
+      noise_p: 0.6
+      path: data/augmentation/musan
+      snr_db: [3.0, 20.0]
+    rirs_reverb: {p: 0.6, path: data/augmentation/rirs}
+  spec:
+    time_mask: {max_mask_ratio: 0.1, p: 0.3}
+  waveform:
+    gain: {db: [-6.0, 6.0], p: 0.3}
+    gaussian_noise: {amp: [0.001, 0.008], p: 0.2}
+    pitch_shift: {p: 0.0, semitones: [-1.0, 1.0]}
+    polarity_inversion: {p: 0.5}
+    shift: {frac: 0.1, p: 0.3}
+    time_stretch: {p: 0.1, rate: [0.95, 1.05]}
+hardware:
+  mode: vastai_3090_campp
+  profiles:
+    vastai_3090_campp:
+      batch_size: 48
+      description: Measured RTX 3090 CAM++ 8x8s sweet spot
+      device: cuda
+      mixed_precision: true
+      num_workers: 8
+logging:
+  checkpoint_dir: checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0
+  log_dir: logs/p4-campp-known446-ood-channelrobust-paired-control-oof-f0
+training:
+  seed: 42
+  deterministic_algorithms: true
+  warm_start_checkpoint: checkpoints/p3-campp-known446-ood-channelrobust-oof-f0/campp_best_raw.pt
+  epochs: 40
+  freeze_epochs: 0
+  early_stopping_patience: 0
+  learning_rate: 1.0e-04
+  encoder_lr: 5.0e-06
+  weight_decay: 0.0001
+  schedule: cosine
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.05
+  ema_enabled: true
+  ema_decay: 0.999
+  loss:
+    speaker: {type: ce, label_smoothing: 0.05, weight: 0.85}
+    ood: {type: bce, pos_weight: 1.0, weight: 0.15}
+    proto: {enabled: false}
+    consistency: {enabled: false, type: cosine, weight: 0.1}

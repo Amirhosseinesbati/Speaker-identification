@@ -1079,7 +1079,9 @@ class SpeakerDataset(Dataset):
         full file, capped at `max_eval_windows` (evenly spread), with the last
         window repeated to a constant count so DataLoader batching stays simple.
 
-    `__getitem__` returns (windows, label) with windows shape (W, 1, T).
+    `__getitem__` normally returns (windows, label) with windows shape
+    (W, 1, T).  With ``return_clean_aug_pair=True`` the first item is a dict
+    containing ``augmented`` and ``clean`` tensors of that same shape.
     """
 
     def __init__(
@@ -1099,6 +1101,7 @@ class SpeakerDataset(Dataset):
         eval_speech_aware: bool = False,
         speech_relative_db: float = 35.0,
         short_audio_mode: str = "pad",
+        return_clean_aug_pair: bool = False,
     ):
         self.df = df.reset_index(drop=True)
         self.audio_dir = Path(audio_dir)
@@ -1115,6 +1118,17 @@ class SpeakerDataset(Dataset):
         self.eval_speech_aware = bool(eval_speech_aware)
         self.speech_relative_db = float(speech_relative_db)
         self.short_audio_mode = str(short_audio_mode)
+        self.return_clean_aug_pair = bool(return_clean_aug_pair)
+
+        if self.return_clean_aug_pair and not self.augment:
+            raise ValueError(
+                "return_clean_aug_pair requires augment=True (training only)"
+            )
+        if self.return_clean_aug_pair and self.mixup_alpha > 0:
+            raise ValueError(
+                "Paired clean/aug views are incompatible with mixup_alpha > 0: "
+                "the clean teacher view must retain one speaker identity"
+            )
 
         if self.augment:
             self.augmentor = AudioAugmentation(sample_rate, self.augmentation)
@@ -1122,7 +1136,7 @@ class SpeakerDataset(Dataset):
     def __len__(self) -> int:
         return len(self.df)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Tuple[object, torch.Tensor]:
         row = self.df.iloc[idx]
         audio_path = self.audio_dir / row["audio_file"]
         label = torch.tensor(row["label"], dtype=torch.long)
@@ -1155,10 +1169,18 @@ class SpeakerDataset(Dataset):
 
         return windows, label
 
-    def _train_windows(self, waveform: torch.Tensor) -> torch.Tensor:
-        """Return (num_train_windows, 1, T) — random crops, each augmented."""
+    def _train_windows(self, waveform: torch.Tensor):
+        """Return augmented windows, optionally paired with identical clean crops.
+
+        In paired mode the crop boundary is sampled exactly once.  The clean
+        view is cloned before augmentation so every pair has identical speech
+        content and differs only by the configured channel/noise transform.
+        The default Tensor return remains byte-for-byte compatible with all
+        existing experiments.
+        """
         T = self.target_length
-        windows = []
+        augmented_windows = []
+        clean_windows = []
         for _ in range(self.num_train_windows):
             w = waveform
             n = w.size(-1)
@@ -1177,8 +1199,10 @@ class SpeakerDataset(Dataset):
             elif n < T:
                 from src.audio_windows import fit_short_audio
                 w = fit_short_audio(w, T, mode=self.short_audio_mode)
+            clean = w.clone() if self.return_clean_aug_pair else None
             if self.augment:
-                w = self.augmentor(w)
+                augmentation_source = clean.clone() if clean is not None else w
+                w = self.augmentor(augmentation_source)
                 # TimeStretch / PitchShift can change the window length
                 # (newer audiomentations keep the stretched duration instead of
                 # resampling back), so re-normalise before stacking — otherwise
@@ -1187,8 +1211,18 @@ class SpeakerDataset(Dataset):
                     w = w[..., :T]
                 elif w.size(-1) < T:
                     w = torch.nn.functional.pad(w, (0, T - w.size(-1)))
-            windows.append(w)
-        return torch.stack(windows)
+            augmented_windows.append(w)
+            if self.return_clean_aug_pair:
+                assert clean is not None
+                clean_windows.append(clean)
+
+        augmented = torch.stack(augmented_windows)
+        if not self.return_clean_aug_pair:
+            return augmented
+        return {
+            "augmented": augmented,
+            "clean": torch.stack(clean_windows),
+        }
 
     def _eval_windows(self, waveform: torch.Tensor) -> torch.Tensor:
         """
@@ -1489,6 +1523,21 @@ def get_dataloaders(
     audio_cfg = config["audio"]
     data_cfg = config["data"]
     hw_profile = get_active_profile(config)
+    consistency_cfg = (
+        ((config.get("training", {}).get("loss", {}) or {})
+         .get("consistency", {}) or {})
+    )
+    consistency_enabled = bool(consistency_cfg.get("enabled", False))
+    consistency_weight = float(consistency_cfg.get("weight", 0.0))
+    consistency_type = str(consistency_cfg.get("type", "cosine")).lower()
+    if consistency_enabled and consistency_weight <= 0:
+        raise ValueError(
+            "training.loss.consistency.enabled requires a positive weight"
+        )
+    if consistency_enabled and consistency_type != "cosine":
+        raise ValueError(
+            "Only training.loss.consistency.type=cosine is supported"
+        )
 
     batch_size = hw_profile["batch_size"]
     num_workers = hw_profile["num_workers"]
@@ -1568,6 +1617,7 @@ def get_dataloaders(
         eval_speech_aware=audio_cfg.get("eval_speech_aware", False),
         speech_relative_db=audio_cfg.get("speech_relative_db", 35.0),
         short_audio_mode=audio_cfg.get("short_audio_mode", "pad"),
+        return_clean_aug_pair=consistency_enabled,
     )
 
     val_dataset = SpeakerDataset(

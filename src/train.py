@@ -626,6 +626,7 @@ def train_epoch(
     ema: Optional[EMA] = None,
     proto_criterion: Optional[nn.Module] = None,
     proto_weight: float = 0.0,
+    consistency_weight: float = 0.0,
 ) -> Dict[str, float]:
     """
     Train for one epoch with AMP.
@@ -636,8 +637,16 @@ def train_epoch(
     instead of averaging the ``W`` logits first — without the OOM of flattening
     to a single ``(B*W, 1, T)`` forward.
 
+    With paired clean/augmented dataset views, the supervised objective remains
+    on the augmented branch and a stop-gradient clean embedding acts as the
+    target for a cosine consistency term.  The clean branch is evaluated with
+    dropout disabled so the auxiliary target measures channel distortion, not
+    two unrelated dropout masks.
+
     Returns dict of average metrics.
     """
+    if consistency_weight < 0:
+        raise ValueError("consistency_weight must be non-negative")
     if autocast_fn is None:
         def autocast_fn():
             return autocast()
@@ -647,6 +656,11 @@ def train_epoch(
     total_loss_primary = 0.0
     total_loss_proto = 0.0
     total_loss_proto_weighted = 0.0
+    total_loss_consistency = 0.0
+    total_loss_consistency_weighted = 0.0
+    total_pair_cosine = 0.0
+    total_embedding_std_augmented = 0.0
+    total_embedding_std_clean = 0.0
     total_ood_acc = 0.0
     total_speaker_acc = 0.0
     total_loss_ood = 0.0
@@ -654,8 +668,34 @@ def train_epoch(
     num_batches = len(dataloader)
 
     progress_bar = tqdm(dataloader, desc="  Train", leave=False)
-    for step, (waveforms, labels) in enumerate(progress_bar):
+    for step, (batch_views, labels) in enumerate(progress_bar):
+        clean_waveforms = None
+        if isinstance(batch_views, dict):
+            if set(batch_views) != {"augmented", "clean"}:
+                raise ValueError(
+                    "Paired training view dict must contain exactly "
+                    "'augmented' and 'clean'"
+                )
+            waveforms = batch_views["augmented"]
+            clean_waveforms = batch_views["clean"]
+            if consistency_weight <= 0:
+                raise ValueError(
+                    "Dataset returned paired views but consistency_weight is not positive"
+                )
+        else:
+            waveforms = batch_views
+            if consistency_weight > 0:
+                raise ValueError(
+                    "consistency_weight > 0 requires paired clean/augmented dataset views"
+                )
+
         waveforms = waveforms.to(device, non_blocking=True)
+        if clean_waveforms is not None:
+            clean_waveforms = clean_waveforms.to(device, non_blocking=True)
+            if clean_waveforms.shape != waveforms.shape:
+                raise ValueError(
+                    "Clean and augmented view tensors must have identical shapes"
+                )
         labels = labels.to(device, non_blocking=True)
 
         optimizer.zero_grad()
@@ -672,14 +712,37 @@ def train_epoch(
         step_loss_primary = 0.0
         step_loss_proto = 0.0
         step_loss_proto_weighted = 0.0
+        step_loss_consistency = 0.0
+        step_loss_consistency_weighted = 0.0
+        step_pair_cosine = 0.0
+        step_embedding_std_augmented = 0.0
+        step_embedding_std_clean = 0.0
         step_ood_acc = 0.0
         step_spk_acc = 0.0
         step_loss_ood = 0.0
         step_loss_spk = 0.0
         for w in range(W):
             wf = waveforms[:, w] if W > 1 else waveforms  # (B, 1, T)
+
+            clean_embedding = None
+            if clean_waveforms is not None:
+                clean_wf = (
+                    clean_waveforms[:, w] if W > 1 else clean_waveforms
+                )
+                was_training = model.training
+                model.eval()
+                try:
+                    with torch.no_grad(), autocast_fn():
+                        clean_embedding = model.embed(clean_wf).detach()
+                finally:
+                    if was_training:
+                        model.train()
+
             with autocast_fn():
-                if proto_criterion is not None:
+                need_embedding = (
+                    proto_criterion is not None or clean_embedding is not None
+                )
+                if need_embedding:
                     ood_logits, speaker_logits, emb = model(
                         wf, labels=labels, return_embedding=True)
                 else:
@@ -691,7 +754,30 @@ def train_epoch(
                 if proto_criterion is not None:
                     proto_loss = proto_criterion(emb, labels)
                 weighted_proto_loss = proto_weight * proto_loss
-                loss = primary_loss + weighted_proto_loss
+                consistency_loss = torch.zeros_like(primary_loss)
+                pair_cosine = torch.zeros_like(primary_loss)
+                embedding_std_augmented = torch.zeros_like(primary_loss)
+                embedding_std_clean = torch.zeros_like(primary_loss)
+                if clean_embedding is not None:
+                    pair_cosines = F.cosine_similarity(
+                        emb.float(), clean_embedding.float(), dim=1,
+                    )
+                    pair_cosine = pair_cosines.mean()
+                    consistency_loss = 1.0 - pair_cosine
+                    embedding_std_augmented = emb.float().std(
+                        dim=0, unbiased=False,
+                    ).mean()
+                    embedding_std_clean = clean_embedding.float().std(
+                        dim=0, unbiased=False,
+                    ).mean()
+                weighted_consistency_loss = (
+                    consistency_weight * consistency_loss
+                )
+                loss = (
+                    primary_loss
+                    + weighted_proto_loss
+                    + weighted_consistency_loss
+                )
 
             # Fail loudly on NaN/Inf instead of silently training a broken model
             if not torch.isfinite(loss):
@@ -714,6 +800,17 @@ def train_epoch(
             step_loss_primary += loss_dict["loss_total"]
             step_loss_proto += float(proto_loss.detach().item())
             step_loss_proto_weighted += float(weighted_proto_loss.detach().item())
+            step_loss_consistency += float(consistency_loss.detach().item())
+            step_loss_consistency_weighted += float(
+                weighted_consistency_loss.detach().item()
+            )
+            step_pair_cosine += float(pair_cosine.detach().item())
+            step_embedding_std_augmented += float(
+                embedding_std_augmented.detach().item()
+            )
+            step_embedding_std_clean += float(
+                embedding_std_clean.detach().item()
+            )
             step_loss_ood += loss_dict["loss_ood"]
             step_loss_spk += loss_dict["loss_speaker"]
             step_ood_acc += compute_ood_accuracy(
@@ -750,6 +847,13 @@ def train_epoch(
         total_loss_primary += step_loss_primary / W
         total_loss_proto += step_loss_proto / W
         total_loss_proto_weighted += step_loss_proto_weighted / W
+        total_loss_consistency += step_loss_consistency / W
+        total_loss_consistency_weighted += (
+            step_loss_consistency_weighted / W
+        )
+        total_pair_cosine += step_pair_cosine / W
+        total_embedding_std_augmented += step_embedding_std_augmented / W
+        total_embedding_std_clean += step_embedding_std_clean / W
         total_ood_acc += step_ood_acc / W
         total_speaker_acc += step_spk_acc / W
         total_loss_ood += step_loss_ood / W
@@ -760,6 +864,8 @@ def train_epoch(
             "loss": f"{step_loss / W:.4f}",
             "ood": f"{step_ood_acc / W:.3f}",
             "spk": f"{step_spk_acc / W:.3f}",
+            **({"pair": f"{step_pair_cosine / W:.3f}"}
+               if clean_waveforms is not None else {}),
         })
 
     primary_weight_sum = criterion.ood_weight + criterion.speaker_weight
@@ -774,6 +880,15 @@ def train_epoch(
         ),
         "loss_proto": total_loss_proto / num_batches,
         "loss_proto_weighted": total_loss_proto_weighted / num_batches,
+        "loss_consistency": total_loss_consistency / num_batches,
+        "loss_consistency_weighted": (
+            total_loss_consistency_weighted / num_batches
+        ),
+        "pair_cosine": total_pair_cosine / num_batches,
+        "embedding_std_augmented": (
+            total_embedding_std_augmented / num_batches
+        ),
+        "embedding_std_clean": total_embedding_std_clean / num_batches,
         "loss_ood": total_loss_ood / num_batches,
         "loss_speaker": total_loss_spk / num_batches,
         "ood_acc": total_ood_acc / num_batches,
@@ -877,6 +992,20 @@ def train(config_path: str = "configs/default_config.yaml"):
     hw_profile = get_active_profile(config)
     train_cfg = config["training"]
     log_cfg = config["logging"]
+    consistency_cfg = (
+        ((train_cfg.get("loss", {}) or {}).get("consistency", {}) or {})
+    )
+    consistency_enabled = bool(consistency_cfg.get("enabled", False))
+    consistency_weight = float(consistency_cfg.get("weight", 0.0))
+    consistency_type = str(consistency_cfg.get("type", "cosine")).lower()
+    if consistency_enabled and consistency_weight <= 0:
+        raise ValueError(
+            "training.loss.consistency.enabled requires a positive weight"
+        )
+    if consistency_enabled and consistency_type != "cosine":
+        raise ValueError(
+            "Only training.loss.consistency.type=cosine is supported"
+        )
     encoder_type = str(config.get("model", {}).get("encoder_type", "model"))
     reproducibility = seed_everything(
         train_cfg.get("seed", 42),
@@ -894,6 +1023,11 @@ def train(config_path: str = "configs/default_config.yaml"):
     print(f"  Weight decay: {train_cfg['weight_decay']}")
     print(f"  Training seed: {reproducibility['seed']} | "
           f"deterministic: {reproducibility['deterministic_algorithms']}")
+    if consistency_enabled:
+        print(
+            "  Paired clean/aug embedding consistency: "
+            f"cosine weight={consistency_weight:g} (clean stop-gradient)"
+        )
     print()
 
     # ── Device ──
@@ -1038,6 +1172,9 @@ def train(config_path: str = "configs/default_config.yaml"):
             ema=ema,
             proto_criterion=proto_criterion,
             proto_weight=proto_weight,
+            consistency_weight=(
+                consistency_weight if consistency_enabled else 0.0
+            ),
         )
 
         # Validate

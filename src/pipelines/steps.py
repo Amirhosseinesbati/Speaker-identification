@@ -620,6 +620,20 @@ def train_model(
     print("=" * 55)
 
     train_cfg = config["training"]
+    consistency_cfg = (
+        ((train_cfg.get("loss", {}) or {}).get("consistency", {}) or {})
+    )
+    consistency_enabled = bool(consistency_cfg.get("enabled", False))
+    consistency_weight = float(consistency_cfg.get("weight", 0.0))
+    consistency_type = str(consistency_cfg.get("type", "cosine")).lower()
+    if consistency_enabled and consistency_weight <= 0:
+        raise ValueError(
+            "training.loss.consistency.enabled requires a positive weight"
+        )
+    if consistency_enabled and consistency_type != "cosine":
+        raise ValueError(
+            "Only training.loss.consistency.type=cosine is supported"
+        )
     reproducibility = seed_everything(
         train_cfg.get("seed", 42),
         deterministic=train_cfg.get("deterministic_algorithms", True),
@@ -689,6 +703,7 @@ def train_model(
         eval_speech_aware=audio_cfg.get("eval_speech_aware", False),
         speech_relative_db=audio_cfg.get("speech_relative_db", 35.0),
         short_audio_mode=audio_cfg.get("short_audio_mode", "pad"),
+        return_clean_aug_pair=consistency_enabled,
     )
     val_dataset = SpeakerDataset(
         df=val_df,
@@ -863,6 +878,11 @@ def train_model(
         proto_weight = float(proto_cfg.get("weight", 0.1))
         print(f"  🎯 Prototypical loss enabled (weight={proto_weight}, "
               f"scale={proto_cfg.get('scale', 30.0)}, margin={proto_cfg.get('margin', 0.2)})")
+    if consistency_enabled:
+        print(
+            "  🔗 Paired clean/aug embedding consistency enabled "
+            f"(cosine weight={consistency_weight:g}, clean target stop-gradient)"
+        )
 
     # ── Training Loop with MLflow autologging ──
     log_cfg = config.get("logging", {})
@@ -934,6 +954,9 @@ def train_model(
             ema=ema,
             proto_criterion=proto_criterion,
             proto_weight=proto_weight,
+            consistency_weight=(
+                consistency_weight if consistency_enabled else 0.0
+            ),
         )
         # Validate + competition metric (Macro-F1 over all 447 classes)
         val_metrics = validate_epoch(model, val_loader, criterion, device)
@@ -989,6 +1012,19 @@ def train_model(
             "train_loss_proto": train_metrics["loss_proto"],
             "train_loss_proto_weighted": train_metrics[
                 "loss_proto_weighted"
+            ],
+            "train_loss_consistency": train_metrics[
+                "loss_consistency"
+            ],
+            "train_loss_consistency_weighted": train_metrics[
+                "loss_consistency_weighted"
+            ],
+            "train_pair_cosine": train_metrics["pair_cosine"],
+            "train_embedding_std_augmented": train_metrics[
+                "embedding_std_augmented"
+            ],
+            "train_embedding_std_clean": train_metrics[
+                "embedding_std_clean"
             ],
             "train_loss_ood": train_metrics["loss_ood"],
             "train_loss_speaker": train_metrics["loss_speaker"],
