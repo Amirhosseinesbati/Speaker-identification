@@ -24,6 +24,13 @@ The decision experiment is a new sequential 80/80 matched pair:
 1. `p4-campp-known446-ood-channelrobust-paired-control-long80-oof-f0`
 2. `p4-campp-known446-ood-channelrobust-consistency-c01-long80-oof-f0`
 
+The raw profile files are locked before either long80 branch starts:
+
+- matched control SHA256:
+  `29fad79221ef180cdd7eb35102dc75cd488e8505f4de0d8e44eb20d3cd144562`;
+- consistency treatment SHA256:
+  `1d0625d1c4311dbe0544775cfeb8db91c2f07d0335eba748a7c87240ef4ba860`.
+
 Both start from the same selected Channel-Robust Raw checkpoint and reset
 optimizer, scheduler and EMA.  They share seed, Fold-0 split, model,
 augmentation, windows/crops, optimizer, 80-epoch cosine schedule and direct

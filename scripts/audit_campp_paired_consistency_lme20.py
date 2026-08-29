@@ -57,6 +57,12 @@ SOURCE_PROFILE = "p3-campp-known446-ood-channelrobust-oof-f0"
 SOURCE_CHECKPOINT_SHA256 = (
     "a46715e603173201a35bf20d9b43f6ad27f0352561b4c834ce7a2b3a3ae67a06"
 )
+MATCHED_CONFIG_SHA256 = (
+    "29fad79221ef180cdd7eb35102dc75cd488e8505f4de0d8e44eb20d3cd144562"
+)
+TREATMENT_CONFIG_SHA256 = (
+    "1d0625d1c4311dbe0544775cfeb8db91c2f07d0335eba748a7c87240ef4ba860"
+)
 EXTERNAL_CONTROL_LME20_MACRO_F1 = 0.9611456662793696
 MINIMUM_MATCHED_MACRO_GAIN = 0.002
 MINIMUM_FUSION_MACRO_GAIN = 0.002
@@ -280,6 +286,14 @@ def main() -> int:
     expected_validation = set(validation_frame["audio_file"].astype(str))
 
     profiles = (MATCHED_CONTROL_PROFILE, TREATMENT_PROFILE)
+    locked_config_hashes = {
+        MATCHED_CONTROL_PROFILE: MATCHED_CONFIG_SHA256,
+        TREATMENT_PROFILE: TREATMENT_CONFIG_SHA256,
+    }
+    for profile, expected_sha256 in locked_config_hashes.items():
+        config_path = ROOT / "configs" / "experiments" / f"{profile}.yaml"
+        if sha256_file(config_path) != expected_sha256:
+            raise RuntimeError(f"Locked long80 config SHA changed: {profile}")
     loaded: dict[str, dict] = {}
     for profile in profiles:
         checkpoint_dir = args.checkpoint_root / profile
@@ -400,6 +414,7 @@ def main() -> int:
         "provenance": {
             "cleaning": cleaning,
             "source_checkpoint_sha256": SOURCE_CHECKPOINT_SHA256,
+            "config_sha256": locked_config_hashes,
             "external_control_artifact": external_metadata[0],
             "validation_files": int(len(labels)),
             "validation_file_sha256": digest_names(

@@ -5,12 +5,16 @@ import pytest
 import torch
 
 from scripts.audit_campp_paired_consistency_lme20 import (
+    MATCHED_CONFIG_SHA256,
     MATCHED_CONTROL_PROFILE,
+    ROOT,
+    TREATMENT_CONFIG_SHA256,
     TREATMENT_PROFILE,
     acceptance_gate,
     assert_paired_single_objective_contract,
     embedding_spread,
     milestone_diagnostic,
+    sha256_file,
 )
 from src.experiment_config import load_profile
 
@@ -24,6 +28,16 @@ def test_long80_contract_changes_only_consistency_enabled() -> None:
     changed["training"]["encoder_lr"] *= 2
     with pytest.raises(RuntimeError, match="outside consistency"):
         assert_paired_single_objective_contract(matched, changed)
+
+
+def test_long80_raw_config_files_match_preregistered_hashes() -> None:
+    expected = {
+        MATCHED_CONTROL_PROFILE: MATCHED_CONFIG_SHA256,
+        TREATMENT_PROFILE: TREATMENT_CONFIG_SHA256,
+    }
+    for profile, digest in expected.items():
+        path = ROOT / "configs" / "experiments" / f"{profile}.yaml"
+        assert sha256_file(path) == digest
 
 
 def test_embedding_spread_is_finite_and_detects_collapse() -> None:
