@@ -1,12 +1,12 @@
 # IAAA 2026 Speaker Identification — Submission Package
 
 Open-set speaker identification: classify audio into **447 classes** (446
-known speaker-ids + aggregated `unknown`), scored on Macro-F1 over the 447
-classes (argmax of the output probabilities).
+known speaker IDs plus the aggregated `unknown` class), scored with Macro-F1
+over the 447 argmax predictions.
 
-This folder is **fully self-contained**: all code, pretrained encoder weights
-and trained checkpoints are shipped inside it. No internet and no external
-files are needed at inference time.
+This folder is self-contained. All runtime code, pretrained encoder weights,
+trained checkpoints, and any enabled decision-layer artifacts are shipped in
+the package. Inference does not require network access or external files.
 
 ## Leaderboard entry point
 
@@ -14,28 +14,27 @@ files are needed at inference time.
 python submission.py --data-dir <test-set-folder> --predictions-file-path predictions.csv
 ```
 
-`submission.py` implements the mandatory contract from
-`submissionforleaderbord.txt` (`load_data`, `predict`, `save_predictions` +
-standard-library CLI) and:
+`submission.py` implements the required `load_data`, `predict`, and
+`save_predictions` contract. The exact deployed recipe is pinned by
+`ensemble_fusion_weights.json`; do not infer the package contents from this
+README. At runtime it:
 
-- auto-discovers the trained checkpoints in `checkpoints/` in the order
-  recorded in `ensemble_fusion_weights.json`;
-- runs the selected raw CAM++ Control Fold-0 checkpoint with multi-window TTA
-  (8 s windows, 50% overlap, at most 8 windows);
-- applies the locked LME-20 multi-enrollment backend: every usable enrollment
-  embedding remains available, similarities are pooled per identity with
-  `log(mean(exp(20*cosine)))/20`, and the 554 train-only KMeans groups are
-  collapsed into the single competition `unknown` class;
-- uses fixed decision parameters selected by leave-one-fold-out cross-fit on
-  all three Control folds; no leaderboard result selected a threshold, blend,
-  epoch or clustering parameter;
-- sets the offline env vars itself (`HF_HUB_OFFLINE=1`,
-  `TRANSFORMERS_OFFLINE=1`, `MODELSCOPE_CACHE=weights/campp`), so the
-  evaluation environment needs zero configuration.
+- loads only the encoder/checkpoint entries listed in the manifest;
+- applies each model's pinned multi-window inference policy;
+- combines models with the fixed manifest weights, if more than one model is
+  present;
+- applies the shipped decision-layer configuration only when the manifest
+  enables it (for example the locked CAM++ LME-20 prototype backend);
+- maps the final 447-way argmax back to a speaker UUID or `unknown`;
+- forces Hugging Face, Transformers, and ModelScope into offline mode.
 
-## Output (competition CSV)
+All thresholds, fusion weights, epochs, and prototype parameters must come
+from the committed manifest/config artifacts. They are not selected from a
+leaderboard result at inference time.
 
-Exactly the competition format — columns `audio_file,speaker_id`:
+## Output format
+
+The output CSV contains exactly `audio_file,speaker_id`:
 
 ```csv
 audio_file,speaker_id
@@ -44,48 +43,43 @@ e9105299-285b-4df7-8c66-e4b3b721e8c8.mp3,3943d8f3-d820-44ff-aba6-23c796fda87b
 57e9178b-7153-4e43-8fe4-6aacea3c9118.mp3,unknown
 ```
 
-- `audio_file` — the test audio file's full name (with extension).
-- `speaker_id` — the predicted speaker **UUID**, or `unknown` for out-of-set
-  speakers. The model outputs a 447-way probability distribution and the
-  argmax class index is mapped back to the UUID via the class map.
+- `audio_file` is the test file's full name, including its extension.
+- `speaker_id` is a known-speaker UUID or the literal `unknown`.
 
-## Encoder ensemble (4 models)
+## Deployed model and backend
 
-| key | framework | emb dim | pooling | weights (local) |
-|-----|-----------|---------|---------|-----------------|
-| `ecapa`    | SpeechBrain | 192 | identity | `weights/ecapa/` |
-| `campp`    | ModelScope  | 512 | identity | `weights/campp/` |
-| `eres2net` | vendored arch + ckpt | 192 | identity | `weights/eres2net/eres2netv2.ckpt` |
-| `titanet`  | NeMo        | 192 | identity | `weights/titanet/titanet_large.nemo` |
+`ensemble_fusion_weights.json` is the authoritative deployment receipt. Its
+`encoder_names`, `checkpoints`, `weights`, and decision-layer flags identify
+the exact models in a particular ZIP. A package may contain a single CAM++
+model or a fixed ensemble; unused experimental encoders are not implied.
 
-All weights are shipped here; every encoder loads from its `local_path` and
-`allow_hub_download` is `false` everywhere. (`wavlm_large` weights are *not*
-shipped because no `wavlm_best.pt` checkpoint was trained.)
+When the locked CAM++ LME-20 backend is enabled, the package additionally
+contains full train-only enrollment embeddings in `prototypes/` and a fixed
+decision configuration. Similarities are pooled per identity with
+`log(mean(exp(20*cosine)))/20`; all train-only OOD identities are then
+collapsed into the competition's single `unknown` class. Packages that do not
+enable this backend use the manifest's declared argmax/open-set path instead.
 
 ## File map
 
-- `submission.py` — competition entry point (required name)
-- `inference.py` — inference core (`score_ensemble` + model/audio loading)
-- `src/` — runtime code only (offline encoders, model factory, heads, pooling,
-  fusion functions)
-- `vendor/` — pure-Python deps absent from the leaderboard env (modelscope's
-  runtime imports: addict/easydict/simplejson/yapf)
-- `weights/` — pretrained encoder weights for the 4 used encoders
-- `checkpoints/` — one trained `TwoHeadedSpeakerModel` per encoder
-- `centroids/` — per-encoder speaker centroids (`centroids_<enc>.npz`, 192-d
-  ArcFace space) for the cosine centroid + OOD-gate decision layer
-- `decision_config.json` — tuned decision params (`alpha`, `kappa`, `tau`,
-  `lambda_unknown`, `temperature`); absent → plain argmax fallback
-- `ensemble_fusion_weights.json` — best fusion config (weights + encoder order)
-- `README.md` — this file
+- `submission.py` — required competition entry point.
+- `inference.py` — audio/model loading and scoring runtime.
+- `ensemble_fusion_weights.json` — authoritative model order, checkpoint
+  names, fusion weights, and decision-layer flags.
+- `decision_config.json` — optional fixed decision parameters; its absence
+  means no such decision layer is enabled.
+- `src/` — runtime model, pooling, and fusion code.
+- `vendor/` — pure-Python dependencies absent from the leaderboard image.
+- `weights/` — only the pretrained encoder assets required by the manifest.
+- `checkpoints/` — only the trained checkpoints required by the manifest.
+- `prototypes/` or `centroids/` — optional train-only backend artifacts when
+  the manifest enables them.
+- `README.md` — this runtime contract.
 
 ## Offline guarantees
 
-- `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1` set automatically; no code
-  path fetches from a hub with `allow_hub_download: false`.
-- ModelScope models resolve via `MODELSCOPE_CACHE` pointed at `weights/campp`
-  (shipped cache, never downloads).
-- SpeechBrain ECAPA, NeMo TitaNet and the vendored ERes2NetV2 load purely from
-  local files.
-- Undecodable files fall back to a uniform `1/447` row, so every file still
-  receives a valid prediction.
+- `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` are set automatically.
+- ModelScope caches resolve to shipped local directories.
+- Every manifest-listed checkpoint and encoder asset is packaged locally.
+- Undecodable inputs fall back to a valid uniform `1/447` probability row, so
+  every input still receives a prediction.
