@@ -64,6 +64,12 @@ def assert_augmentation_only_contract(
         config.pop("_meta", None)
         config.pop("experiment", None)
         config.pop("logging", None)
+        # Tracking credentials and deployment preferences are operational
+        # provenance, not part of the learned treatment.  Older checkpoints
+        # can also preserve surrounding quotes in env-derived tracking values.
+        # Never let that serialization drift masquerade as a scientific
+        # second treatment; checkpoint/config hashes bind the exact originals.
+        config.pop("mlops", None)
     if candidate.get("augmentation") == control.get("augmentation"):
         raise RuntimeError("Candidate augmentation treatment is missing")
     candidate["augmentation"] = copy.deepcopy(control.get("augmentation"))
@@ -94,6 +100,7 @@ def assert_stateful_continuation_contract(
         config.pop("_meta", None)
         config.pop("experiment", None)
         config.pop("logging", None)
+        config.pop("mlops", None)
 
     source_training = source.get("training", {}) or {}
     continuation_training = continuation.get("training", {}) or {}

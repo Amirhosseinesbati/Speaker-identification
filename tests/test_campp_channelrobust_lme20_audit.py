@@ -134,12 +134,14 @@ def test_augmentation_only_contract_rejects_any_second_treatment() -> None:
         "training": {"learning_rate": 3e-4},
         "logging": {"checkpoint_dir": "control"},
         "experiment": {"purpose": "control"},
+        "mlops": {"tracking": {"username": '"legacy-quoted"'}},
     }
     candidate = {
         **control,
         "augmentation": {"noise_p": 0.6},
         "logging": {"checkpoint_dir": "candidate"},
         "experiment": {"purpose": "augmentation ablation"},
+        "mlops": {"tracking": {"username": "normalized"}},
     }
     assert_augmentation_only_contract(control, candidate)
 
@@ -164,10 +166,12 @@ def test_stateful_continuation_contract_allows_only_resume_identity() -> None:
         },
         "logging": {"checkpoint_dir": "source"},
         "experiment": {"purpose": "source"},
+        "mlops": {"tracking": {"username": '"legacy-quoted"'}},
     }
     continuation = deepcopy(source)
     continuation["logging"] = {"checkpoint_dir": "continuation"}
     continuation["experiment"] = {"purpose": "stateful continuation"}
+    continuation["mlops"] = {"tracking": {"username": "normalized"}}
     continuation["training"]["early_stopping_patience"] = 12
     continuation["training"]["resume_checkpoint"] = (
         "checkpoints/p3-campp-known446-ood-channelrobust-oof-f0/"
