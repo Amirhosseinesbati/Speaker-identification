@@ -1,0 +1,47 @@
+# Speaker channel-mismatch literature ledger — 2026-08-29
+
+## Purpose
+
+This ledger records which literature findings change the IAAA campaign decision
+tree.  Papers motivate hypotheses; locked OOF evidence and Known/OOD guardrails
+remain authoritative.  Leaderboard results are external anchors and are never
+used to choose thresholds, fusion weights, epochs, or augmentation strength.
+
+## Evidence mapped to local decisions
+
+| Evidence | Relevant finding | Local evidence | Campaign decision |
+|---|---|---|---|
+| VoxWatch open-set benchmark ([DOI](https://doi.org/10.48550/arXiv.2307.00169)) | Adaptive score normalization is not guaranteed to help open-set speaker identification, while calibration and genuinely complementary score fusion can help. | AS-Norm was rejected by locked OOF; fixed LME20/PCM transferred from `0.9633564052` OOF to `0.9667174285` leaderboard Macro-F1. | Keep LME20/PCM as the operational baseline.  Do not revive score normalization without a new, leakage-free hypothesis. |
+| Comprehensive speaker augmentation study ([DOI](https://doi.org/10.21437/Interspeech.2024-2478)) | Speed and vocal-tract perturbations can create speaker variation rather than merely preserve channel variation. | The residual error topology is dominated by Known/OOD boundary errors, so identity-corrupting augmentation can increase known-speaker rejection. | In the active treatment, pitch shift is disabled and time stretch is rare and restricted to `0.95..1.05`. |
+| Noise/reverberation robustness via training ([DOI](https://doi.org/10.1109/EISIC.2015.20)) and multi-channel training ([DOI](https://doi.org/10.21437/INTERSPEECH.2019-1437)) | Training on additive noise and RIR/channel variability can reduce mismatch degradation. | MUSAN and RIR assets are already local to the worker; no data download or provenance expansion is required. | Test one single-variable CAM++ Fold-0 treatment with stronger speaker-preserving MUSAN/RIR exposure. |
+| Domain-weighted low-resource transfer ([DOI](https://doi.org/10.1186/s13636-024-00385-z)) | Uncontrolled fine-tuning under domain mismatch can degrade performance; domain-weighted adaptation can be safer. | The fixed-30 CAM++ LMFT experiment did not beat its warm-start checkpoint. | Do not repeat generic LMFT.  A future adaptation experiment must define a domain proxy, weighting rule, held-out gate, and stop rule before training. |
+| Extended variability modelling ([DOI](https://doi.org/10.21437/INTERSPEECH.2017-1586)) and open-set mismatch work ([DOI](https://doi.org/10.21437/Interspeech.2009-395)) | Duration/session/channel-aware backends and condition-adjusted normalization can help under mismatch. | Direct session/channel metadata is absent; quality-aware and normalization candidates already violated local guardrails. | Treat condition-aware prototype banks as a backup research direction, not an authorised run.  Any parameters must be selected leave-one-fold-out from training folds only. |
+| Contrastive adversarial domain adaptation ([DOI](https://doi.org/10.1109/TNNLS.2020.3044215)) | Separating speaker-discriminative and domain-invariant objectives can improve mismatched speaker recognition. | No reliable channel labels exist and this is a multi-component architectural change. | Keep as a later high-cost hypothesis only after cheaper channel augmentation and prototype conditioning are resolved. |
+
+## Active experiment and interpretation boundary
+
+The active profile is `p3-campp-known446-ood-channelrobust-oof-f0`, commit
+`eb433629b85a07a0665056d1bf6fcd84694cf1ca`.  It changes only the augmentation
+policy relative to Control Fold 0.  At the live epoch-8 snapshot it was ahead of
+the matched Control curve by `+0.0135` probability-average Macro-F1 and
+`+0.0073` logit-average Macro-F1, with validation loss lower by `0.0304`.
+These are early optimisation diagnostics, not acceptance evidence.
+
+The treatment still passes only if the preregistered standalone LME20,
+fixed-50/50 complementarity, Known/OOD, rescue-rate, and provenance gates all
+pass after the run.  Failure rejects the candidate and forbids automatic Fold
+expansion.
+
+## Backup decision order
+
+1. Finish and audit the active channel-robust Fold-0 treatment.
+2. If it passes, preregister Fold 1/2 and require consistent three-Fold gain.
+3. If it fails, analyse whether the failure is representation quality or lack
+   of complementary errors; do not tune a fusion weight on Fold 0.
+4. The cheapest next candidate is a training-fold-only condition-aware
+   prototype bank using predefined acoustic/channel proxies and leave-one-fold-
+   out selection.  It is not authorised until its exact contract is written.
+5. Domain-adversarial training is a later option only if the proxy/prototype
+   route cannot explain the residual topology and the remaining budget permits
+   a controlled ablation.
+
