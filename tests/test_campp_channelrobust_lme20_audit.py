@@ -69,6 +69,32 @@ def test_align_oof_rejects_nonfinite_candidate_evidence(key: str) -> None:
         align_oof(reference, candidate)
 
 
+@pytest.mark.parametrize(
+    ("probabilities", "message"),
+    [
+        (np.array([[1.1, -0.1], [0.0, 1.0]]), "outside"),
+        (np.array([[0.4, 0.4], [0.0, 1.0]]), "sum to one"),
+    ],
+)
+def test_align_oof_rejects_invalid_probability_simplex(
+    probabilities: np.ndarray, message: str
+) -> None:
+    reference = {
+        "files": np.array(["a", "b"]),
+        "labels": np.array([1, 0]),
+    }
+    padded = np.zeros((2, 447), dtype=np.float32)
+    padded[:, :2] = probabilities
+    candidate = {
+        "files": np.array(["a", "b"]),
+        "labels": np.array([1, 0]),
+        "competition_probs": padded,
+        "embeddings": np.zeros((2, 4), dtype=np.float32),
+    }
+    with pytest.raises(RuntimeError, match=message):
+        align_oof(reference, candidate)
+
+
 def test_acceptance_gate_requires_every_preregistered_condition() -> None:
     standalone = {
         "macro_f1": -0.005,

@@ -158,6 +158,11 @@ def align_oof(reference: dict, candidate: dict) -> dict:
     for key in ("competition_probs", "embeddings"):
         if not np.all(np.isfinite(aligned[key])):
             raise RuntimeError(f"Candidate {key} contains non-finite values")
+    probabilities = np.asarray(aligned["competition_probs"], dtype=np.float64)
+    if np.any(probabilities < -1e-7) or np.any(probabilities > 1.0 + 1e-7):
+        raise RuntimeError("Candidate competition_probs fall outside [0, 1]")
+    if not np.allclose(probabilities.sum(axis=1), 1.0, atol=1e-5, rtol=0.0):
+        raise RuntimeError("Candidate competition_probs rows do not sum to one")
     return aligned
 
 
