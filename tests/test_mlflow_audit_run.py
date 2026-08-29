@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
-from scripts.mlflow_audit_run import audit_run
+import pytest
+
+from scripts.mlflow_audit_run import audit_run, resolve_run_id
 
 
 class _Client:
@@ -58,3 +60,63 @@ def test_audit_run_reports_series_and_artifact_inventory():
     assert result["artifact_bytes_known"] == 20
     assert result["model_artifacts"] == ["model.pt"]
     assert result["provenance_artifacts"] == ["provenance/config.yaml"]
+
+
+class _SearchClient:
+    def __init__(self):
+        self.runs = [
+            SimpleNamespace(
+                info=SimpleNamespace(
+                    run_id="old",
+                    status="FINISHED",
+                    start_time=100,
+                ),
+                data=SimpleNamespace(tags={"mlflow.runName": "paired-control"}),
+            ),
+            SimpleNamespace(
+                info=SimpleNamespace(
+                    run_id="wanted",
+                    status="RUNNING",
+                    start_time=300,
+                ),
+                data=SimpleNamespace(tags={"mlflow.runName": "paired-control"}),
+            ),
+            SimpleNamespace(
+                info=SimpleNamespace(
+                    run_id="other",
+                    status="RUNNING",
+                    start_time=400,
+                ),
+                data=SimpleNamespace(tags={"mlflow.runName": "treatment"}),
+            ),
+        ]
+
+    def get_experiment_by_name(self, name):
+        assert name == "speaker-identification"
+        return SimpleNamespace(experiment_id="experiment-1")
+
+    def search_runs(self, **kwargs):
+        assert kwargs["experiment_ids"] == ["experiment-1"]
+        assert kwargs["max_results"] == 10_000
+        return self.runs
+
+
+def test_resolve_run_id_uses_exact_name_and_start_time_bound():
+    assert resolve_run_id(
+        _SearchClient(),
+        run_id=None,
+        run_name="paired-control",
+        experiment_name="speaker-identification",
+        started_after_ms=200,
+    ) == "wanted"
+
+
+def test_resolve_run_id_refuses_ambiguous_name():
+    with pytest.raises(ValueError, match="expected exactly one"):
+        resolve_run_id(
+            _SearchClient(),
+            run_id=None,
+            run_name="paired-control",
+            experiment_name="speaker-identification",
+            started_after_ms=None,
+        )
