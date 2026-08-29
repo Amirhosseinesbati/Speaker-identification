@@ -207,6 +207,31 @@ only because `complete` is not an allowed terminal reason; the underlying
 two-of-three requirement was met.  No gate constant, budget, active checkout
 or treatment changed.
 
+### Live evidence update — epochs 78–79
+
+The source remained healthy after the epoch-75 Raw selection.  Although Raw
+probability-average fluctuated at epochs 76–78, diagnostic EMA continued to
+establish new late-stage highs: `0.9361222766526638` at epoch 76,
+approximately `0.9367` at epoch 77, and `0.9379` at epoch 78.  At epoch 78 the
+EMA Known accuracy and OOD-F1 were `0.9462` and `0.9479`, respectively.  This
+is consistent with a slowly adapting representation under the harder channel
+augmentation treatment and is not evidence that the selected Raw decision
+rule has already beaten the control.
+
+The latest checkpoint contained a contiguous 79-epoch history when inspected.
+A non-terminal rerun of the locked continuation evaluator passed all three
+trend tests: the epoch-75 selected Raw checkpoint was inside the final-eight
+window, the final-ten EMA OLS slope was `+0.0004305290` per epoch, and mean
+training loss improved by `0.0669493` between the preceding and final
+five-epoch windows while validation loss rose by only `0.0120992`.  The
+by-epoch-60 Raw floor remained satisfied.  The preview returned
+`eligible=false` solely because the source was still running and `complete`
+is intentionally not an allowed terminal reason.  If an actual patience or
+six-hour timeout termination preserves the locked provenance and safety
+conditions, this evidence mechanically authorizes the preregistered stateful
+continuation of at most three additional hours and `$0.55`; it does not alter
+the terminal scientific acceptance gate.
+
 ## Literature rationale
 
 - Curriculum learning for speaker verification reports benefits from gradually
