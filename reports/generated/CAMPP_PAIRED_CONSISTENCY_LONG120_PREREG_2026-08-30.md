@@ -29,6 +29,24 @@ The learning rates, cosine schedule, augmentation, model, batch size, windows,
 loss weights, seed, and deterministic policy are identical between branches.
 The longer scheduler is chosen before observing either long-run result.
 
+## Literature rationale and counter-evidence
+
+The hypothesis is plausible but not assumed true. Chen, Guo, and Gu reported
+speaker-verification gains from positive clean/augmented pairs with an added
+contrastive objective ([Interspeech 2021](https://www.isca-archive.org/interspeech_2021/chen21f_interspeech.html)).
+Sang et al. likewise reported substantial relative improvement from
+positive-pair speaker regularisation with strong online augmentation
+([arXiv:2112.04459](https://arxiv.org/abs/2112.04459)). Conversely, the TalTech
+SdSV 2020 system found no significant benefit from its JSD consistency loss
+and reported roughly 2.5x slower training, so it omitted that term from the
+final system
+([Interspeech 2020](https://www.isca-archive.org/interspeech_2020/alumae20_interspeech.pdf)).
+
+This mixed evidence motivates the long matched horizon: the treatment receives
+enough optimisation time to compensate for its harder/slower objective, but it
+must still beat a compute-matched control and pass collapse, Known, and OOD
+guardrails. Runtime alone is not evidence of quality.
+
 ## Runtime and budget
 
 - Control timeout: 8 hours; maximum incremental cost $1.40
