@@ -74,7 +74,7 @@ class _BatchSensitiveToyModel(torch.nn.Module):
         return F.normalize(raw.mean(dim=1), p=2, dim=1)
 
 
-def test_extract_view_embeddings_matches_model_window_major_batching():
+def test_extract_view_embeddings_matches_both_locked_batching_paths():
     windows = torch.tensor(
         [
             [[[1.0, 2.0, 0.0]], [[3.0, 4.0, 0.0]]],
@@ -90,6 +90,7 @@ def test_extract_view_embeddings_matches_model_window_major_batching():
         batch_size=2,
         num_workers=0,
         description="test",
+        batching="window_major",
     )
 
     with torch.inference_mode():
@@ -100,3 +101,26 @@ def test_extract_view_embeddings_matches_model_window_major_batching():
         expected_aggregate = model.embed(windows).numpy()
     np.testing.assert_allclose(views, expected_views, rtol=0, atol=0)
     np.testing.assert_allclose(aggregate, expected_aggregate, rtol=0, atol=0)
+
+    file_views, file_aggregate = extract_view_embeddings(
+        model=model,
+        dataset=TensorDataset(windows, labels),
+        device=torch.device("cpu"),
+        batch_size=2,
+        num_workers=0,
+        description="test-file-major",
+        batching="file_major",
+    )
+    with torch.inference_mode():
+        expected_file_raw = torch.stack(
+            [model._embed_single(file_windows) for file_windows in windows], dim=0
+        )
+        expected_file_views = F.normalize(expected_file_raw, p=2, dim=2).numpy()
+        expected_file_aggregate = F.normalize(
+            expected_file_raw.mean(dim=1), p=2, dim=1
+        ).numpy()
+    np.testing.assert_allclose(file_views, expected_file_views, rtol=0, atol=0)
+    np.testing.assert_allclose(
+        file_aggregate, expected_file_aggregate, rtol=0, atol=0
+    )
+    assert not np.allclose(file_aggregate, aggregate)

@@ -61,7 +61,7 @@ from scripts.audit_short_audio_repeat import (  # noqa: E402
 from src.model_factory import create_model_from_config  # noqa: E402
 
 
-VIEW_CACHE_SCHEMA = 1
+VIEW_CACHE_SCHEMA = 2
 
 
 def post_resample_length(path: Path, target_sample_rate: int) -> int:
@@ -118,8 +118,11 @@ def extract_view_embeddings(
     batch_size: int,
     num_workers: int,
     description: str,
+    batching: str,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return per-window unit embeddings and mean-raw aggregate embeddings."""
+    if batching not in {"window_major", "file_major"}:
+        raise ValueError(f"Unsupported embedding batching mode: {batching}")
     loader = DataLoader(
         dataset,
         batch_size=int(batch_size),
@@ -132,15 +135,25 @@ def extract_view_embeddings(
     with torch.inference_mode():
         for windows, _ in tqdm(loader, desc=description):
             windows = windows.to(device, non_blocking=True)
-            views = windows.shape[1]
-            # Match SpeakerModel.embed exactly: CAM++ is evaluated one window
-            # position at a time across the file batch.  Flattening B*W changes
-            # CUDA kernel/batch numerics enough to violate the locked aggregate
-            # reproduction invariant, even in eval mode.
-            raw = torch.stack(
-                [model._embed_single(windows[:, view]) for view in range(views)],
-                dim=1,
-            )
+            if batching == "window_major":
+                # Match SpeakerModel.embed used by the enrollment cache: one
+                # window position at a time across the file batch.
+                raw = torch.stack(
+                    [
+                        model._embed_single(windows[:, view])
+                        for view in range(windows.shape[1])
+                    ],
+                    dim=1,
+                )
+            else:
+                # Match OOF/submission predict_proba_and_embed: every file's W
+                # windows form their own encoder batch.  CAM++ CUDA numerics are
+                # measurably batch-shape dependent, so this is not interchangeable
+                # with flattening B*W or the enrollment path above.
+                raw = torch.stack(
+                    [model._embed_single(file_windows) for file_windows in windows],
+                    dim=0,
+                )
             view_chunks.append(F.normalize(raw, p=2, dim=2).cpu().numpy())
             aggregate_chunks.append(
                 F.normalize(raw.mean(dim=1), p=2, dim=1).cpu().numpy()
@@ -253,6 +266,7 @@ def build_or_load_view_cache(
         batch_size=batch_size,
         num_workers=num_workers,
         description=f"Fold {fold} enrollment views",
+        batching="window_major",
     )
     validation_views, validation_aggregate = extract_view_embeddings(
         model=model,
@@ -261,6 +275,7 @@ def build_or_load_view_cache(
         batch_size=batch_size,
         num_workers=num_workers,
         description=f"Fold {fold} validation views",
+        batching="file_major",
     )
     train_diff = float(np.max(np.abs(
         train_aggregate - pad_artifact["train_embeddings"]
@@ -330,6 +345,10 @@ def build_or_load_view_cache(
             "tolerance": LONG_EQUIVALENCE_ATOL,
             "train_max_abs_diff": train_diff,
             "validation_max_abs_diff": validation_diff,
+        },
+        "embedding_batching": {
+            "enrollment": "window_major (matches model.embed cache path)",
+            "validation": "file_major (matches predict_proba_and_embed OOF path)",
         },
     }
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
@@ -592,6 +611,9 @@ def main() -> int:
             "view_pair_normalisation": "divide by query_views * enrollment_views",
             "within_group_weighting": (
                 "equal weight per real temporal view; longer files may add more views"
+            ),
+            "embedding_batching": (
+                "production-matched: window-major enrollment, file-major query"
             ),
             "weights": "fixed selected Raw CAM++ Control Fold0/1/2 checkpoints",
             "folds": "fixed kfold/folds3/seed42 OOF",

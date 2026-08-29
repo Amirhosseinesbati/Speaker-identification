@@ -42,6 +42,11 @@ mean of raw window embeddings must reproduce every locked aggregate embedding
 within `2e-5`; all 4447 OOF files must remain unique and non-overlapping; and
 all scores must be finite.
 
+Extraction preserves the two batching paths already used in production:
+enrollment uses window-major `model.embed` batches, while each validation/query
+file uses its own window batch as in `predict_proba_and_embed`.  No candidate
+metric is computed unless both paths reproduce their locked aggregates.
+
 Acceptance requires strictly positive Macro-F1 gain in each Fold, aggregate
 gain at least `+0.001`, and no Known Accuracy or OOD-F1 loss beyond `0.001` in
 any Fold or aggregate.  Failure leaves the current local submission ZIP
