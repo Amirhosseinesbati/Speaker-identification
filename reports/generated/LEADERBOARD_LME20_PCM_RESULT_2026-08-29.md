@@ -39,6 +39,27 @@ The hidden leaderboard Macro-F1 is `+0.0033610232` above the aggregate OOF
 estimate.  This is evidence that the cross-fitted rule transferred; it is not
 permission to retune any parameter against the leaderboard.
 
+## Decision-layer exhaustion check
+
+Existing leave-one-fold-out alternatives were re-read after the leaderboard
+result rather than rerun or retuned.  None exceeds the already packaged
+PCM/LME20 rule:
+
+| Cross-fitted decision family | Aggregate Macro-F1 | Known Accuracy | OOD-F1 |
+|---|---:|---:|---:|
+| Packaged PCM/LME20 | `0.9633564052` | `0.9524236984` | `0.9751111111` |
+| Joint prototype aggregation/parameters | `0.9612296580` | `0.9501795332` | `0.9718216108` |
+| Fixed mean-centroid, 1000-centroid parameters | `0.9604604563` | `0.9506283662` | `0.9720000000` |
+| Unknown-cluster hypothesis plus parameters | `0.9594993754` | `0.9497307002` | `0.9706796979` |
+
+The prototype search already included mean centroids, medoids, centrality
+weights, log-mean-exp, maximum exemplar and top-2 exemplar evidence.  The
+unknown-cluster search included KMeans sizes `455/500/554/600/700` and average
+linkage sizes `455/554/700`, with every target Fold held out from selection.
+These negative results close the obvious post-processing branch for now.  A
+new decision rule is not justified unless a new representation produces new
+OOF evidence; the active budget should target representation robustness.
+
 ## Consequence for the active research path
 
 PCM/LME20 remains the fixed deployment decision layer and external baseline.
