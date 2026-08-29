@@ -41,6 +41,15 @@ SdSV 2020 system found no significant benefit from its JSD consistency loss
 and reported roughly 2.5x slower training, so it omitted that term from the
 final system
 ([Interspeech 2020](https://www.isca-archive.org/interspeech_2020/alumae20_interspeech.pdf)).
+More recent negative evidence is also directly relevant: Wang, Fang, and He
+reported that adding a consistency loss on top of WavAugment changed EER from
+5.21% to 5.35% (minDCF 0.55 to 0.54), and concluded that the extra term did not
+improve their stage-1 speaker representation
+([Interspeech 2024](https://www.isca-archive.org/interspeech_2024/wang24z_interspeech.html)).
+The successful VoxSRC large-margin fine-tuning recipe is not evidence that
+arbitrary extra epochs are sufficient either: its gains jointly used longer
+training segments and a more aggressive angular margin
+([arXiv:2010.11255](https://arxiv.org/abs/2010.11255)).
 
 This mixed evidence motivates the long matched horizon: the treatment receives
 enough optimisation time to compensate for its harder/slower objective, but it
