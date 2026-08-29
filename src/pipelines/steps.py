@@ -35,6 +35,7 @@ from src.data_pipeline import (
     create_class_mapping,
     prepare_clean_split,
     make_balanced_batch_sampler,
+    load_known_sampling_weights,
     SpeakerDataset,
 )
 from src.metrics import evaluate_competition_probs, evaluate_macro_f1
@@ -544,9 +545,13 @@ def train_model(
             int(config.get("model", {}).get("competition_num_known", 446))
             if speaker_target_scope == "known" else None
         )
+        known_sampling_weights = load_known_sampling_weights(
+            config, train_df, competition_known_count=competition_known_count,
+        )
         balanced_batch_sampler = make_balanced_batch_sampler(
             train_labels, hw_profile["batch_size"], ood_ratio=ood_ratio,
             competition_known_count=competition_known_count,
+            known_sampling_weights=known_sampling_weights,
         )
     train_loader_kwargs = {
         "num_workers": hw_profile["num_workers"],

@@ -46,7 +46,11 @@ from src.train import (  # noqa: E402
     tune_ood_threshold,
 )
 from src.metrics import fused_probs_from_logits  # noqa: E402
-from src.data_pipeline import make_balanced_batch_sampler  # noqa: E402
+from src.data_pipeline import (  # noqa: E402
+    _sampling_rows_sha256,
+    load_known_sampling_weights,
+    make_balanced_batch_sampler,
+)
 
 
 class DummyEncoder(nn.Module):
@@ -329,6 +333,51 @@ def test_weighted_known_sampler_rejects_invalid_weights():
             labels, batch_size=4,
             known_sampling_weights=np.asarray([1.0, 1.0, 0.0, 1.0]),
         )
+
+
+def test_known_sampling_artifact_is_split_locked(tmp_path):
+    import json
+    import pandas as pd
+
+    train_df = pd.DataFrame({
+        "audio_file": ["ood.wav", "a.wav", "b.wav"],
+        "label": [0, 1, 2],
+    })
+    artifact = tmp_path / "weights.json"
+    artifact.write_text(json.dumps({
+        "schema_version": 1,
+        "training_rows_sha256": _sampling_rows_sha256(train_df),
+        "weights": {"a.wav": 2.0, "b.wav": 1.0},
+    }), encoding="utf-8")
+    config = {"data": {"known_sampling": {"weights_path": str(artifact)}}}
+
+    weights = load_known_sampling_weights(config, train_df)
+    np.testing.assert_array_equal(weights, np.asarray([1.0, 2.0, 1.0]))
+
+    changed = train_df.copy()
+    changed.loc[0, "audio_file"] = "different.wav"
+    with pytest.raises(ValueError, match="current training split"):
+        load_known_sampling_weights(config, changed)
+
+
+def test_known_sampling_artifact_rejects_validation_or_missing_keys(tmp_path):
+    import json
+    import pandas as pd
+
+    train_df = pd.DataFrame({
+        "audio_file": ["ood.wav", "a.wav", "b.wav"],
+        "label": [0, 1, 2],
+    })
+    artifact = tmp_path / "weights.json"
+    artifact.write_text(json.dumps({
+        "schema_version": 1,
+        "training_rows_sha256": _sampling_rows_sha256(train_df),
+        "weights": {"a.wav": 2.0, "validation.wav": 1.0},
+    }), encoding="utf-8")
+    config = {"data": {"known_sampling": {"weights_path": str(artifact)}}}
+
+    with pytest.raises(ValueError, match="exactly match known training files"):
+        load_known_sampling_weights(config, train_df)
 
 
 # ── metrics / threshold helpers ──

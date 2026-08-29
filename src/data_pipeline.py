@@ -3,6 +3,8 @@ Phase 1: Robust Data Pipeline for Open-Set Speaker Identification.
 Handles stratified 5-shot split, augmentation, and weighted sampling.
 """
 
+import hashlib
+import json
 import os
 import re
 import warnings
@@ -1393,6 +1395,83 @@ def make_balanced_batch_sampler(
     )
 
 
+def _sampling_rows_sha256(df: pd.DataFrame) -> str:
+    """Stable digest for the exact audio-file/metric-label training rows."""
+    rows = sorted(
+        f"{audio_file}\t{int(label)}"
+        for audio_file, label in zip(df["audio_file"], df["label"])
+    )
+    return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
+
+
+def load_known_sampling_weights(
+    config: dict,
+    train_df: pd.DataFrame,
+    competition_known_count: Optional[int] = None,
+) -> Optional[np.ndarray]:
+    """Load a preregistered, train-only known-file weighting artifact.
+
+    The artifact is opt-in through ``data.known_sampling.weights_path``.  Its
+    key set must equal the current known training pool exactly, and its digest
+    must match the current split rows.  These checks make a Fold-0 artifact
+    unusable on another Fold and prevent validation-file weights from entering
+    the sampler silently.
+    """
+    sampling_cfg = (config.get("data", {}).get("known_sampling", {}) or {})
+    weights_path = str(sampling_cfg.get("weights_path", "")).strip()
+    if not weights_path:
+        return None
+
+    path = Path(weights_path)
+    if not path.is_absolute():
+        path = _PROJECT_ROOT / path
+    if not path.is_file():
+        raise FileNotFoundError(f"Known-sampling artifact not found: {path}")
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if int(payload.get("schema_version", -1)) != 1:
+        raise ValueError("Known-sampling artifact schema_version must be 1")
+
+    actual_digest = _sampling_rows_sha256(train_df)
+    expected_digest = str(payload.get("training_rows_sha256", ""))
+    if expected_digest != actual_digest:
+        raise ValueError(
+            "Known-sampling artifact does not match the current training split: "
+            f"{expected_digest or '<missing>'} != {actual_digest}"
+        )
+
+    labels = train_df["label"].to_numpy(dtype=np.int64)
+    is_known = labels > 0
+    if competition_known_count is not None:
+        is_known &= labels <= int(competition_known_count)
+    known_files = train_df.loc[is_known, "audio_file"].astype(str).tolist()
+    raw_weights = payload.get("weights")
+    if not isinstance(raw_weights, dict):
+        raise ValueError("Known-sampling artifact weights must be an object")
+    if set(raw_weights) != set(known_files):
+        missing = sorted(set(known_files) - set(raw_weights))[:5]
+        extra = sorted(set(raw_weights) - set(known_files))[:5]
+        raise ValueError(
+            "Known-sampling artifact keys must exactly match known training files; "
+            f"missing={missing}, extra={extra}"
+        )
+
+    weights = np.ones(len(train_df), dtype=np.float64)
+    known_weights = np.asarray(
+        [raw_weights[file_name] for file_name in known_files], dtype=np.float64,
+    )
+    if not np.isfinite(known_weights).all() or np.any(known_weights <= 0.0):
+        raise ValueError("Known-sampling weights must be finite and strictly positive")
+    weights[np.flatnonzero(is_known)] = known_weights
+    print(
+        "  🎯 Known-file sampling artifact: "
+        f"{path} | weighted={(known_weights != 1.0).sum():,}/"
+        f"{len(known_weights):,} | range={known_weights.min():.3g}.."
+        f"{known_weights.max():.3g}"
+    )
+    return weights
+
+
 def get_dataloaders(
     config: Optional[dict] = None,
     config_path: str = "configs/default_config.yaml",
@@ -1531,9 +1610,13 @@ def get_dataloaders(
             int(config.get("model", {}).get("competition_num_known", 446))
             if speaker_target_scope == "known" else None
         )
+        known_sampling_weights = load_known_sampling_weights(
+            config, train_df, competition_known_count=competition_known_count,
+        )
         balanced_batch_sampler = make_balanced_batch_sampler(
             train_labels, batch_size, ood_ratio=ood_ratio, seed=42,
             competition_known_count=competition_known_count,
+            known_sampling_weights=known_sampling_weights,
         )
         is_ood = ((train_labels == 0) | (train_labels > competition_known_count)
                   if competition_known_count is not None else train_labels == 0)
