@@ -112,3 +112,18 @@ uses the full learning curves plus the collapse/identity guardrails above.  If
 the treatment remains positively sloped at epoch 80, that is evidence for a
 separately preregistered matched extension; it is not permission to continue
 only the treatment after seeing its held-out metric.
+
+## Predeclared under-training diagnostic
+
+Before either long80 branch starts, the phrase "positively sloped" is made
+mechanical.  The terminal audit compares epochs 61--70 with epochs 71--80 and
+fits a linear slope over epochs 61--80.  A separate matched extension may be
+preregistered only when all of the following hold: the treatment's final
+10-epoch mean improves by at least `0.0005`; its 20-epoch slope is positive;
+its best Raw epoch lies in 71--80; its improvement relative to the matched
+control accelerates by at least `0.0005`; the final-window Known Accuracy and
+OOD-F1 each fall by no more than `0.002`; and the deterministic embedding
+spread ratio remains at least `0.95`.  This diagnostic does not change the
+acceptance gate and never authorises a treatment-only continuation.  It only
+prevents a genuinely still-learning, healthy treatment from being rejected
+merely because the preregistered horizon ended.

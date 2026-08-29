@@ -70,6 +70,10 @@ MAXIMUM_KNOWN_DROP = 0.001
 MAXIMUM_OOD_DROP = 0.001
 MINIMUM_RESCUE_RATE = 0.20
 MINIMUM_EMBEDDING_SPREAD_RATIO = 0.95
+TAIL_WINDOW_EPOCHS = 10
+MINIMUM_TAIL_MEAN_GAIN = 0.0005
+MINIMUM_RELATIVE_GAP_GAIN = 0.0005
+MAXIMUM_TAIL_GUARDRAIL_DROP = 0.002
 
 
 def _normalise_identity(config: dict) -> dict:
@@ -188,6 +192,132 @@ def milestone_diagnostic(path: Path, expected_profile: str) -> dict:
     }
 
 
+def terminal_curve_diagnostic(
+    path: Path,
+    expected_profile: str,
+    *,
+    expected_epoch: int = 80,
+) -> dict:
+    """Validate the terminal checkpoint and summarize its locked tail windows."""
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    if int(checkpoint.get("epoch", -1)) != expected_epoch:
+        raise RuntimeError(f"Latest checkpoint is not epoch {expected_epoch}: {path}")
+    config = checkpoint.get("config", {}) or {}
+    checkpoint_dir = str((config.get("logging", {}) or {}).get("checkpoint_dir", ""))
+    if not checkpoint_dir.replace("\\", "/").endswith(expected_profile):
+        raise RuntimeError(f"Latest checkpoint profile mismatch: {path}")
+    history = checkpoint.get("training_history", checkpoint.get("history", []))
+    if not isinstance(history, list) or len(history) < 2 * TAIL_WINDOW_EPOCHS:
+        raise RuntimeError(f"Terminal history is too short: {path}")
+    epochs = np.asarray([int(row.get("epoch", -1)) for row in history], dtype=np.int64)
+    expected = np.arange(1, expected_epoch + 1, dtype=np.int64)
+    if not np.array_equal(epochs, expected):
+        raise RuntimeError(f"Terminal history is not contiguous 1..{expected_epoch}: {path}")
+
+    keys = ("val_macro_f1", "val_known_acc", "val_ood_f1")
+    curves = {
+        key: np.asarray([float(row[key]) for row in history], dtype=np.float64)
+        for key in keys
+    }
+    if not all(np.isfinite(values).all() for values in curves.values()):
+        raise RuntimeError(f"Terminal history contains non-finite metrics: {path}")
+
+    previous_slice = slice(-2 * TAIL_WINDOW_EPOCHS, -TAIL_WINDOW_EPOCHS)
+    tail_slice = slice(-TAIL_WINDOW_EPOCHS, None)
+    previous_means = {
+        key: float(values[previous_slice].mean()) for key, values in curves.items()
+    }
+    tail_means = {
+        key: float(values[tail_slice].mean()) for key, values in curves.items()
+    }
+    tail_x = np.arange(2 * TAIL_WINDOW_EPOCHS, dtype=np.float64)
+    macro_tail = curves["val_macro_f1"][-2 * TAIL_WINDOW_EPOCHS :]
+    best_index = int(np.argmax(curves["val_macro_f1"]))
+    return {
+        "path": str(path),
+        "sha256": sha256_file(path),
+        "terminal_epoch": expected_epoch,
+        "window_epochs": TAIL_WINDOW_EPOCHS,
+        "previous_window": [expected_epoch - 2 * TAIL_WINDOW_EPOCHS + 1,
+                            expected_epoch - TAIL_WINDOW_EPOCHS],
+        "tail_window": [expected_epoch - TAIL_WINDOW_EPOCHS + 1, expected_epoch],
+        "previous_means": previous_means,
+        "tail_means": tail_means,
+        "tail_minus_previous": {
+            key: float(tail_means[key] - previous_means[key]) for key in keys
+        },
+        "macro_slope_last_20": float(np.polyfit(tail_x, macro_tail, 1)[0]),
+        "best_raw_epoch": int(epochs[best_index]),
+        "best_raw_macro_f1": float(curves["val_macro_f1"][best_index]),
+    }
+
+
+def matched_extension_diagnostic(
+    matched_curve: dict,
+    treatment_curve: dict,
+    *,
+    spread_ratio: float,
+) -> dict:
+    """Predeclared evidence gate for a separate, still-matched extension.
+
+    This does not accept the treatment or authorize an asymmetric continuation.
+    It only identifies the specific under-training pattern that warrants a new
+    preregistered matched extension after the 80/80 decision experiment.
+    """
+    matched_gap = (
+        matched_curve["tail_means"]["val_macro_f1"]
+        - matched_curve["previous_means"]["val_macro_f1"]
+    )
+    treatment_gap = (
+        treatment_curve["tail_means"]["val_macro_f1"]
+        - treatment_curve["previous_means"]["val_macro_f1"]
+    )
+    relative_gap_gain = float(treatment_gap - matched_gap)
+    checks = {
+        "treatment_tail_mean_gain": (
+            treatment_gap >= MINIMUM_TAIL_MEAN_GAIN
+        ),
+        "treatment_tail_positive_slope": (
+            treatment_curve["macro_slope_last_20"] > 0.0
+        ),
+        "treatment_best_in_final_window": (
+            treatment_curve["best_raw_epoch"]
+            > treatment_curve["terminal_epoch"] - TAIL_WINDOW_EPOCHS
+        ),
+        "relative_gap_is_still_improving": (
+            relative_gap_gain >= MINIMUM_RELATIVE_GAP_GAIN
+        ),
+        "tail_known_guardrail": (
+            treatment_curve["tail_minus_previous"]["val_known_acc"]
+            >= -MAXIMUM_TAIL_GUARDRAIL_DROP
+        ),
+        "tail_ood_guardrail": (
+            treatment_curve["tail_minus_previous"]["val_ood_f1"]
+            >= -MAXIMUM_TAIL_GUARDRAIL_DROP
+        ),
+        "embedding_spread_guardrail": (
+            spread_ratio >= MINIMUM_EMBEDDING_SPREAD_RATIO
+        ),
+    }
+    return {
+        "eligible_for_separate_matched_extension": bool(all(checks.values())),
+        "checks": checks,
+        "matched_tail_mean_gain": float(matched_gap),
+        "treatment_tail_mean_gain": float(treatment_gap),
+        "relative_gap_gain": relative_gap_gain,
+        "thresholds": {
+            "tail_window_epochs": TAIL_WINDOW_EPOCHS,
+            "minimum_treatment_tail_mean_gain": MINIMUM_TAIL_MEAN_GAIN,
+            "minimum_relative_gap_gain": MINIMUM_RELATIVE_GAP_GAIN,
+            "maximum_tail_known_or_ood_drop": MAXIMUM_TAIL_GUARDRAIL_DROP,
+            "minimum_embedding_spread_ratio": MINIMUM_EMBEDDING_SPREAD_RATIO,
+        },
+        "effect": (
+            "preregister a new matched extension; never continue treatment alone"
+        ),
+    }
+
+
 def acceptance_gate(
     *,
     matched_delta: dict[str, float],
@@ -298,6 +428,7 @@ def main() -> int:
     for profile in profiles:
         checkpoint_dir = args.checkpoint_root / profile
         checkpoint_path = checkpoint_dir / "campp_best_raw.pt"
+        latest_path = checkpoint_dir / "campp_latest.pt"
         oof_path = checkpoint_dir / "campp_best_bundle" / "oof_predictions.npz"
         binding = validate_raw_bundle_binding(
             checkpoint_dir, checkpoint_path, oof_path
@@ -324,6 +455,7 @@ def main() -> int:
         )
         loaded[profile] = {
             "checkpoint_path": checkpoint_path,
+            "latest_path": latest_path,
             "oof_path": oof_path,
             "binding": binding,
             "oof": oof,
@@ -331,6 +463,7 @@ def main() -> int:
             "artifact_metadata": metadata,
             "checkpoint": checkpoint,
             "milestone": milestone_diagnostic(milestone_path, profile),
+            "terminal_curve": terminal_curve_diagnostic(latest_path, profile),
         }
 
     matched = loaded[MATCHED_CONTROL_PROFILE]
@@ -391,6 +524,11 @@ def main() -> int:
     matched_spread = embedding_spread(matched["artifact"])
     treatment_spread = embedding_spread(treatment["artifact"])
     spread_ratio = float(treatment_spread / matched_spread)
+    extension_diagnostic = matched_extension_diagnostic(
+        matched["terminal_curve"],
+        treatment["terminal_curve"],
+        spread_ratio=spread_ratio,
+    )
     gate = acceptance_gate(
         matched_delta=matched_delta,
         fusion_delta=fusion_delta,
@@ -422,17 +560,21 @@ def main() -> int:
             ),
             "matched": {
                 "checkpoint_sha256": sha256_file(matched["checkpoint_path"]),
+                "latest_sha256": sha256_file(matched["latest_path"]),
                 "oof_sha256": sha256_file(matched["oof_path"]),
                 "bundle_binding": matched["binding"],
                 "train_artifact": matched["artifact_metadata"],
                 "milestone": matched["milestone"],
+                "terminal_curve": matched["terminal_curve"],
             },
             "treatment": {
                 "checkpoint_sha256": sha256_file(treatment["checkpoint_path"]),
+                "latest_sha256": sha256_file(treatment["latest_path"]),
                 "oof_sha256": sha256_file(treatment["oof_path"]),
                 "bundle_binding": treatment["binding"],
                 "train_artifact": treatment["artifact_metadata"],
                 "milestone": treatment["milestone"],
+                "terminal_curve": treatment["terminal_curve"],
             },
         },
         "external_control": external_metrics,
@@ -455,6 +597,7 @@ def main() -> int:
             "treatment_over_matched": spread_ratio,
         },
         "acceptance_gate": gate,
+        "matched_extension_diagnostic": extension_diagnostic,
         "decision": "accept" if gate["passed"] else "reject",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -470,6 +613,7 @@ def main() -> int:
         "fixed_fusion": report["fixed_fusion"],
         "collapse_guard": report["collapse_guard"],
         "gate": gate,
+        "matched_extension_diagnostic": extension_diagnostic,
     }, indent=2))
     return 0
 

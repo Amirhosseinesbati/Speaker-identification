@@ -13,8 +13,10 @@ from scripts.audit_campp_paired_consistency_lme20 import (
     acceptance_gate,
     assert_paired_single_objective_contract,
     embedding_spread,
+    matched_extension_diagnostic,
     milestone_diagnostic,
     sha256_file,
+    terminal_curve_diagnostic,
 )
 from src.experiment_config import load_profile
 
@@ -129,3 +131,60 @@ def test_milestone_diagnostic_binds_epoch_profile_and_finite_metrics(tmp_path) -
     torch.save(payload, path)
     with pytest.raises(RuntimeError, match="non-finite"):
         milestone_diagnostic(path, TREATMENT_PROFILE)
+
+
+def _terminal_history(*, treatment: bool) -> list[dict]:
+    rows = []
+    for epoch in range(1, 81):
+        macro = 0.94
+        if treatment:
+            macro = 0.930 + max(0, epoch - 60) * 0.00012
+        rows.append({
+            "epoch": epoch,
+            "val_macro_f1": macro,
+            "val_known_acc": 0.95,
+            "val_ood_f1": 0.96,
+        })
+    return rows
+
+
+def test_terminal_curve_and_matched_extension_gate_are_predeclared(tmp_path) -> None:
+    curves = {}
+    for profile, treatment in (
+        (MATCHED_CONTROL_PROFILE, False),
+        (TREATMENT_PROFILE, True),
+    ):
+        path = tmp_path / f"{profile}.pt"
+        torch.save({
+            "epoch": 80,
+            "config": {"logging": {"checkpoint_dir": f"checkpoints/{profile}"}},
+            "training_history": _terminal_history(treatment=treatment),
+        }, path)
+        curves[profile] = terminal_curve_diagnostic(path, profile)
+
+    diagnostic = matched_extension_diagnostic(
+        curves[MATCHED_CONTROL_PROFILE],
+        curves[TREATMENT_PROFILE],
+        spread_ratio=0.98,
+    )
+    assert diagnostic["eligible_for_separate_matched_extension"] is True
+    assert diagnostic["checks"]["treatment_best_in_final_window"] is True
+    assert diagnostic["relative_gap_gain"] >= 0.0005
+
+    collapsed = matched_extension_diagnostic(
+        curves[MATCHED_CONTROL_PROFILE],
+        curves[TREATMENT_PROFILE],
+        spread_ratio=0.90,
+    )
+    assert collapsed["eligible_for_separate_matched_extension"] is False
+
+
+def test_terminal_curve_rejects_incomplete_history(tmp_path) -> None:
+    path = tmp_path / "latest.pt"
+    torch.save({
+        "epoch": 80,
+        "config": {"logging": {"checkpoint_dir": f"checkpoints/{TREATMENT_PROFILE}"}},
+        "training_history": _terminal_history(treatment=True)[:-1],
+    }, path)
+    with pytest.raises(RuntimeError, match="not contiguous"):
+        terminal_curve_diagnostic(path, TREATMENT_PROFILE)
