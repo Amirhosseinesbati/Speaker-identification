@@ -79,6 +79,32 @@ def _proto_loss(model: torch.nn.Module, config: dict, num_metric_classes: int):
     return criterion, float(proto_cfg.get("weight", 0.1))
 
 
+def _training_view(batch: tuple[Any, Any]) -> torch.Tensor:
+    """Return the supervised tensor from ordinary or paired loader batches."""
+    views = batch[0]
+    if isinstance(views, dict):
+        if set(views) != {"augmented", "clean"}:
+            raise ValueError(
+                "Paired probe batch must contain exactly 'augmented' and 'clean'"
+            )
+        views = views["augmented"]
+    if not isinstance(views, torch.Tensor):
+        raise TypeError("Probe batch view must be a tensor or paired-view dict")
+    return views
+
+
+def _consistency_weight(config: dict) -> float:
+    consistency = (
+        ((config.get("training", {}).get("loss", {}) or {})
+         .get("consistency", {}) or {})
+    )
+    return (
+        float(consistency.get("weight", 0.0))
+        if bool(consistency.get("enabled", False))
+        else 0.0
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True)
@@ -149,8 +175,13 @@ def main() -> int:
         try:
             train_loader, _, _ = get_dataloaders(config)
             batch = next(iter(train_loader))
-            actual_batch = int(batch[0].shape[0])
-            num_windows = int(batch[0].shape[1]) if batch[0].dim() == 4 else 1
+            supervised_view = _training_view(batch)
+            actual_batch = int(supervised_view.shape[0])
+            num_windows = (
+                int(supervised_view.shape[1])
+                if supervised_view.dim() == 4 else 1
+            )
+            consistency_weight = _consistency_weight(config)
             optimizer = _optimizer(model, config)
             hw_profile = get_active_profile(config)
             autocast_fn, scaler = build_amp(
@@ -168,6 +199,7 @@ def main() -> int:
                     autocast_fn=autocast_fn,
                     proto_criterion=proto_criterion,
                     proto_weight=proto_weight,
+                    consistency_weight=consistency_weight,
                 )
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats()
@@ -180,6 +212,7 @@ def main() -> int:
                     autocast_fn=autocast_fn,
                     proto_criterion=proto_criterion,
                     proto_weight=proto_weight,
+                    consistency_weight=consistency_weight,
                 )
             torch.cuda.synchronize()
             elapsed = time.perf_counter() - started

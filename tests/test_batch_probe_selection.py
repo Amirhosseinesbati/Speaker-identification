@@ -1,3 +1,7 @@
+import pytest
+import torch
+
+from scripts.probe_training_batch import _consistency_weight, _training_view
 from src.batch_probe import select_recommended_batch
 
 
@@ -21,3 +25,27 @@ def test_returns_none_when_every_candidate_is_oom_or_over_limit():
          "files_per_second": 9.0},
     ]
     assert select_recommended_batch(rows, 24.0, 0.10) is None
+
+
+def test_probe_extracts_supervised_view_from_paired_batch():
+    augmented = torch.zeros(4, 8, 1, 160)
+    clean = torch.ones_like(augmented)
+    batch = ({"augmented": augmented, "clean": clean}, torch.arange(4))
+
+    assert _training_view(batch) is augmented
+
+    with pytest.raises(ValueError, match="exactly"):
+        _training_view(({"augmented": augmented}, torch.arange(4)))
+
+
+def test_probe_passes_only_enabled_consistency_weight():
+    config = {
+        "training": {
+            "loss": {
+                "consistency": {"enabled": True, "weight": 0.1},
+            }
+        }
+    }
+    assert _consistency_weight(config) == pytest.approx(0.1)
+    config["training"]["loss"]["consistency"]["enabled"] = False
+    assert _consistency_weight(config) == 0.0
