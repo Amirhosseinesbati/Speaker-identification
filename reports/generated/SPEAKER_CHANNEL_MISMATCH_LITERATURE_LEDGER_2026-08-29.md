@@ -15,6 +15,8 @@ used to choose thresholds, fusion weights, epochs, or augmentation strength.
 | Comprehensive speaker augmentation study ([DOI](https://doi.org/10.21437/Interspeech.2024-2478)) | Speed and vocal-tract perturbations can create speaker variation rather than merely preserve channel variation. | The residual error topology is dominated by Known/OOD boundary errors, so identity-corrupting augmentation can increase known-speaker rejection. | In the active treatment, pitch shift is disabled and time stretch is rare and restricted to `0.95..1.05`. |
 | Noise/reverberation robustness via training ([DOI](https://doi.org/10.1109/EISIC.2015.20)) and multi-channel training ([DOI](https://doi.org/10.21437/INTERSPEECH.2019-1437)) | Training on additive noise and RIR/channel variability can reduce mismatch degradation. | MUSAN and RIR assets are already local to the worker; no data download or provenance expansion is required. | Test one single-variable CAM++ Fold-0 treatment with stronger speaker-preserving MUSAN/RIR exposure. |
 | Domain-weighted low-resource transfer ([DOI](https://doi.org/10.1186/s13636-024-00385-z)) | Uncontrolled fine-tuning under domain mismatch can degrade performance; domain-weighted adaptation can be safer. | The fixed-30 CAM++ LMFT experiment did not beat its warm-start checkpoint. | Do not repeat generic LMFT.  A future adaptation experiment must define a domain proxy, weighting rule, held-out gate, and stop rule before training. |
+| Curriculum learning for speaker verification ([arXiv](https://arxiv.org/abs/2203.14525)) and the NIST SRE21 overview ([DOI](https://doi.org/10.21437/Odyssey.2022-45)) | Gradually increasing augmentation difficulty can improve speaker representations, and long-duration fine-tuning was part of strong mismatched-domain systems. | The active channel-robust treatment is deliberately harder than Control; after unfreezing, its EMA and Raw curves are still rising rather than plateauing. | Do not stop the active run merely because early post-unfreeze epochs lag.  Let its preregistered patience/timeout act, then use the terminal slope and saved optimiser/scheduler state to decide whether a state-preserving continuation is scientifically warranted. |
+| Adversarial data augmentation ([DOI](https://doi.org/10.1145/3638884.3638917)) and ASVspoof5 augmentation ablations ([paper](https://www.isca-archive.org/asvspoof_2024/xie24_asvspoof.pdf)) | Vanilla augmentation can leave augmentation-specific residuals; overly broad or overly frequent transforms do not improve every task, while moderate frequency masking can outperform stronger combinations. | The current treatment uses several simultaneous channel transforms and has not yet beaten Control terminal performance. | Extra epochs are evidence collection, not a presumption that more is always better.  If terminal performance fails, prefer a preregistered curriculum or single-factor ablation over increasing all augmentation probabilities again. |
 | Extended variability modelling ([DOI](https://doi.org/10.21437/INTERSPEECH.2017-1586)) and open-set mismatch work ([DOI](https://doi.org/10.21437/Interspeech.2009-395)) | Duration/session/channel-aware backends and condition-adjusted normalization can help under mismatch. | Direct session/channel metadata is absent; quality-aware and normalization candidates already violated local guardrails. | Treat condition-aware prototype banks as a backup research direction, not an authorised run.  Any parameters must be selected leave-one-fold-out from training folds only. |
 | Contrastive adversarial domain adaptation ([DOI](https://doi.org/10.1109/TNNLS.2020.3044215)) | Separating speaker-discriminative and domain-invariant objectives can improve mismatched speaker recognition. | No reliable channel labels exist and this is a multi-component architectural change. | Keep as a later high-cost hypothesis only after cheaper channel augmentation and prototype conditioning are resolved. |
 
@@ -23,17 +25,19 @@ used to choose thresholds, fusion weights, epochs, or augmentation strength.
 The active profile is `p3-campp-known446-ood-channelrobust-oof-f0`, commit
 `eb433629b85a07a0665056d1bf6fcd84694cf1ca`.  It changes only the augmentation
 policy relative to Control Fold 0.  Its early epoch-8 advantage did not persist
-through the frozen-encoder phase, but the post-unfreeze trajectory later reached
-parity.  At matched epoch 28, the treatment had probability-average Macro-F1
-`0.9156` versus Control `0.9146` (about `+0.0010`), EMA Macro-F1 `0.8739`
-versus `0.8694`, and OOD validation accuracy `0.836` versus `0.824`; however,
-logit-average remained lower (`0.9072` versus `0.9096`) and validation loss
-remained higher (`1.1238` versus `1.1162`).  At epoch 29, probability-average
-fell to `0.9084` versus Control `0.9138` (about `-0.0054`) while EMA was almost
-identical (`0.8838` versus `0.8840`).  The mixed, oscillatory trajectory is not
-terminal evidence in either direction.  The run remains healthy and active, so
-checkpoint selection and the downstream LME20/complementarity gates must remain
-locked until terminal evaluation.
+through the frozen-encoder phase, but the post-unfreeze trajectory is converging
+toward Control.  At matched epoch 33, treatment probability-average Macro-F1
+was `0.9210` versus Control `0.9222834` (about `-0.0013`), while logit-average
+was slightly higher (`0.9160` versus `0.9157215`).  Treatment EMA Macro-F1 was
+`0.9106` versus Control `0.9073612` (about `+0.0032`), and training loss was
+lower (`3.1711` versus `3.3714`); validation loss remained nearly equal but
+slightly higher (`1.1514` versus `1.1499`).  This is evidence of continuing
+adaptation, not a terminal win: Raw is still oscillatory, and neither selected
+checkpoint nor LME20 complementarity is known.  The run remains healthy and
+active, so checkpoint selection and downstream gates stay locked until terminal
+evaluation.  The epoch-40 futility rule only rejects a best Raw score below
+`0.90`; it is not a reason to stop this trajectory after that threshold has
+already been exceeded.
 
 The treatment still passes only if the preregistered standalone LME20,
 fixed-50/50 complementarity, Known/OOD, rescue-rate, and provenance gates all
