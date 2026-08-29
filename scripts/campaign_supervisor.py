@@ -119,21 +119,32 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _artifact_receipts(profile: str) -> list[dict[str, Any]]:
+RECEIPT_SUFFIXES = {".pt", ".npz", ".json", ".yaml", ".yml", ".md"}
+
+
+def _artifact_receipts(
+    profile: str, extra_paths: tuple[Path, ...] = ()
+) -> list[dict[str, Any]]:
     base = ROOT / "checkpoints" / profile
+    candidates = []
+    if base.exists():
+        candidates.extend(
+            path for path in base.rglob("*")
+            if path.is_file() and path.suffix.lower() in RECEIPT_SUFFIXES
+        )
+    candidates.extend(path for path in extra_paths if path.is_file())
     receipts = []
-    if not base.exists():
-        return receipts
-    for path in sorted(base.rglob("*")):
-        if path.is_file() and (
-            path.suffix in {".pt", ".npz", ".json"}
-            or path.name in {"MODEL_CARD.md", "manifest.json"}
-        ):
-            receipts.append({
-                "path": str(path.relative_to(ROOT)),
-                "size_bytes": path.stat().st_size,
-                "sha256": _sha256(path),
-            })
+    seen: set[Path] = set()
+    for path in sorted(candidates, key=lambda item: str(item)):
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        receipts.append({
+            "path": path.relative_to(ROOT).as_posix(),
+            "size_bytes": path.stat().st_size,
+            "sha256": _sha256(path),
+        })
     return receipts
 
 
@@ -259,7 +270,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         telegram_reason = "زمان اجرای آزمایش از سقف مجاز عبور کرد"
 
     success = exit_code == 0
-    artifacts = _artifact_receipts(args.profile) if success else []
+    # Preserve every recoverable artifact even for timeout/failure. Receipt
+    # presence never implies validity; downstream audits still verify hashes,
+    # readability, scientific provenance and completeness before promotion.
+    artifacts = _artifact_receipts(
+        args.profile, extra_paths=(config_path, log_path)
+    )
     final_state = store.finish_run(
         success=success,
         exit_code=exit_code,
