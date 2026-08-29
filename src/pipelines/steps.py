@@ -377,6 +377,22 @@ def _resume_contract(config: Dict) -> dict:
     }
 
 
+def _training_milestone_epochs(train_cfg: Dict) -> set[int]:
+    """Validate and return preregistered intermediate checkpoint epochs."""
+    milestones = {int(value) for value in train_cfg.get("milestone_epochs", [])}
+    total_epochs = int(train_cfg["epochs"])
+    invalid = sorted(
+        epoch for epoch in milestones
+        if epoch <= 0 or epoch >= total_epochs
+    )
+    if invalid:
+        raise ValueError(
+            "training.milestone_epochs must contain positive epochs strictly "
+            f"below training.epochs; invalid={invalid}"
+        )
+    return milestones
+
+
 def _canonical_json_sha256(value: object) -> str:
     encoded = json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -924,6 +940,7 @@ def train_model(
     if early_stop_patience <= 0:
         print(f"  ⏸ Early stopping DISABLED (early_stopping_patience={early_stop_patience})")
     history = list(resume_history)
+    milestone_epochs = _training_milestone_epochs(train_cfg)
     if resume_receipt is not None:
         raw_rows = [
             row for row in history
@@ -1197,6 +1214,21 @@ def train_model(
         }, config, class_map, history=history)
         torch.save(latest_ckpt, checkpoint_dir / f"{encoder_type}_latest.pt")
         torch.save(latest_ckpt, checkpoint_dir / "latest_model.pt")
+
+        # Preserve preregistered intermediate horizons in long fixed-horizon
+        # experiments.  This makes a 40-vs-40 comparison recoverable from an
+        # 80-epoch run without changing the cosine schedule or relying on an
+        # external polling process to race the overwritten latest checkpoint.
+        if epoch in milestone_epochs:
+            milestone_path = (
+                checkpoint_dir
+                / f"{encoder_type}_milestone_epoch{epoch:03d}_raw.pt"
+            )
+            torch.save(latest_ckpt, milestone_path)
+            print(
+                f"  🧷 Preserved preregistered Raw milestone: "
+                f"{milestone_path}"
+            )
 
         # Early stopping based on val Macro-F1 (no improvement for N epochs).
         # Disabled when early_stopping_patience <= 0.
