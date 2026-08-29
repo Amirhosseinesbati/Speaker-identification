@@ -178,6 +178,35 @@ trigger the stateful continuation.  This update strengthens the preregistered
 case for additional time without changing any threshold, budget, stopping
 rule, active worker checkout or downstream treatment.
 
+### Live evidence update — epoch 75 new Raw best
+
+Two more complete epochs produced consecutive Raw improvements.  Epoch 74
+reached `0.9357969937539253`, and epoch 75 then established a new selected Raw
+probability-average best of `0.9361443624241722`; its diagnostic logit average
+was `0.9344`.  Training loss fell to `1.572686648702827`, which was `0.1216758`
+below matched Control epoch 75, while validation loss was only `0.0077095`
+higher.  The active patience counter therefore reset at epoch 75.  MLflow Run
+`557c7d5542e64cb6b21637e2d69a1f14` independently contained 75 contiguous
+points for each queried core metric.
+
+The new selected Raw checkpoint is tagged `weight_variant=raw`, stores
+optimizer state, stores scheduler state with `last_epoch=75`, and has SHA256
+`6570e3661c390bd4a1777ace58a13c3b28c3fb31571d8af480acf9774a149bcc`.
+Its embedded history ends at epoch 74 because the source commit still predates
+the save-order fix, so terminal `campp_latest.pt` remains the mandatory full
+history source.
+
+The locked non-terminal continuation preview still passed the required two of
+three trend tests: the selected checkpoint was inside the final-eight window,
+and mean training loss improved by `0.0796404` while validation loss rose by
+only `0.0173507`, within the fixed `0.03` guardrail.  The final-ten EMA slope
+was `+0.0001978008` per epoch, just `0.0000021992` below its individual
+`0.0002` threshold, so that one test did not pass.  The by-epoch-60 Raw floor
+remained satisfied.  As before, `eligible=false` at this non-terminal preview
+only because `complete` is not an allowed terminal reason; the underlying
+two-of-three requirement was met.  No gate constant, budget, active checkout
+or treatment changed.
+
 ## Literature rationale
 
 - Curriculum learning for speaker verification reports benefits from gradually
