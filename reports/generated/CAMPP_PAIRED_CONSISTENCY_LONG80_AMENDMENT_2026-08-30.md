@@ -72,3 +72,36 @@ uses the same files, extraction policy and statistic for both branches.
 
 Passing Fold 0 still permits only a separate cross-fold preregistration.  It
 does not authorize threshold tuning, a tuned blend or a submission.
+
+## Literature cross-check during the engineering pilot
+
+This amendment is a testable hypothesis, not a claim that consistency must
+help this competition.  Three primary sources support testing invariance while
+also warning against inferring a universal recipe:
+
+- Huh et al., *Augmentation adversarial training for self-supervised speaker
+  recognition* (2020), explicitly target speaker-discriminative embeddings
+  that are invariant to simulated acoustic/channel augmentation and report
+  gains on VoxCeleb and VOiCES:
+  <https://arxiv.org/abs/2007.12085>.
+- Sang et al., *Self-Supervised Speaker Verification with Simple Siamese
+  Network and Self-Supervised Regularization* (ICASSP 2022), apply a
+  positive-pair latent regularizer with online time/frequency augmentation and
+  report a 23.4% relative improvement in their self-supervised VoxCeleb setup:
+  <https://arxiv.org/abs/2112.04459>.
+- Sadhu and Wang, *Improving Audio Event Recognition with Consistency
+  Regularization* (2025), train paired-view supervised audio models for 60
+  epochs and show that useful consistency coefficient and augmentation count
+  depend on dataset scale; their ablations therefore argue for an explicitly
+  matched control rather than assuming that a stronger or longer auxiliary
+  objective is automatically better:
+  <https://arxiv.org/html/2509.10391v1>.
+
+The evidence supports giving the harder paired objective a real optimisation
+horizon.  It does **not** justify changing only the treatment duration or
+tuning its weight on Fold 0.  The locked 80/80 design therefore doubles the
+original horizon for both branches, retains a single fixed coefficient, and
+uses the full learning curves plus the collapse/identity guardrails above.  If
+the treatment remains positively sloped at epoch 80, that is evidence for a
+separately preregistered matched extension; it is not permission to continue
+only the treatment after seeing its held-out metric.
