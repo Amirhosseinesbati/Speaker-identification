@@ -49,7 +49,11 @@ def test_pcm_bytes_that_resemble_frame_sync_do_not_reach_mpeg_decoder(
     audio.write_bytes(b"\xff\xe3\xff\xe3" + b"\x00" * 32)
 
     monkeypatch.setattr(
-        sf, "read", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError())
+        sf,
+        "read",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unknown payload must not reach SoundFile/mpg123")
+        ),
     )
     monkeypatch.setattr(
         librosa,

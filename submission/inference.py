@@ -109,13 +109,17 @@ def _load_waveform(audio_path: Path, sample_rate: int) -> Optional[torch.Tensor]
             wav, sr = sf.read(str(audio_path), dtype="float32")
             if wav.ndim > 1:
                 wav = wav.mean(axis=1)
-        else:
+        elif is_mpeg:
             try:
                 wav, sr = sf.read(str(audio_path), dtype="float32", always_2d=False)
             except Exception:
-                if not is_mpeg:
-                    return None
                 wav, sr = librosa.load(str(audio_path), sr=sample_rate, mono=True)
+        else:
+            # Do not even ask SoundFile to inspect unknown ``.mp3`` payloads:
+            # its mpg123 backend writes native decoder errors to stderr before
+            # Python can catch the exception.  Headerless PCM recovery is a
+            # separate, OOF-gated scientific candidate.
+            return None
         if wav.ndim > 1:
             wav = wav.mean(axis=1)
         if sr != sample_rate:
