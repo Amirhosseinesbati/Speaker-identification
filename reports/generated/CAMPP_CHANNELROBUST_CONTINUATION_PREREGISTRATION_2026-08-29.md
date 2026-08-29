@@ -95,6 +95,22 @@ therefore remains the mandatory history source if that epoch is selected for a
 continuation.  The worker checkout must not pull `ad9c570` until the source
 supervisor is terminal.
 
+### Live evidence update — epoch 56
+
+The source run remained active and produced a new Raw probability-average best
+of `0.9338324913327573` at epoch 56, superseding the earlier epoch-42 best.
+The selected Raw checkpoint was read without modifying the worker: it is tagged
+`weight_variant=raw`, stores optimizer state, stores scheduler state with
+`last_epoch=56`, and has SHA256
+`c11f886f8635df26ef09dd48e8de880ebce553a8e20bd1f609522d5fff28fcbb`.
+Its embedded history ends at epoch 55 due to the source commit's save ordering,
+so the terminal `campp_latest.pt` remains the mandatory external history source
+for any continuation.  MLflow Run `557c7d5542e64cb6b21637e2d69a1f14`
+was independently verified `RUNNING` with 56 contiguous points for the four
+queried core metrics.  This update changes no gate constant or treatment; it
+only records that additional time yielded a genuine new Raw best and reset the
+source patience counter.
+
 ## Literature rationale
 
 - Curriculum learning for speaker verification reports benefits from gradually
