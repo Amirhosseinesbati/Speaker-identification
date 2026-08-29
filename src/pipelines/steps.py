@@ -13,6 +13,7 @@ Pipeline flow:
 """
 
 import hashlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -350,6 +351,179 @@ def _load_warm_start_checkpoint(
     )
     return receipt
 
+
+_RESUME_TRAINING_EXCLUSIONS = {
+    "early_stopping_patience",
+    "resume_checkpoint",
+    "resume_history_path",
+    "warm_start_checkpoint",
+}
+
+
+def _resume_contract(config: Dict) -> dict:
+    """Return the immutable scientific contract for a stateful continuation."""
+    training = dict(config.get("training", {}) or {})
+    for key in _RESUME_TRAINING_EXCLUSIONS:
+        training.pop(key, None)
+    return {
+        "model": config.get("model", {}) or {},
+        "data": config.get("data", {}) or {},
+        "audio": config.get("audio", {}) or {},
+        "augmentation": config.get("augmentation", {}) or {},
+        "hardware": config.get("hardware", {}) or {},
+        "training": training,
+    }
+
+
+def _canonical_json_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _resume_history(
+    checkpoint: dict,
+    config: Dict,
+    source_epoch: int,
+) -> list[dict]:
+    """Load, validate and truncate history to the resumed checkpoint epoch."""
+    configured = (config.get("training", {}) or {}).get("resume_history_path")
+    if configured:
+        history_path = Path(str(configured)).expanduser().resolve()
+        if not history_path.is_file():
+            raise FileNotFoundError(f"Resume history not found: {history_path}")
+        if history_path.suffix.lower() in {".pt", ".pth", ".ckpt"}:
+            payload = torch.load(
+                history_path, map_location="cpu", weights_only=False,
+            )
+        else:
+            payload = json.loads(history_path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            payload = payload.get("training_history", payload.get("history"))
+    else:
+        payload = checkpoint.get(
+            "training_history", checkpoint.get("history"),
+        )
+
+    if not isinstance(payload, list) or not payload:
+        raise ValueError(
+            "Stateful resume requires a non-empty training history in the "
+            "checkpoint or training.resume_history_path"
+        )
+    if not all(isinstance(row, dict) and "epoch" in row for row in payload):
+        raise ValueError("Resume history rows must be objects with an epoch")
+
+    epochs = [int(row["epoch"]) for row in payload]
+    if epochs != sorted(epochs) or len(epochs) != len(set(epochs)):
+        raise ValueError("Resume history epochs must be unique and increasing")
+    history = [dict(row) for row in payload if int(row["epoch"]) <= source_epoch]
+    if not history or int(history[-1]["epoch"]) != source_epoch:
+        raise ValueError(
+            "Resume history must contain the complete source checkpoint epoch "
+            f"{source_epoch}"
+        )
+    if [int(row["epoch"]) for row in history] != list(
+        range(1, source_epoch + 1)
+    ):
+        raise ValueError(
+            "Resume history must be contiguous from epoch 1 through the "
+            "source checkpoint epoch"
+        )
+    return history
+
+
+def _restore_training_state_for_resume(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler,
+    config: Dict,
+    class_map: Dict,
+) -> tuple[dict | None, list[dict]]:
+    """Restore model, optimizer, scheduler and history for a stateful continuation.
+
+    Unlike ``warm_start_checkpoint``, this path never resets training state.  It
+    also rejects any change to the scientific contract other than patience and
+    the resume-only path fields.
+    """
+    train_cfg = config.get("training", {}) or {}
+    configured = train_cfg.get("resume_checkpoint")
+    if not configured:
+        return None, []
+    if train_cfg.get("warm_start_checkpoint"):
+        raise ValueError(
+            "training.resume_checkpoint and warm_start_checkpoint are mutually "
+            "exclusive"
+        )
+
+    path = Path(str(configured)).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Resume checkpoint not found: {path}")
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+
+    if checkpoint.get("class_map") != class_map:
+        raise ValueError("Resume class_map mismatch")
+    source_config = checkpoint.get("config") or {}
+    source_contract = _resume_contract(source_config)
+    target_contract = _resume_contract(config)
+    if source_contract != target_contract:
+        changed = sorted(
+            key for key in target_contract
+            if source_contract.get(key) != target_contract.get(key)
+        )
+        raise ValueError(
+            "Resume scientific-contract mismatch in: " + ", ".join(changed)
+        )
+
+    source_epoch = int(checkpoint.get("epoch", 0))
+    if source_epoch <= 0:
+        raise ValueError("Resume checkpoint must contain a positive epoch")
+    if "optimizer_state_dict" not in checkpoint:
+        raise ValueError("Resume checkpoint lacks optimizer_state_dict")
+    if "scheduler_state_dict" not in checkpoint:
+        raise ValueError("Resume checkpoint lacks scheduler_state_dict")
+
+    scheduler_epoch = checkpoint["scheduler_state_dict"].get("last_epoch")
+    if scheduler_epoch is not None and int(scheduler_epoch) != source_epoch:
+        raise ValueError(
+            "Resume scheduler epoch mismatch: "
+            f"scheduler={scheduler_epoch}, checkpoint={source_epoch}"
+        )
+
+    history = _resume_history(checkpoint, config, source_epoch)
+    model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+    receipt = {
+        "path": str(path),
+        "sha256": _sha256_file(path),
+        "source_epoch": source_epoch,
+        "source_val_macro_f1": checkpoint.get("val_macro_f1"),
+        "source_history_sha256": _canonical_json_sha256(history),
+        "source_history_epochs": len(history),
+        "source_history_path": (
+            str(Path(str(train_cfg["resume_history_path"])).expanduser().resolve())
+            if train_cfg.get("resume_history_path") else str(path)
+        ),
+        "source_history_file_sha256": (
+            _sha256_file(
+                Path(str(train_cfg["resume_history_path"])).expanduser().resolve()
+            )
+            if train_cfg.get("resume_history_path") else _sha256_file(path)
+        ),
+        "start_epoch": source_epoch + 1,
+        "ema_restored": False,
+    }
+    print(f"  ✓ Restored stateful continuation from {path}")
+    print(f"    SHA256: {receipt['sha256']}")
+    print(
+        f"    Model/optimizer/scheduler restored through epoch {source_epoch}; "
+        "EMA restarts as diagnostic only."
+    )
+    return receipt, history
+
 @step
 def build_model(
     config: Dict,
@@ -631,6 +805,21 @@ def train_model(
     # hardcoded 3-epoch warmup + warm-restarts is the "cosine_warm_restarts"
     # option for backward compatibility).
     scheduler = build_scheduler(optimizer, train_cfg, train_cfg["epochs"])
+    resume_receipt, resume_history = _restore_training_state_for_resume(
+        model, optimizer, scheduler, config, class_map,
+    )
+    start_epoch = (
+        int(resume_receipt["start_epoch"]) if resume_receipt is not None else 1
+    )
+    if start_epoch > int(train_cfg["epochs"]):
+        raise ValueError(
+            "Resume start epoch exceeds training.epochs: "
+            f"{start_epoch} > {train_cfg['epochs']}"
+        )
+    if (resume_receipt is not None and progressive and
+            start_epoch > freeze_epochs + 1):
+        apply_encoder_finetune_mode(model, config)
+        print("  🔓 Restored post-unfreeze encoder trainability for continuation")
     competition_known_count = int(
         config.get("model", {}).get("competition_num_known", 446))
     criterion = build_criterion(
@@ -646,6 +835,11 @@ def train_model(
         if train_cfg.get("ema_enabled", False) else None
     if ema is not None and ema.enabled:
         print(f"  🧊 EMA enabled (decay={ema.decay:.4f})")
+        if resume_receipt is not None:
+            print(
+                "     EMA shadow restarted from resumed Raw weights "
+                "(diagnostic only)"
+            )
 
     # Prototypical loss (EMA centroids) — optional, aligns training with the
     # nearest-centroid readout. Disabled by default (training.loss.proto.enabled).
@@ -693,9 +887,34 @@ def train_model(
     # <= 0 disables early stopping (two-phase cosine runs its full course)
     if early_stop_patience <= 0:
         print(f"  ⏸ Early stopping DISABLED (early_stopping_patience={early_stop_patience})")
-    history = []
+    history = list(resume_history)
+    if resume_receipt is not None:
+        raw_rows = [
+            row for row in history
+            if isinstance(row.get("val_macro_f1"), (int, float))
+        ]
+        if not raw_rows:
+            raise ValueError("Resume history contains no val_macro_f1 values")
+        best_raw_row = max(raw_rows, key=lambda row: float(row["val_macro_f1"]))
+        best_val_f1 = float(best_raw_row["val_macro_f1"])
+        best_epoch = int(best_raw_row["epoch"])
 
-    for epoch in range(1, train_cfg["epochs"] + 1):
+        ema_rows = [
+            row for row in history
+            if isinstance(row.get("val_ema_macro_f1"), (int, float))
+        ]
+        if ema_rows:
+            best_ema_row = max(
+                ema_rows, key=lambda row: float(row["val_ema_macro_f1"]),
+            )
+            best_ema_f1 = float(best_ema_row["val_ema_macro_f1"])
+            best_ema_epoch = int(best_ema_row["epoch"])
+        print(
+            f"  ↪ Continuing at epoch {start_epoch}; historical Raw best "
+            f"{best_val_f1:.4f} at epoch {best_epoch}"
+        )
+
+    for epoch in range(start_epoch, train_cfg["epochs"] + 1):
         if hasattr(train_loader.batch_sampler, "set_epoch"):
             train_loader.batch_sampler.set_epoch(epoch - 1)
         # Progressive unfreezing: at the transition epoch, restore the configured
@@ -816,6 +1035,24 @@ def train_model(
                   f"Known: {ema_val_metrics['known_acc']:.4f} | "
                   f"OOD-F1: {ema_val_metrics['ood_f1']:.4f}")
 
+        # Materialise the complete current-epoch row before checkpointing.  A
+        # supervisor timeout can otherwise leave the selected checkpoint with
+        # history ending one epoch before its own model/optimizer state.
+        val_history = {k: v for k, v in val_metrics.items()
+                       if not isinstance(v, torch.Tensor)}
+        if ema_val_metrics is not None:
+            val_history.update({
+                f"ema_{k}": v for k, v in ema_val_metrics.items()
+                if not isinstance(v, torch.Tensor)
+            })
+        current_history_row = {
+            "epoch": epoch,
+            **{f"train_{k}": v for k, v in train_metrics.items()},
+            **{f"val_{k}": v for k, v in val_history.items()},
+            "lr": head_lr,
+        }
+        history_with_current = [*history, current_history_row]
+
         # Save best model (based on val Macro-F1) + Early stopping (also Macro-F1)
         should_save = (
             (selection_mode == "last_epoch" and epoch == train_cfg["epochs"])
@@ -835,6 +1072,7 @@ def train_model(
                 "class_map": class_map,
                 "weight_variant": "raw",
                 "reproducibility": reproducibility,
+                "resume": resume_receipt,
                 "val_loss": val_metrics["loss"],
                 "val_ood_acc": val_metrics["ood_acc"],
                 "val_speaker_acc": val_metrics["speaker_acc"],
@@ -844,7 +1082,7 @@ def train_model(
                 "val_ood_acc": val_metrics["ood_acc"],
                 "val_speaker_acc": val_metrics["speaker_acc"],
                 "val_macro_f1": val_metrics["macro_f1"],
-            }, history=history)
+            }, history=history_with_current)
             # Encoder-named best (build_submission.py globs *_best.pt) +
             # back-compat copy for tools that still read best_model.pt.
             best_path = checkpoint_dir / f"{encoder_type}_best.pt"
@@ -867,6 +1105,7 @@ def train_model(
                 "class_map": class_map,
                 "weight_variant": "ema",
                 "reproducibility": reproducibility,
+                "resume": resume_receipt,
                 "val_loss": ema_val_metrics["loss"],
                 "val_ood_acc": ema_val_metrics["ood_acc"],
                 "val_speaker_acc": ema_val_metrics["speaker_acc"],
@@ -879,34 +1118,23 @@ def train_model(
                 "val_ood_f1": ema_val_metrics["ood_f1"],
                 "val_known_acc": ema_val_metrics["known_acc"],
                 "val_overall_acc": ema_val_metrics["overall_acc"],
-            }, history=history)
+            }, history=history_with_current)
             torch.save(ema_ckpt, checkpoint_dir / f"{encoder_type}_best_ema.pt")
 
-        # Record history (BEFORE early stopping check — prevents crash on break)
-        # NOTE: exclude tensors (collect for Macro-F1) from the history dict
-        val_history = {k: v for k, v in val_metrics.items()
-                       if not isinstance(v, torch.Tensor)}
-        if ema_val_metrics is not None:
-            val_history.update({
-                f"ema_{k}": v for k, v in ema_val_metrics.items()
-                if not isinstance(v, torch.Tensor)
-            })
-        history.append({
-            "epoch": epoch,
-            **{f"train_{k}": v for k, v in train_metrics.items()},
-            **{f"val_{k}": v for k, v in val_history.items()},
-            "lr": head_lr,
-        })
+        # Record history before early stopping so latest is always resumable.
+        history.append(current_history_row)
 
         # Save latest checkpoint (BEFORE early stopping check)
         latest_ckpt = enrich_checkpoint({
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
             "config": config,
             "class_map": class_map,
             "weight_variant": "raw",
             "reproducibility": reproducibility,
+            "resume": resume_receipt,
         }, config, class_map, history=history)
         torch.save(latest_ckpt, checkpoint_dir / f"{encoder_type}_latest.pt")
         torch.save(latest_ckpt, checkpoint_dir / "latest_model.pt")
@@ -935,7 +1163,14 @@ def train_model(
     selected_f1 = best_ema_f1 if selected_variant == "ema" else best_val_f1
     selected_path = ema_best_path if selected_variant == "ema" else raw_best_path
     if not selected_path.exists():
-        selected_path = Path(final_best_path)
+        selected_path = (
+            Path(str(resume_receipt["path"]))
+            if resume_receipt is not None else Path(final_best_path)
+        )
+    if not selected_path.is_file():
+        raise FileNotFoundError(
+            f"Selected checkpoint is unavailable after training: {selected_path}"
+        )
 
     summary = {
         "best_epoch": selected_epoch if selected_epoch > 0 else (safe_idx + 1),
@@ -949,7 +1184,11 @@ def train_model(
         "best_val_ood_acc": round(history[safe_idx]["val_ood_acc"], 4),
         "best_val_speaker_acc": round(history[safe_idx]["val_speaker_acc"], 4),
         "total_epochs_run": len(history),
+        "epochs_run_this_execution": len(history) - len(resume_history),
         "total_epochs_configured": train_cfg["epochs"],
+        "resumed_from_epoch": (
+            resume_receipt["source_epoch"] if resume_receipt is not None else None
+        ),
         "training_seed": reproducibility["seed"],
         "deterministic_algorithms": reproducibility["deterministic_algorithms"],
     }
@@ -975,6 +1214,10 @@ def train_model(
         "validation_overlap": split_scheme == "full",
         "training_seed": reproducibility["seed"],
         "deterministic_algorithms": reproducibility["deterministic_algorithms"],
+        "stateful_resume": resume_receipt is not None,
+        "resume_checkpoint_sha256": (
+            resume_receipt["sha256"] if resume_receipt is not None else ""
+        ),
     })
     _mlflow_log_metrics({
         "best_val_macro_f1": summary["best_val_macro_f1"],
@@ -992,8 +1235,11 @@ def train_model(
     final_ckpt = torch.load(selected_path, map_location="cpu", weights_only=False)
     final_ckpt = enrich_checkpoint(
         final_ckpt, config, class_map, metrics=summary, history=history)
+    final_ckpt["resume"] = resume_receipt
     torch.save(final_ckpt, final_best_path)
     torch.save(final_ckpt, checkpoint_dir / "best_model.pt")
+    if selected_variant == "raw":
+        torch.save(final_ckpt, raw_best_path)
     bundle_dir = create_training_bundle(
         final_best_path, config, class_map, history, summary)
 
