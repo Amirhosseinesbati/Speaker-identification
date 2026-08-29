@@ -90,7 +90,19 @@ def _load_waveform(audio_path: Path, sample_rate: int) -> Optional[torch.Tensor]
 
     audio_path = Path(audio_path)
     try:
-        if audio_path.suffix.lower() == ".wav":
+        # The competition corpus is mostly RIFF/WAVE audio stored under an
+        # ``.mp3`` suffix.  Route by file signature, not suffix.  Crucially,
+        # a corrupt/empty RIFF file must not fall through to mpg123: that
+        # native decoder emits thousands of stderr lines before failing and
+        # can obscure a real leaderboard error.  Such files already follow
+        # the locked decode-failure -> unknown policy.
+        with audio_path.open("rb") as handle:
+            magic = handle.read(12)
+        is_riff_wave = len(magic) >= 12 and magic[:4] == b"RIFF" and magic[8:12] == b"WAVE"
+        is_mpeg = magic[:3] == b"ID3" or (
+            len(magic) >= 2 and magic[0] == 0xFF and magic[1] & 0xE0 == 0xE0
+        )
+        if is_riff_wave or audio_path.suffix.lower() == ".wav":
             wav, sr = sf.read(str(audio_path), dtype="float32")
             if wav.ndim > 1:
                 wav = wav.mean(axis=1)
@@ -98,6 +110,8 @@ def _load_waveform(audio_path: Path, sample_rate: int) -> Optional[torch.Tensor]
             try:
                 wav, sr = sf.read(str(audio_path), dtype="float32", always_2d=False)
             except Exception:
+                if not is_mpeg:
+                    return None
                 wav, sr = librosa.load(str(audio_path), sr=sample_rate, mono=True)
         if wav.ndim > 1:
             wav = wav.mean(axis=1)
