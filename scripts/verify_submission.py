@@ -15,6 +15,7 @@ Usage (cmd.exe):
 
 import csv
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -23,10 +24,10 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-ROOT = Path(r"D:\Projects\My projects\IAAA_Compet\Speaker-identification")
+ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ZIP = ROOT / "submission_leaderboard.zip"
 RAW = ROOT / "data" / "raw"
-PYTHON = Path(
+LEGACY_LEADERBOARD_PYTHON = Path(
     r"D:\Projects\My projects\IAAA_Compet\leaderbordvenv\.venv\Scripts\python.exe"
 )
 N_SAMPLES = 8
@@ -39,8 +40,19 @@ SUFFIXES = {".mp3", ".wav", ".flac", ".ogg", ".m4a"}
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify one leaderboard submission ZIP")
     parser.add_argument("--zip", type=Path, default=DEFAULT_ZIP)
+    parser.add_argument(
+        "--python", type=Path,
+        default=Path(os.environ.get("SUBMISSION_VERIFY_PYTHON", ""))
+        if os.environ.get("SUBMISSION_VERIFY_PYTHON")
+        else LEGACY_LEADERBOARD_PYTHON
+        if LEGACY_LEADERBOARD_PYTHON.exists()
+        else Path(sys.executable),
+        help="Python interpreter used to replay the leaderboard entry point",
+    )
+    parser.add_argument("--samples", type=int, default=N_SAMPLES)
     args = parser.parse_args()
     zip_path = args.zip.resolve()
+    python_path = args.python.resolve()
     print("=" * 70)
     print(f"  Verification of {zip_path.name}")
     print("=" * 70)
@@ -48,8 +60,8 @@ def main() -> int:
     if not zip_path.exists():
         print(f"  ZIP missing: {zip_path}")
         return 1
-    if not PYTHON.exists():
-        print(f"  python missing: {PYTHON}")
+    if not python_path.exists():
+        print(f"  python missing: {python_path}")
         return 1
 
     work = Path(tempfile.mkdtemp(prefix="verify_sub_"))
@@ -71,7 +83,7 @@ def main() -> int:
 
     # ── 2. sample audio ──
     print("[2/5] Copying sample audio ...")
-    mp3s = sorted(RAW.glob("*.mp3"))[:N_SAMPLES]
+    mp3s = sorted(RAW.glob("*.mp3"))[:args.samples]
     if not mp3s:
         print(f"  FAIL: no audio files in {RAW}")
         return 1
@@ -85,7 +97,7 @@ def main() -> int:
     out_csv = cwd / "out.csv"
     try:
         proc = subprocess.run(
-            [str(PYTHON), str(entry), "--data-dir", str(data),
+            [str(python_path), str(entry), "--data-dir", str(data),
              "--predictions-file-path", str(out_csv)],
             cwd=str(cwd),
             capture_output=True,
@@ -134,7 +146,7 @@ def main() -> int:
         or not r[0].lower().endswith(tuple(SUFFIXES))
         or (r[1] != "unknown" and not UUID_RE.match(r[1]))
     ]
-    ok = len(rows) == N_SAMPLES + 1 and not bad
+    ok = len(rows) == args.samples + 1 and not bad
     print(f"      rows={len(rows)-1} bad={len(bad)} header={rows[0]}")
     for r in rows[1:min(4, len(rows))]:
         print("        ", r)

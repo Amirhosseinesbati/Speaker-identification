@@ -440,7 +440,8 @@ def build(skip_weights: bool, fusion_config: Path | None = None,
         p = SUB / "weights" / w
         print(f"  {'✓' if p.exists() and any(p.iterdir()) else '✗ MISSING'} weights/{w}/")
     cdir = SUB / "centroids"
-    print(f"  {'✓' if cdir.exists() and any(cdir.iterdir()) else '✗ MISSING'} centroids/")
+    if use_decision_layer:
+        print(f"  {'✓' if cdir.exists() and any(cdir.iterdir()) else '✗ MISSING'} centroids/")
     pdir = SUB / "prototypes"
     prototype_ok = pdir.exists() and len(list(pdir.glob("*.npz"))) == shipped_prototypes
     if use_prototype_layer:
