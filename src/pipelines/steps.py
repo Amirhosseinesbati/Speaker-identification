@@ -12,6 +12,7 @@ Pipeline flow:
   4. evaluate_model    → evaluation_metrics
 """
 
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -273,6 +274,81 @@ def prepare_data(
 #  Step 2: Build Model
 # ─────────────────────────────────────────────────────────
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_warm_start_checkpoint(
+    model: torch.nn.Module,
+    config: Dict,
+    class_map: Dict,
+) -> dict | None:
+    """Load a full-model LMFT starting point with strict provenance checks.
+
+    This intentionally restores model weights only. Optimizer, scheduler, EMA,
+    and epoch counters are reset so the new run is a separately auditable LMFT
+    experiment rather than an opaque resume of the source run.
+    """
+    train_cfg = config.get("training", {}) or {}
+    configured = train_cfg.get("warm_start_checkpoint")
+    if not configured:
+        return None
+
+    path = Path(str(configured)).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Warm-start checkpoint not found: {path}")
+
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    source_class_map = checkpoint.get("class_map")
+    if source_class_map != class_map:
+        raise ValueError(
+            "Warm-start class_map mismatch; refusing to initialize an LMFT "
+            "run with different speaker indices."
+        )
+
+    source_config = checkpoint.get("config") or {}
+    source_model_cfg = source_config.get("model", {}) or {}
+    target_model_cfg = config.get("model", {}) or {}
+    source_encoder = str(source_model_cfg.get("encoder_type", ""))
+    target_encoder = str(target_model_cfg.get("encoder_type", ""))
+    if source_encoder != target_encoder:
+        raise ValueError(
+            "Warm-start encoder mismatch: "
+            f"source={source_encoder!r}, target={target_encoder!r}"
+        )
+
+    source_split = (source_config.get("data", {}) or {}).get("split", {}) or {}
+    target_split = (config.get("data", {}) or {}).get("split", {}) or {}
+    split_keys = ("scheme", "folds", "fold", "seed")
+    source_provenance = {key: source_split.get(key) for key in split_keys}
+    target_provenance = {key: target_split.get(key) for key in split_keys}
+    if source_provenance != target_provenance:
+        raise ValueError(
+            "Warm-start split mismatch: "
+            f"source={source_provenance}, target={target_provenance}"
+        )
+
+    model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+    receipt = {
+        "path": str(path),
+        "sha256": _sha256_file(path),
+        "source_epoch": checkpoint.get("epoch"),
+        "source_val_macro_f1": checkpoint.get("val_macro_f1"),
+        "source_encoder": source_encoder,
+        "source_split": source_provenance,
+    }
+    print(f"  ✓ Warm-started full model from {path}")
+    print(f"    SHA256: {receipt['sha256']}")
+    print(
+        "    Optimizer/scheduler/EMA reset for a distinct LMFT run; "
+        "model weights only were restored."
+    )
+    return receipt
+
 @step
 def build_model(
     config: Dict,
@@ -297,6 +373,8 @@ def build_model(
     from src.model_factory import create_model_from_config
     model = create_model_from_config(config, num_known_speakers=num_known)
 
+    warm_start_receipt = _load_warm_start_checkpoint(model, config, class_map)
+
     model.print_summary()
 
     # Save initial state dict to a temp checkpoint
@@ -308,6 +386,7 @@ def build_model(
         "model_state_dict": model.state_dict(),
         "config": config,
         "class_map": class_map,
+        "warm_start": warm_start_receipt,
     }, init_path)
     print(f"  ✓ Initial model saved to {init_path}")
 
@@ -333,6 +412,10 @@ def build_model(
         "speaker_head_classes": model.num_known_speakers,
         "speaker_target_scope": getattr(model, "speaker_target_scope", "metric"),
         "total_params": model.get_trainable_params(),
+        "warm_start_enabled": warm_start_receipt is not None,
+        "warm_start_sha256": (
+            warm_start_receipt["sha256"] if warm_start_receipt else ""
+        ),
     })
 
     return init_path
