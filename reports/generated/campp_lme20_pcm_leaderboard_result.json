@@ -1,0 +1,39 @@
+{
+  "source": "user-reported competition panel result",
+  "task": "scoring",
+  "panel_timestamp_displayed": "08/29/2026, 18:13:05",
+  "result": {
+    "accuracy": 0.9667036625971143,
+    "f1_macro": 0.9667174284505605
+  },
+  "package": {
+    "relative_path": "data/artifacts/iaaa_campp_lme20_pcm_recovery_20260829.zip",
+    "size_bytes": 94231494,
+    "sha256": "3653d0f4e54433f4096a521d814d5e606c5b9314fefa986b315b7623143a7494"
+  },
+  "internal_reference": {
+    "three_fold_oof_macro_f1": 0.9633564052154656,
+    "leaderboard_minus_oof": 0.0033610232350949
+  },
+  "leaderboard_snapshot": {
+    "rank": 7,
+    "first_place_f1_macro": 0.972643,
+    "gap_to_first": 0.0059255715494395,
+    "entries": [
+      {"rank": 1, "team": "Trench Battle Hero", "f1_macro": 0.972643, "count_displayed": 43, "time_displayed": "8/29/2026, 12:30:12 AM"},
+      {"rank": 2, "team": "آنید", "f1_macro": 0.970224, "count_displayed": 37, "time_displayed": "8/29/2026, 10:29:16 AM"},
+      {"rank": 3, "team": "lian", "f1_macro": 0.969900, "count_displayed": 35, "time_displayed": "8/29/2026, 5:28:10 PM"},
+      {"rank": 4, "team": "دیپ", "f1_macro": 0.969703, "count_displayed": 39, "time_displayed": "8/29/2026, 3:19:14 PM"},
+      {"rank": 5, "team": "IRAScience", "f1_macro": 0.968086, "count_displayed": 61, "time_displayed": "8/28/2026, 1:24:48 PM"},
+      {"rank": 6, "team": "اکام", "f1_macro": 0.966951, "count_displayed": 10, "time_displayed": "8/29/2026, 9:38:56 AM"},
+      {"rank": 7, "team": "Madia", "f1_macro": 0.966717, "count_displayed": 16, "time_displayed": "8/29/2026, 5:25:38 PM"},
+      {"rank": 8, "team": "Kavian", "f1_macro": 0.965817, "count_displayed": 13, "time_displayed": "8/18/2026, 8:31:02 PM"},
+      {"rank": 9, "team": "TIKCUS", "f1_macro": 0.963930, "count_displayed": 51, "time_displayed": "8/26/2026, 9:37:38 AM"},
+      {"rank": 10, "team": "Rofagha AI", "f1_macro": 0.961721, "count_displayed": 46, "time_displayed": "8/28/2026, 10:59:40 PM"}
+    ]
+  },
+  "scientific_policy": {
+    "leaderboard_used_for_tuning": false,
+    "interpretation": "external validation of the packaged stack, not a single-variable ablation"
+  }
+}
