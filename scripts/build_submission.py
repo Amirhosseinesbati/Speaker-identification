@@ -47,6 +47,20 @@ SUB = ROOT / "submission"
 SRC_DIRS = ["src"]
 ALL_WEIGHT_DIRS = ["ecapa", "campp", "eres2net", "titanet", "wavlm_large"]
 ENTRYPOINT_FILES = ["submission.py", "inference.py", "__init__.py"]
+MAX_SUBMISSION_ZIP_BYTES = 1_000_000_000
+
+
+def assert_submission_zip_size(
+    zip_path: Path, maximum_bytes: int = MAX_SUBMISSION_ZIP_BYTES
+) -> int:
+    """Fail closed when a leaderboard archive exceeds the one-gigabyte cap."""
+    size = zip_path.stat().st_size
+    if size > maximum_bytes:
+        raise RuntimeError(
+            "Submission ZIP exceeds the 1 GB limit: "
+            f"{size} bytes > {maximum_bytes} bytes"
+        )
+    return size
 
 
 def _rm_artifacts(dst: Path) -> None:
@@ -152,7 +166,11 @@ def _write_zip(zip_path: Path) -> None:
                          compresslevel=6) as zf:
         for path in sorted(p for p in SUB.rglob("*") if p.is_file()):
             zf.write(path, path.relative_to(SUB).as_posix())
-    print(f"  ✓ ZIP: {zip_path} ({zip_path.stat().st_size / 1024**2:.2f} MiB)")
+    size = assert_submission_zip_size(zip_path)
+    print(
+        f"  ✓ ZIP: {zip_path} ({size / 1024**2:.2f} MiB; "
+        f"limit {MAX_SUBMISSION_ZIP_BYTES / 1e9:.0f} GB)"
+    )
 
 
 def build(skip_weights: bool, fusion_config: Path | None = None,

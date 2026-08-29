@@ -31,10 +31,17 @@ LEGACY_LEADERBOARD_PYTHON = Path(
     r"D:\Projects\My projects\IAAA_Compet\leaderbordvenv\.venv\Scripts\python.exe"
 )
 N_SAMPLES = 8
+MAX_SUBMISSION_ZIP_BYTES = 1_000_000_000
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
 SUFFIXES = {".mp3", ".wav", ".flac", ".ogg", ".m4a"}
+
+
+def submission_zip_size_ok(
+    zip_path: Path, maximum_bytes: int = MAX_SUBMISSION_ZIP_BYTES
+) -> bool:
+    return zip_path.stat().st_size <= maximum_bytes
 
 
 def main() -> int:
@@ -62,6 +69,12 @@ def main() -> int:
 
     if not zip_path.exists():
         print(f"  ZIP missing: {zip_path}")
+        return 1
+    if not submission_zip_size_ok(zip_path):
+        print(
+            "  ZIP exceeds the 1 GB limit: "
+            f"{zip_path.stat().st_size} bytes > {MAX_SUBMISSION_ZIP_BYTES} bytes"
+        )
         return 1
     if not python_path.exists():
         print(f"  python missing: {python_path}")
