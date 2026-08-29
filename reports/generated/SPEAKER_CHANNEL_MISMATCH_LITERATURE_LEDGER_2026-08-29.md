@@ -23,12 +23,17 @@ used to choose thresholds, fusion weights, epochs, or augmentation strength.
 The active profile is `p3-campp-known446-ood-channelrobust-oof-f0`, commit
 `eb433629b85a07a0665056d1bf6fcd84694cf1ca`.  It changes only the augmentation
 policy relative to Control Fold 0.  Its early epoch-8 advantage did not persist
-through the frozen-encoder phase.  At the matched epoch-21 snapshot, immediately
-after progressive encoder unfreezing, the treatment had probability-average
-Macro-F1 `0.8893` versus Control `0.8942` (`-0.0049`), logit-average `0.8787`
-versus `0.8930` (`-0.0143`), and validation loss `1.0794` versus `1.0734`.
-The run remained healthy and active, so this is evidence to watch the post-
-unfreeze trajectory, not a terminal rejection.
+through the frozen-encoder phase, but the post-unfreeze trajectory later reached
+parity.  At matched epoch 28, the treatment had probability-average Macro-F1
+`0.9156` versus Control `0.9146` (about `+0.0010`), EMA Macro-F1 `0.8739`
+versus `0.8694`, and OOD validation accuracy `0.836` versus `0.824`; however,
+logit-average remained lower (`0.9072` versus `0.9096`) and validation loss
+remained higher (`1.1238` versus `1.1162`).  At epoch 29, probability-average
+fell to `0.9084` versus Control `0.9138` (about `-0.0054`) while EMA was almost
+identical (`0.8838` versus `0.8840`).  The mixed, oscillatory trajectory is not
+terminal evidence in either direction.  The run remains healthy and active, so
+checkpoint selection and the downstream LME20/complementarity gates must remain
+locked until terminal evaluation.
 
 The treatment still passes only if the preregistered standalone LME20,
 fixed-50/50 complementarity, Known/OOD, rescue-rate, and provenance gates all
@@ -52,13 +57,30 @@ or condition modelling that changes the residual topology itself.  Any later
 selector must first demonstrate cross-fit separability and must remain subject
 to simultaneous Known/OOD guardrails.
 
+## Prototype-aggregation cross-fit update
+
+The completed leave-one-fold-out aggregation audit tested 11 train-only
+prototype aggregation rules.  The best fixed family under per-target-fold
+selection was `logmeanexp_b20`: aggregate Macro-F1 `0.9629589450`, minimum
+held-out Fold gain `+0.0136101890`, aggregate Known Accuracy delta
+`+0.0017953321`, and OOD-F1 delta `+0.0200328352`.  This independently confirms
+that log-mean-exp prototype evidence is stable across all three Folds.
+
+It does **not** justify a new submission: the locked operational LME20/PCM OOF
+score is `0.9633564052`, so the new cross-fit policy is lower by about
+`0.00039746`.  The leaderboard is not used to choose another aggregation or
+decision parameter.  Generic aggregation sweeps are therefore deprioritised;
+their scientific value is confirmation of the LME mechanism, not a replacement
+for the current record-setting package.
+
 ## Backup decision order
 
 1. Finish and audit the active channel-robust Fold-0 treatment.
 2. If it passes, preregister Fold 1/2 and require consistent three-Fold gain.
 3. If it fails, analyse whether the failure is representation quality or lack
    of complementary errors; do not tune a fusion weight on Fold 0.
-4. The cheapest next candidate is a training-fold-only condition-aware
+4. Because the generic aggregation family is now exhausted, the cheapest next
+   candidate is a training-fold-only **condition-aware**
    prototype bank using predefined acoustic/channel proxies and leave-one-fold-
    out selection.  It is not authorised until its exact contract is written.
 5. Domain-adversarial training is a later option only if the proxy/prototype
