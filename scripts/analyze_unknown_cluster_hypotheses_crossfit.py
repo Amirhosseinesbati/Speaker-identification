@@ -71,7 +71,9 @@ def load_fold_inputs(
         item = json.loads(metadata_path.read_text(encoding="utf-8"))
         if sha256_file(artifact_path) != item["artifact_sha256"]:
             raise RuntimeError(f"Fold {fold} cached artifact hash mismatch")
-        with np.load(artifact_path) as data:
+        # The artifact hash is checked above before permitting the legacy
+        # object-dtype filename array to be unpickled.
+        with np.load(artifact_path, allow_pickle=True) as data:
             artifacts.append({key: data[key].copy() for key in data.files})
         metadata.append(item)
     if len(seen_files) != 4447:

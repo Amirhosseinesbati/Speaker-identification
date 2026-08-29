@@ -240,7 +240,10 @@ def build_or_load_train_artifact(
     if cache_path.exists() and metadata_path.exists():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if all(metadata.get(key) == value for key, value in expected.items()):
-            with np.load(cache_path) as data:
+            # Older caches wrote ``train_files`` as an object array.  The file
+            # is loaded only after every provenance field and its SHA sidecar
+            # match, so allow_pickle is restricted to this trusted migration.
+            with np.load(cache_path, allow_pickle=True) as data:
                 arrays = {key: data[key].copy() for key in data.files}
             return arrays, metadata
 
@@ -331,7 +334,7 @@ def build_or_load_train_artifact(
         unknown_centroids[cluster_id] = embeddings[mask].mean(axis=0)
 
     arrays = {
-        "train_files": frame["audio_file"].astype(str).to_numpy(),
+        "train_files": frame["audio_file"].astype(str).to_numpy(dtype=str),
         "train_embeddings": embeddings.astype(np.float32),
         "competition_labels": np.where(unknown_mask, 0, labels).astype(np.int64),
         "unknown_cluster_ids": cluster_ids,
