@@ -74,6 +74,27 @@ Continuation failure rejects this augmentation recipe.  Passing only permits
 analysis and a separate Fold-1/2 preregistration; it never authorises a
 leaderboard submission.
 
+## Implementation readiness
+
+Commit `ad9c570` implements a separate `training.resume_checkpoint` path that
+restores model, optimizer and scheduler state, continues global epoch numbers,
+preserves/truncates a contiguous source history at the selected checkpoint,
+and hard-fails on class-map or scientific-contract changes.  A separately
+specified latest `.pt` checkpoint can supply the complete terminal history;
+both the resumed model checkpoint and history source are hashed in the resume
+receipt.  EMA is explicitly restarted from Raw weights and remains diagnostic.
+The implementation also writes scheduler state and the complete current epoch
+into all future latest/best checkpoints.  The focused training/data/audit
+regression suite passed `50/50` tests.
+
+The live source checkpoint was inspected without modifying the worker.  Its
+epoch-42 Raw best contains optimizer state and scheduler state with
+`last_epoch=42`; because the source run predates the implementation, its
+embedded history ends at epoch 41.  Its separately updated latest checkpoint
+therefore remains the mandatory history source if that epoch is selected for a
+continuation.  The worker checkout must not pull `ad9c570` until the source
+supervisor is terminal.
+
 ## Literature rationale
 
 - Curriculum learning for speaker verification reports benefits from gradually
