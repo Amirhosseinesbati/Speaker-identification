@@ -44,6 +44,19 @@ fixed-50/50 complementarity, Known/OOD, rescue-rate, and provenance gates all
 pass after the run.  Failure rejects the candidate and forbids automatic Fold
 expansion.
 
+The later matched-epoch observation strengthens the case for letting the
+harder treatment converge.  At epoch 42, treatment probability-average
+Macro-F1 reached a new best of `0.9335` versus Control `0.9282921` (about
+`+0.0052`), and treatment logit-average was `0.9277` versus Control
+`0.9223749` (about `+0.0053`).  Training loss was lower (`2.4337` versus
+`2.5685`) while validation loss remained nearly matched (`1.1946` versus
+`1.1920`).  EMA still lagged (`0.9225` versus `0.9268546`), which is consistent
+with a slow shadow-model response but prevents calling epoch 42 a broad or
+terminal win.  Agreement of both Raw aggregation rules is nevertheless a
+material signal that the channel-robust representation may now be overtaking
+Control; the selected checkpoint, LME20 and complementarity gates remain
+locked until the source run is terminal.
+
 ## Decision-selector oracle ceiling
 
 The locked three-Fold residual audit contains `4447` OOF files and `131` LME20
