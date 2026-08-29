@@ -131,6 +131,27 @@ allowed patience or six-hour timeout termination, the locked two-of-three
 trend requirement would be satisfied.  No gate constant, model, learning rate,
 augmentation probability, stopping rule or active worker checkout changed.
 
+### Live evidence update — epoch 70 new Raw best
+
+Five additional complete epochs produced another genuine Raw improvement.
+Epoch 70 reached probability-average Macro-F1 `0.9342659636973467`, exceeding
+the epoch-56 selected value `0.9338324913327573`; EMA simultaneously reached
+`0.9339465636520022`.  The active patience counter therefore reset again rather
+than terminating the harder treatment.  At the matched epoch, candidate Raw
+remained `0.0038122818` below Control, while candidate training loss was
+`0.1364814` lower and validation loss only `0.0045074` higher.  This remains
+evidence of slower adaptation, not terminal superiority.
+
+The newly selected checkpoint was read independently from the active worker.
+It is tagged `weight_variant=raw`, stores optimiser state, stores scheduler
+state with `last_epoch=70`, and has SHA256
+`c52b0462f3dfebbfb387d6348c9c3aed7e372f2fd98417600d1b9b9049dc0b7f`.
+Its embedded history ends at epoch 69 due to the source save ordering, so the
+terminal latest checkpoint remains the mandatory external history source.
+MLflow Run `557c7d5542e64cb6b21637e2d69a1f14` was independently verified
+`RUNNING` with 70 contiguous points for all four queried core metrics.  This
+update changes no continuation constant, terminal gate or worker checkout.
+
 ## Literature rationale
 
 - Curriculum learning for speaker verification reports benefits from gradually
