@@ -7,6 +7,7 @@ from src.experiment_config import load_profile
 ROOT = Path(__file__).resolve().parents[1]
 CONTROL = "p0-campp-known446-ood-control-oof-f0"
 CANDIDATE = "p3-campp-known446-ood-channelrobust-oof-f0"
+CONTINUATION = "p3-campp-known446-ood-channelrobust-continuation-oof-f0"
 
 
 def test_channelrobust_changes_only_augmentation_and_output_identity() -> None:
@@ -43,3 +44,27 @@ def test_channelrobust_changes_only_augmentation_and_output_identity() -> None:
     candidate["augmentation"] = control["augmentation"]
     assert candidate == control
 
+
+def test_channelrobust_continuation_changes_only_resume_identity_and_patience() -> None:
+    source = deepcopy(load_profile(CANDIDATE))
+    continuation = deepcopy(load_profile(CONTINUATION))
+
+    assert continuation["training"]["resume_checkpoint"].endswith(
+        "p3-campp-known446-ood-channelrobust-oof-f0/campp_best_raw.pt"
+    )
+    assert continuation["training"]["resume_history_path"].endswith(
+        "p3-campp-known446-ood-channelrobust-oof-f0/campp_latest.pt"
+    )
+    assert continuation["training"]["early_stopping_patience"] == 12
+    assert continuation["training"]["epochs"] == source["training"]["epochs"] == 200
+
+    for config in (source, continuation):
+        config.pop("experiment", None)
+        config["logging"]["checkpoint_dir"] = "<profile-checkpoints>"
+        config["logging"]["log_dir"] = "<profile-logs>"
+    continuation["training"].pop("resume_checkpoint")
+    continuation["training"].pop("resume_history_path")
+    continuation["training"]["early_stopping_patience"] = source["training"][
+        "early_stopping_patience"
+    ]
+    assert continuation == source
