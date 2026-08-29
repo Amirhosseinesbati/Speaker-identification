@@ -117,9 +117,14 @@ def main() -> int:
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config = checkpoint["config"]
     checkpoint_class_map = checkpoint["class_map"]
-    if len(checkpoint_class_map) != NUM_KNOWN + 1:
+    # The validated Control checkpoint is internally 1001-way (446 known +
+    # 554 pseudo-unknown + class zero) and collapses to 447 competition
+    # columns at inference.  A legacy 447-way checkpoint is also admissible;
+    # embeddings are independent of the speaker-head width.
+    if len(checkpoint_class_map) not in {NUM_KNOWN + 1, NUM_GROUPS + 1}:
         raise RuntimeError(
-            f"Expected 447-way checkpoint class map, got {len(checkpoint_class_map)}"
+            "Expected a 447- or 1001-entry checkpoint class map, got "
+            f"{len(checkpoint_class_map)}"
         )
     data_cfg = config["data"]
     audio_cfg = config["audio"]
@@ -142,7 +147,7 @@ def main() -> int:
     known_checkpoint_map = {
         label: int(index)
         for label, index in checkpoint_class_map.items()
-        if label != "unknown"
+        if 1 <= int(index) <= NUM_KNOWN
     }
     known_rebuilt_map = {
         label: int(index)
