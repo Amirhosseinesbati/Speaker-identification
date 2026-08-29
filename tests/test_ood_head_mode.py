@@ -271,6 +271,66 @@ def test_balanced_sampler_is_deterministic_per_epoch_and_changes_between_epochs(
     assert epoch_one != epoch_zero_first
 
 
+def test_weighted_known_sampler_preserves_ratio_and_ood_stream():
+    labels = np.asarray([0] * 20 + list(range(1, 21)), dtype=np.int64)
+    weights = np.ones_like(labels, dtype=np.float64)
+    weights[20] = 12.0
+
+    plain = make_balanced_batch_sampler(
+        labels, batch_size=4, ood_ratio=0.5, seed=23,
+    )
+    weighted = make_balanced_batch_sampler(
+        labels, batch_size=4, ood_ratio=0.5, seed=23,
+        known_sampling_weights=weights,
+    )
+
+    plain_batches = list(plain)
+    weighted_batches = list(weighted)
+    for plain_batch, weighted_batch in zip(plain_batches, weighted_batches):
+        plain_idx = np.asarray(plain_batch)
+        weighted_idx = np.asarray(weighted_batch)
+        assert (labels[plain_idx] == 0).sum() == 2
+        assert (labels[weighted_idx] == 0).sum() == 2
+        assert sorted(plain_idx[plain_idx < 20].tolist()) == sorted(
+            weighted_idx[weighted_idx < 20].tolist()
+        )
+
+
+def test_weighted_known_sampler_is_deterministic_and_increases_exposure():
+    labels = np.asarray([0] * 100 + list(range(1, 101)), dtype=np.int64)
+    weights = np.ones_like(labels, dtype=np.float64)
+    hard_index = 100
+    weights[hard_index] = 20.0
+    sampler = make_balanced_batch_sampler(
+        labels, batch_size=10, ood_ratio=0.5, seed=31,
+        known_sampling_weights=weights,
+    )
+
+    first = list(sampler)
+    second = list(sampler)
+    assert first == second
+
+    known_draws = np.concatenate([
+        np.asarray(batch)[np.asarray(batch) >= 100] for batch in first
+    ])
+    counts = np.bincount(known_draws - 100, minlength=100)
+    assert counts[0] >= 5
+    assert counts[0] > 4 * np.median(counts[1:])
+
+
+def test_weighted_known_sampler_rejects_invalid_weights():
+    labels = np.asarray([0, 0, 1, 2], dtype=np.int64)
+    with pytest.raises(ValueError, match="match train_labels shape"):
+        make_balanced_batch_sampler(
+            labels, batch_size=4, known_sampling_weights=np.ones(3),
+        )
+    with pytest.raises(ValueError, match="strictly positive"):
+        make_balanced_batch_sampler(
+            labels, batch_size=4,
+            known_sampling_weights=np.asarray([1.0, 1.0, 0.0, 1.0]),
+        )
+
+
 # ── metrics / threshold helpers ──
 
 def test_fused_probs_from_logits_accepts_none_ood():

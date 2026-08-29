@@ -1262,6 +1262,7 @@ class BalancedOODBatchSampler(Sampler[List[int]]):
         ood_ratio: float = 0.5,
         seed: int = 42,
         competition_known_count: Optional[int] = None,
+        known_sampling_weights: Optional[np.ndarray] = None,
     ) -> None:
         labels = np.asarray(train_labels)
         if labels.ndim != 1:
@@ -1282,6 +1283,23 @@ class BalancedOODBatchSampler(Sampler[List[int]]):
                 "Balanced batch sampling requires non-empty OOD and known pools: "
                 f"ood={len(self.ood_indices)}, known={len(self.known_indices)}"
             )
+
+        self.known_probabilities: Optional[np.ndarray] = None
+        if known_sampling_weights is not None:
+            weights = np.asarray(known_sampling_weights, dtype=np.float64)
+            if weights.shape != labels.shape:
+                raise ValueError(
+                    "known_sampling_weights must match train_labels shape: "
+                    f"{weights.shape} != {labels.shape}"
+                )
+            known_weights = weights[self.known_indices]
+            if (not np.isfinite(known_weights).all()
+                    or np.any(known_weights <= 0.0)):
+                raise ValueError(
+                    "known_sampling_weights must be finite and strictly positive "
+                    "for every known sample"
+                )
+            self.known_probabilities = known_weights / known_weights.sum()
 
         self.batch_size = int(batch_size)
         self.n_ood = max(1, int(round(self.batch_size * float(ood_ratio))))
@@ -1316,8 +1334,16 @@ class BalancedOODBatchSampler(Sampler[List[int]]):
         rng = np.random.RandomState(self.seed + self.epoch)
         ood_stream = self._draw(
             self.ood_indices, self.num_batches * self.n_ood, rng)
-        known_stream = self._draw(
-            self.known_indices, self.num_batches * self.n_known, rng)
+        if self.known_probabilities is None:
+            known_stream = self._draw(
+                self.known_indices, self.num_batches * self.n_known, rng)
+        else:
+            known_stream = rng.choice(
+                self.known_indices,
+                size=self.num_batches * self.n_known,
+                replace=True,
+                p=self.known_probabilities,
+            ).astype(np.int64, copy=False)
         for batch_idx in range(self.num_batches):
             ood_start = batch_idx * self.n_ood
             known_start = batch_idx * self.n_known
@@ -1335,6 +1361,7 @@ def make_balanced_batch_sampler(
     ood_ratio: float = 0.5,
     seed: int = 42,
     competition_known_count: Optional[int] = None,
+    known_sampling_weights: Optional[np.ndarray] = None,
 ) -> BalancedOODBatchSampler:
     """
     Build a real batch sampler so every emitted batch contains ~`ood_ratio`
@@ -1362,6 +1389,7 @@ def make_balanced_batch_sampler(
         ood_ratio=ood_ratio,
         seed=seed,
         competition_known_count=competition_known_count,
+        known_sampling_weights=known_sampling_weights,
     )
 
 
