@@ -1,7 +1,12 @@
 from copy import deepcopy
 
+import pytest
+
 from src.experiment_config import load_profile
-from src.pipelines.steps import _training_milestone_epochs
+from src.pipelines.steps import (
+    _selected_weight_variant,
+    _training_milestone_epochs,
+)
 
 
 CONTROL = "p4-campp-known446-ood-channelrobust-paired-control-oof-f0"
@@ -54,6 +59,7 @@ def test_long80_pair_is_a_single_objective_change() -> None:
         assert config["training"]["epochs"] == 80
         assert config["training"]["milestone_epochs"] == [40]
         assert config["training"]["early_stopping_patience"] == 0
+        assert config["training"]["selection_variant"] == "raw"
         assert _training_milestone_epochs(config["training"]) == {40}
 
     candidate["training"]["loss"]["consistency"]["enabled"] = False
@@ -68,6 +74,7 @@ def test_long80_changes_only_horizon_and_identity_from_40_epoch_recipe() -> None
     assert "milestone_epochs" not in short["training"]
     assert long["training"].pop("epochs") == 80
     assert long["training"].pop("milestone_epochs") == [40]
+    assert long["training"].pop("selection_variant") == "raw"
     short["training"].pop("epochs")
     assert long == short
 
@@ -82,3 +89,25 @@ def test_milestone_validation_rejects_terminal_or_nonpositive_epochs() -> None:
             assert "strictly below" in str(exc)
         else:
             raise AssertionError(f"invalid milestone accepted: {invalid}")
+
+
+def test_explicit_raw_selection_cannot_be_replaced_by_higher_ema() -> None:
+    assert _selected_weight_variant(
+        {"selection_variant": "raw"},
+        best_raw_f1=0.94,
+        best_ema_f1=0.96,
+        best_ema_epoch=20,
+    ) == "raw"
+    assert _selected_weight_variant(
+        {},
+        best_raw_f1=0.94,
+        best_ema_f1=0.96,
+        best_ema_epoch=20,
+    ) == "ema"
+    with pytest.raises(ValueError, match="one of"):
+        _selected_weight_variant(
+            {"selection_variant": "unknown"},
+            best_raw_f1=0.94,
+            best_ema_f1=0.96,
+            best_ema_epoch=20,
+        )

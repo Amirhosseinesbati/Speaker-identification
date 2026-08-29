@@ -94,6 +94,8 @@ def assert_paired_single_objective_contract(
             raise RuntimeError(f"{name} does not preserve epoch 40")
         if int(training.get("early_stopping_patience", -1)) != 0:
             raise RuntimeError(f"{name} enables metric early stopping")
+        if str(training.get("selection_variant", "")).lower() != "raw":
+            raise RuntimeError(f"{name} does not lock canonical Raw selection")
         expected_source = (
             f"checkpoints/{SOURCE_PROFILE}/campp_best_raw.pt"
         )

@@ -71,6 +71,7 @@ training:
   seed: 42
   deterministic_algorithms: true
   warm_start_checkpoint: checkpoints/p3-campp-known446-ood-channelrobust-oof-f0/campp_best_raw.pt
+  selection_variant: raw
   epochs: 80
   milestone_epochs: [40]
   freeze_epochs: 0

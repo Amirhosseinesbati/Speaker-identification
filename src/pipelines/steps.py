@@ -393,6 +393,28 @@ def _training_milestone_epochs(train_cfg: Dict) -> set[int]:
     return milestones
 
 
+def _selected_weight_variant(
+    train_cfg: Dict,
+    *,
+    best_raw_f1: float,
+    best_ema_f1: float,
+    best_ema_epoch: int,
+) -> str:
+    """Apply the configured Raw/EMA selection policy without silent drift."""
+    policy = str(train_cfg.get("selection_variant", "best")).strip().lower()
+    if policy == "raw":
+        return "raw"
+    if policy == "ema":
+        if best_ema_epoch <= 0:
+            raise ValueError("training.selection_variant=ema requires EMA evidence")
+        return "ema"
+    if policy != "best":
+        raise ValueError(
+            "training.selection_variant must be one of: best, raw, ema"
+        )
+    return "ema" if best_ema_epoch > 0 and best_ema_f1 > best_raw_f1 else "raw"
+
+
 def _canonical_json_sha256(value: object) -> str:
     encoded = json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -1247,8 +1269,11 @@ def train_model(
     if safe_idx < 0 or safe_idx >= len(history):
         safe_idx = len(history) - 1  # fallback to last recorded epoch
 
-    selected_variant = (
-        "ema" if ema_best_path.exists() and best_ema_f1 > best_val_f1 else "raw"
+    selected_variant = _selected_weight_variant(
+        train_cfg,
+        best_raw_f1=best_val_f1,
+        best_ema_f1=best_ema_f1,
+        best_ema_epoch=best_ema_epoch if ema_best_path.exists() else -1,
     )
     selected_epoch = best_ema_epoch if selected_variant == "ema" else best_epoch
     selected_f1 = best_ema_f1 if selected_variant == "ema" else best_val_f1

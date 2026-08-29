@@ -30,6 +30,9 @@ augmentation, windows/crops, optimizer, 80-epoch cosine schedule and direct
 Raw probability-average inference.  The only scientific treatment difference
 is `training.loss.consistency.enabled=false` versus `true`; its type and fixed
 weight remain cosine/0.1 in both configs.  Metric early stopping is disabled.
+Both branches explicitly set `training.selection_variant=raw`; EMA remains a
+fully logged diagnostic candidate but cannot silently replace the canonical
+checkpoint or its OOF bundle.
 
 Each branch preserves an exact Raw epoch-40 milestone from inside the same
 80-epoch schedule.  The milestone is diagnostic learning-curve evidence; the
