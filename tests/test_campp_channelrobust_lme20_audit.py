@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from scripts.audit_campp_channelrobust_lme20 import (
     acceptance_gate,
@@ -28,6 +29,40 @@ def test_align_oof_uses_control_order_and_checks_labels() -> None:
     )
 
 
+def test_align_oof_rejects_label_drift_after_filename_alignment() -> None:
+    reference = {
+        "files": np.array(["a", "b"]),
+        "labels": np.array([1, 0]),
+    }
+    candidate = {
+        "files": np.array(["b", "a"]),
+        "labels": np.array([0, 2]),
+        "competition_probs": np.zeros((2, 447), dtype=np.float32),
+        "embeddings": np.zeros((2, 4), dtype=np.float32),
+    }
+
+    with pytest.raises(RuntimeError, match="labels differ"):
+        align_oof(reference, candidate)
+
+
+@pytest.mark.parametrize("key", ["competition_probs", "embeddings"])
+def test_align_oof_rejects_nonfinite_candidate_evidence(key: str) -> None:
+    reference = {
+        "files": np.array(["a", "b"]),
+        "labels": np.array([1, 0]),
+    }
+    candidate = {
+        "files": np.array(["a", "b"]),
+        "labels": np.array([1, 0]),
+        "competition_probs": np.zeros((2, 447), dtype=np.float32),
+        "embeddings": np.zeros((2, 4), dtype=np.float32),
+    }
+    candidate[key][0, 0] = np.nan
+
+    with pytest.raises(RuntimeError, match="non-finite"):
+        align_oof(reference, candidate)
+
+
 def test_acceptance_gate_requires_every_preregistered_condition() -> None:
     standalone = {
         "macro_f1": -0.005,
@@ -55,4 +90,3 @@ def test_acceptance_gate_requires_every_preregistered_condition() -> None:
     too_weak = dict(standalone)
     too_weak["macro_f1"] = -0.0101
     assert not acceptance_gate(too_weak, fusion, 0.20)["passed"]
-
