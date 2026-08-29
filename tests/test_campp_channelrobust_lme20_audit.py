@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 
 import numpy as np
 import pytest
@@ -8,6 +9,7 @@ from scripts.audit_campp_channelrobust_lme20 import (
     acceptance_gate,
     align_oof,
     assert_augmentation_only_contract,
+    assert_stateful_continuation_contract,
     validate_raw_bundle_binding,
 )
 from scripts.analyze_control_oof_centroid_crossfit import sha256_file
@@ -147,6 +149,46 @@ def test_augmentation_only_contract_rejects_any_second_treatment() -> None:
     }
     with pytest.raises(RuntimeError, match="outside augmentation: training"):
         assert_augmentation_only_contract(control, changed_lr)
+
+
+def test_stateful_continuation_contract_allows_only_resume_identity() -> None:
+    source = {
+        "model": {"encoder_type": "campp"},
+        "data": {"split": {"fold": 0, "folds": 3, "seed": 42}},
+        "augmentation": {"noise_p": 0.6},
+        "training": {
+            "epochs": 200,
+            "early_stopping_patience": 20,
+            "learning_rate": 3e-4,
+            "loss": {"speaker": {"weight": 0.85}},
+        },
+        "logging": {"checkpoint_dir": "source"},
+        "experiment": {"purpose": "source"},
+    }
+    continuation = deepcopy(source)
+    continuation["logging"] = {"checkpoint_dir": "continuation"}
+    continuation["experiment"] = {"purpose": "stateful continuation"}
+    continuation["training"]["early_stopping_patience"] = 12
+    continuation["training"]["resume_checkpoint"] = (
+        "checkpoints/p3-campp-known446-ood-channelrobust-oof-f0/"
+        "campp_best_raw.pt"
+    )
+    continuation["training"]["resume_history_path"] = (
+        "checkpoints/p3-campp-known446-ood-channelrobust-oof-f0/"
+        "campp_latest.pt"
+    )
+
+    assert_stateful_continuation_contract(source, continuation)
+
+    changed_loss = deepcopy(continuation)
+    changed_loss["training"]["loss"]["speaker"]["weight"] = 0.80
+    with pytest.raises(RuntimeError, match="scientific contract: training"):
+        assert_stateful_continuation_contract(source, changed_loss)
+
+    wrong_source = deepcopy(continuation)
+    wrong_source["training"]["resume_checkpoint"] = "checkpoints/other/model.pt"
+    with pytest.raises(RuntimeError, match="not source Raw"):
+        assert_stateful_continuation_contract(source, wrong_source)
 
 
 def _write_bound_bundle(tmp_path, *, diverge_raw: bool = False):

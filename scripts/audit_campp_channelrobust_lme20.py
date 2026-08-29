@@ -43,6 +43,9 @@ from scripts.audit_short_audio_repeat import digest_names  # noqa: E402
 
 CONTROL_PROFILE = "p0-campp-known446-ood-control-oof-f0"
 CANDIDATE_PROFILE = "p3-campp-known446-ood-channelrobust-oof-f0"
+CONTINUATION_PROFILE = (
+    "p3-campp-known446-ood-channelrobust-continuation-oof-f0"
+)
 CONTROL_FOLD0_LME20_MACRO_F1 = 0.9611456662793696
 MINIMUM_FUSION_MACRO_GAIN = 0.002
 MAXIMUM_KNOWN_DROP = 0.001
@@ -71,6 +74,63 @@ def assert_augmentation_only_contract(
         )
         raise RuntimeError(
             "Candidate changed fields outside augmentation: " + ", ".join(changed)
+        )
+
+
+def assert_stateful_continuation_contract(
+    source_config: dict,
+    continuation_config: dict,
+) -> None:
+    """Prove that a continuation changed only resume identity and patience.
+
+    The final scientific treatment remains the source augmentation policy.
+    This check prevents the terminal evaluator from silently accepting a
+    continuation that changed a loss, learning rate, split, architecture or
+    any other treatment field.
+    """
+    source = copy.deepcopy(source_config)
+    continuation = copy.deepcopy(continuation_config)
+    for config in (source, continuation):
+        config.pop("_meta", None)
+        config.pop("experiment", None)
+        config.pop("logging", None)
+
+    source_training = source.get("training", {}) or {}
+    continuation_training = continuation.get("training", {}) or {}
+    if int(source_training.get("early_stopping_patience", -1)) != 20:
+        raise RuntimeError("Unexpected source early-stopping patience")
+    if int(continuation_training.get("early_stopping_patience", -1)) != 12:
+        raise RuntimeError("Unexpected continuation early-stopping patience")
+
+    resume_checkpoint = str(
+        continuation_training.get("resume_checkpoint", "")
+    )
+    resume_history = str(
+        continuation_training.get("resume_history_path", "")
+    )
+    expected_dir = f"checkpoints/{CANDIDATE_PROFILE}/"
+    if not resume_checkpoint.replace("\\", "/").endswith(
+        expected_dir + "campp_best_raw.pt"
+    ):
+        raise RuntimeError("Continuation resume checkpoint is not source Raw")
+    if not resume_history.replace("\\", "/").endswith(
+        expected_dir + "campp_latest.pt"
+    ):
+        raise RuntimeError("Continuation history is not the source latest checkpoint")
+
+    continuation_training.pop("resume_checkpoint", None)
+    continuation_training.pop("resume_history_path", None)
+    continuation_training["early_stopping_patience"] = source_training[
+        "early_stopping_patience"
+    ]
+    if continuation != source:
+        changed = sorted(
+            key for key in set(source) | set(continuation)
+            if source.get(key) != continuation.get(key)
+        )
+        raise RuntimeError(
+            "Continuation changed the scientific contract: "
+            + ", ".join(changed)
         )
 
 
@@ -228,9 +288,14 @@ def main() -> int:
         default=ROOT / "data" / "experiments" / "campp_control_centroid_crossfit",
     )
     parser.add_argument(
+        "--candidate-profile",
+        choices=[CANDIDATE_PROFILE, CONTINUATION_PROFILE],
+        default=CANDIDATE_PROFILE,
+    )
+    parser.add_argument(
         "--candidate-cache-dir",
         type=Path,
-        default=ROOT / "data" / "experiments" / "campp_channelrobust_lme20",
+        default=None,
     )
     parser.add_argument(
         "--labels",
@@ -250,14 +315,35 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=(
-            ROOT / "reports" / "generated" / "campp_channelrobust_lme20.json"
-        ),
+        default=None,
     )
     parser.add_argument("--batch-size", type=int, default=48)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
+
+    candidate_profile = str(args.candidate_profile)
+    candidate_cache_dir = (
+        args.candidate_cache_dir
+        if args.candidate_cache_dir is not None
+        else (
+            ROOT
+            / "data"
+            / "experiments"
+            / "campp_channelrobust_lme20"
+            / candidate_profile
+        )
+    )
+    output_path = (
+        args.output
+        if args.output is not None
+        else (
+            ROOT
+            / "reports"
+            / "generated"
+            / f"campp_channelrobust_lme20_{candidate_profile}.json"
+        )
+    )
 
     device = (
         torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -276,7 +362,7 @@ def main() -> int:
     splits, cleaning = rebuild_exact_splits(args.labels, args.audio_dir)
     train_frame, validation_frame = splits[0]
     expected_validation = set(validation_frame["audio_file"].astype(str))
-    candidate_dir = args.checkpoint_root / CANDIDATE_PROFILE
+    candidate_dir = args.checkpoint_root / candidate_profile
     candidate_checkpoint_path = candidate_dir / "campp_best_raw.pt"
     candidate_oof_path = (
         candidate_dir / "campp_best_bundle" / "oof_predictions.npz"
@@ -294,7 +380,7 @@ def main() -> int:
         checkpoint_path=candidate_checkpoint_path,
         cluster_map_path=args.cluster_map,
         cache_path=(
-            args.candidate_cache_dir / "fold0_train_embeddings_centroids.npz"
+            candidate_cache_dir / "fold0_train_embeddings_centroids.npz"
         ),
         device=device,
         batch_size=args.batch_size,
@@ -316,9 +402,29 @@ def main() -> int:
     candidate_split = candidate_checkpoint["config"]["data"]["split"]
     if control_split != candidate_split:
         raise RuntimeError("Control and candidate split provenance differ")
-    assert_augmentation_only_contract(
-        control_checkpoint["config"], candidate_checkpoint["config"]
-    )
+    treatment_config = candidate_checkpoint["config"]
+    continuation_source_sha256 = None
+    if candidate_profile == CONTINUATION_PROFILE:
+        source_checkpoint_path = (
+            args.checkpoint_root / CANDIDATE_PROFILE / "campp_best_raw.pt"
+        )
+        source_checkpoint = torch.load(
+            source_checkpoint_path, map_location="cpu", weights_only=False
+        )
+        if source_checkpoint["class_map"] != candidate_checkpoint["class_map"]:
+            raise RuntimeError("Continuation and source class maps differ")
+        if (
+            source_checkpoint["config"]["data"]["split"]
+            != candidate_checkpoint["config"]["data"]["split"]
+        ):
+            raise RuntimeError("Continuation and source split provenance differ")
+        assert_stateful_continuation_contract(
+            source_checkpoint["config"], candidate_checkpoint["config"]
+        )
+        treatment_config = source_checkpoint["config"]
+        continuation_source_sha256 = sha256_file(source_checkpoint_path)
+        del source_checkpoint
+    assert_augmentation_only_contract(control_checkpoint["config"], treatment_config)
     del control_checkpoint, candidate_checkpoint
 
     control_evidence = probability_evidence(
@@ -363,7 +469,8 @@ def main() -> int:
             "scope": "Fold 0 only",
             "single_training_treatment": "channel/session augmentation policy",
             "control_profile": CONTROL_PROFILE,
-            "candidate_profile": CANDIDATE_PROFILE,
+            "candidate_profile": candidate_profile,
+            "stateful_continuation": candidate_profile == CONTINUATION_PROFILE,
             "fusion": "fixed 50/50 probability-evidence average",
             "parameter_search": False,
             "leaderboard_tuning": False,
@@ -372,6 +479,7 @@ def main() -> int:
             "cleaning": cleaning,
             "control_checkpoint_sha256": sha256_file(control_checkpoint_path),
             "candidate_checkpoint_sha256": sha256_file(candidate_checkpoint_path),
+            "continuation_source_checkpoint_sha256": continuation_source_sha256,
             "candidate_oof_sha256": sha256_file(candidate_oof_path),
             "candidate_bundle_binding": candidate_bundle_binding,
             "control_artifact": raw_metadata[0],
@@ -393,12 +501,12 @@ def main() -> int:
         "acceptance_gate": gate,
         "decision": "accept" if gate["passed"] else "reject",
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = args.output.with_suffix(args.output.suffix + ".tmp")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_suffix(output_path.suffix + ".tmp")
     temporary.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    os.replace(temporary, args.output)
+    os.replace(temporary, output_path)
     print(json.dumps({
-        "output": str(args.output),
+        "output": str(output_path),
         "decision": report["decision"],
         "control": control_metrics,
         "candidate": report["candidate"],

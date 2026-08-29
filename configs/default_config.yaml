@@ -229,10 +229,6 @@ training:
   label_smoothing: 0.05
   learning_rate: 0.0003
   loss:
-    consistency:
-      enabled: false
-      type: cosine
-      weight: 0.1
     ood:
       pos_weight: 1.0
       type: bce
