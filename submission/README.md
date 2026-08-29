@@ -16,15 +16,19 @@ python submission.py --data-dir <test-set-folder> --predictions-file-path predic
 
 `submission.py` implements the mandatory contract from
 `submissionforleaderbord.txt` (`load_data`, `predict`, `save_predictions` +
-click CLI) and:
+standard-library CLI) and:
 
 - auto-discovers the trained checkpoints in `checkpoints/` in the order
   recorded in `ensemble_fusion_weights.json`;
-- uses the **optimised fusion** shipped in `ensemble_fusion_weights.json`
-  (`weighted_average` with weights `[ecapa=0.0, campp=0.5, eres2net=0.2,
-  titanet=0.3]` — val Macro-F1 0.9093 vs 0.8873 for plain averaging);
-- runs the sequential 4-encoder ensemble (one model in GPU at a time) with
-  multi-window TTA (8 s windows, 50% overlap);
+- runs the selected raw CAM++ Control Fold-0 checkpoint with multi-window TTA
+  (8 s windows, 50% overlap, at most 8 windows);
+- applies the locked LME-20 multi-enrollment backend: every usable enrollment
+  embedding remains available, similarities are pooled per identity with
+  `log(mean(exp(20*cosine)))/20`, and the 554 train-only KMeans groups are
+  collapsed into the single competition `unknown` class;
+- uses fixed decision parameters selected by leave-one-fold-out cross-fit on
+  all three Control folds; no leaderboard result selected a threshold, blend,
+  epoch or clustering parameter;
 - sets the offline env vars itself (`HF_HUB_OFFLINE=1`,
   `TRANSFORMERS_OFFLINE=1`, `MODELSCOPE_CACHE=weights/campp`), so the
   evaluation environment needs zero configuration.

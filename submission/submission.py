@@ -24,13 +24,13 @@ Everything this script needs ships inside the package folder:
 from __future__ import annotations
 
 import csv
+import argparse
 import json
 import os
 import sys
 from pathlib import Path
 from typing import List, Optional
 
-import click
 import numpy as np
 
 # ── Self-contained offline environment (set BEFORE any encoder import) ──
@@ -113,7 +113,7 @@ def load_data(data_dir: str) -> List[Path]:
         if p.suffix.lower() in SUPPORTED_AUDIO_SUFFIXES
     )
     if not files:
-        raise click.ClickException(
+        raise RuntimeError(
             f"No audio files ({sorted(SUPPORTED_AUDIO_SUFFIXES)}) found in {data_dir}"
         )
     _LAST_FILES = files
@@ -124,7 +124,7 @@ def _discover_checkpoints() -> List[str]:
     """Auto-discover ``checkpoints/*_best.pt`` in the fusion-config order."""
     ckpt_dir = PKG_DIR / "checkpoints"
     if not ckpt_dir.exists():
-        raise click.ClickException(
+        raise RuntimeError(
             f"checkpoints/ not found next to {__file__}. "
             "The submission package must ship its trained checkpoints."
         )
@@ -159,7 +159,7 @@ def _discover_checkpoints() -> List[str]:
     if not any(checkpoints):  # fallback: any *_best.pt, alphabetically
         checkpoints = sorted(str(p) for p in ckpt_dir.glob("*_best.pt"))
     if not checkpoints:
-        raise click.ClickException(
+        raise RuntimeError(
             "No *_best.pt checkpoints found in checkpoints/ — nothing to run."
         )
     return checkpoints
@@ -288,17 +288,17 @@ def save_predictions(predictions: np.ndarray, output_path: str) -> None:
     """
     predictions = np.asarray(predictions)
     if predictions.ndim != 1:
-        raise click.ClickException(
+        raise RuntimeError(
             f"predictions must be 1-D (predicted class per file), "
             f"got shape {predictions.shape}"
         )
     if len(_LAST_FILES) != len(predictions):
-        raise click.ClickException(
+        raise RuntimeError(
             f"predictions length ({len(predictions)}) != files count "
             f"({len(_LAST_FILES)}). Call load_data(data_dir) / predict(data_dir) first."
         )
     if not _LAST_CLASS_MAP:
-        raise click.ClickException(
+        raise RuntimeError(
             "No class map available — call predict(data_dir) before "
             "save_predictions()."
         )
@@ -324,16 +324,17 @@ def save_predictions(predictions: np.ndarray, output_path: str) -> None:
 #  CLI (the leaderboard runs this)
 # ────────────────────────────────────────────────────────────────
 
-@click.command(context_settings={"help_option_names": ["-h", "--help"]})
-@click.option("--data-dir", required=True, type=click.Path(exists=True, file_okay=False),
-              help="Directory containing input data files.")
-@click.option("--predictions-file-path", required=True, type=click.Path(),
-              help="Path to write the output predictions CSV.")
-def main(data_dir: str, predictions_file_path: str) -> None:
+def main() -> None:
     """Run the competition entry point and write the submission CSV."""
-    load_data(data_dir)
-    predictions = predict(data_dir)
-    save_predictions(predictions, predictions_file_path)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data-dir", required=True)
+    parser.add_argument("--predictions-file-path", required=True)
+    args = parser.parse_args()
+    if not Path(args.data_dir).is_dir():
+        parser.error(f"--data-dir is not a directory: {args.data_dir}")
+    load_data(args.data_dir)
+    predictions = predict(args.data_dir)
+    save_predictions(predictions, args.predictions_file_path)
 
 
 if __name__ == "__main__":
