@@ -111,6 +111,26 @@ queried core metrics.  This update changes no gate constant or treatment; it
 only records that additional time yielded a genuine new Raw best and reset the
 source patience counter.
 
+### Live evidence update — epoch 65 gate preview
+
+The source remained healthy and active through complete epoch 65.  A
+non-terminal preview of the already locked mechanical continuation evaluator
+used `campp_latest.pt` as the contiguous history source and the unchanged
+epoch-56 Raw checkpoint as the selected model.  The by-epoch-60 Raw floor
+passed (`0.9338324913327573 >= 0.93`).  Two of the three trend tests already
+passed: the final-ten EMA OLS slope was `+0.0003928554` per epoch, and mean
+training loss fell by `0.1051542` between the preceding and final five-epoch
+windows while validation loss rose by only `0.0115912`, within the locked
+`0.03` guardrail.  The selected checkpoint was no longer inside the final-eight
+window, so that third trend test failed.
+
+The preview intentionally supplied a non-eligible `complete` termination and
+therefore returned `eligible=false`; the source is not terminal and no
+continuation decision has been made.  If the same evidence is present after an
+allowed patience or six-hour timeout termination, the locked two-of-three
+trend requirement would be satisfied.  No gate constant, model, learning rate,
+augmentation probability, stopping rule or active worker checkout changed.
+
 ## Literature rationale
 
 - Curriculum learning for speaker verification reports benefits from gradually
