@@ -1,8 +1,11 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
+from torch.utils.data import TensorDataset
 from scipy.special import logsumexp
 
 from scripts.audit_multiview_lme20 import (
+    extract_view_embeddings,
     multiview_logmeanexp_scores,
     unique_eval_window_count,
 )
@@ -53,3 +56,47 @@ def test_multiview_logmeanexp_matches_bruteforce_pairs():
                 - np.log(pair_scores.size)
             ) / beta
     np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
+
+
+class _BatchSensitiveToyModel(torch.nn.Module):
+    """Expose batching-order mistakes that ordinary pointwise layers hide."""
+
+    def _embed_single(self, waveforms):
+        base = waveforms[:, 0, :2]
+        batch_context = waveforms[:, 0].mean(dim=0)[:2]
+        return base + batch_context
+
+    def embed(self, waveforms):
+        raw = torch.stack(
+            [self._embed_single(waveforms[:, view]) for view in range(waveforms.shape[1])],
+            dim=1,
+        )
+        return F.normalize(raw.mean(dim=1), p=2, dim=1)
+
+
+def test_extract_view_embeddings_matches_model_window_major_batching():
+    windows = torch.tensor(
+        [
+            [[[1.0, 2.0, 0.0]], [[3.0, 4.0, 0.0]]],
+            [[[5.0, 6.0, 0.0]], [[7.0, 8.0, 0.0]]],
+        ]
+    )
+    labels = torch.zeros(2, dtype=torch.long)
+    model = _BatchSensitiveToyModel().eval()
+    views, aggregate = extract_view_embeddings(
+        model=model,
+        dataset=TensorDataset(windows, labels),
+        device=torch.device("cpu"),
+        batch_size=2,
+        num_workers=0,
+        description="test",
+    )
+
+    with torch.inference_mode():
+        expected_raw = torch.stack(
+            [model._embed_single(windows[:, view]) for view in range(2)], dim=1
+        )
+        expected_views = F.normalize(expected_raw, p=2, dim=2).numpy()
+        expected_aggregate = model.embed(windows).numpy()
+    np.testing.assert_allclose(views, expected_views, rtol=0, atol=0)
+    np.testing.assert_allclose(aggregate, expected_aggregate, rtol=0, atol=0)

@@ -132,10 +132,15 @@ def extract_view_embeddings(
     with torch.inference_mode():
         for windows, _ in tqdm(loader, desc=description):
             windows = windows.to(device, non_blocking=True)
-            batch, views = windows.shape[:2]
-            raw = model._embed_single(
-                windows.reshape(batch * views, 1, windows.size(-1))
-            ).reshape(batch, views, -1)
+            views = windows.shape[1]
+            # Match SpeakerModel.embed exactly: CAM++ is evaluated one window
+            # position at a time across the file batch.  Flattening B*W changes
+            # CUDA kernel/batch numerics enough to violate the locked aggregate
+            # reproduction invariant, even in eval mode.
+            raw = torch.stack(
+                [model._embed_single(windows[:, view]) for view in range(views)],
+                dim=1,
+            )
             view_chunks.append(F.normalize(raw, p=2, dim=2).cpu().numpy())
             aggregate_chunks.append(
                 F.normalize(raw.mean(dim=1), p=2, dim=1).cpu().numpy()
