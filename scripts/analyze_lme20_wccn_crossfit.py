@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.analyze_control_oof_centroid_crossfit import (  # noqa: E402
     NUM_FOLDS,
+    NUM_KNOWN,
     l2norm_rows,
     metric_bundle,
     metric_delta,
@@ -132,21 +133,35 @@ def fixed_lme_predictions(
 
 
 def prepare_fold(
-    *, fold: int, artifact: dict[str, np.ndarray], oof: dict
+    *,
+    fold: int,
+    artifact: dict[str, np.ndarray],
+    oof: dict,
+    covariance_group_scope: str,
 ) -> FoldWccn:
     train = l2norm_rows(artifact["train_embeddings"])
     validation = l2norm_rows(oof["embeddings"])
     groups = group_indices(artifact)
+    if covariance_group_scope == "all":
+        covariance_groups = groups
+    elif covariance_group_scope == "known":
+        covariance_groups = groups[:NUM_KNOWN]
+    else:
+        raise ValueError(f"Unknown covariance group scope: {covariance_group_scope}")
     head = oof["competition_probs"].astype(np.float64)
     raw_scores = logmeanexp_group_scores(validation, train, groups)
     baseline = fixed_lme_predictions(head=head, raw_scores=raw_scores)
-    covariance, degrees_of_freedom = within_group_covariance(train, groups)
+    covariance, degrees_of_freedom = within_group_covariance(
+        train, covariance_groups
+    )
 
     candidates = {}
     diagnostics = {
         "train_files": int(len(train)),
         "validation_files": int(len(validation)),
         "groups": int(len(groups)),
+        "covariance_group_scope": covariance_group_scope,
+        "covariance_groups": int(len(covariance_groups)),
         "within_group_degrees_of_freedom": int(degrees_of_freedom),
         "strength": {},
     }
@@ -263,11 +278,25 @@ def main() -> int:
         type=Path,
         default=ROOT / "reports" / "generated" / "campp_lme20_wccn_crossfit.json",
     )
+    parser.add_argument(
+        "--covariance-groups",
+        choices=("all", "known"),
+        default="all",
+        help=(
+            "Use all fixed enrollment groups or only the 446 ground-truth "
+            "known speakers when estimating within-group covariance."
+        ),
+    )
     args = parser.parse_args()
 
     oofs, artifacts, metadata = load_fold_inputs(args.checkpoint_root, args.cache_dir)
     folds = [
-        prepare_fold(fold=fold, artifact=artifacts[fold], oof=oofs[fold])
+        prepare_fold(
+            fold=fold,
+            artifact=artifacts[fold],
+            oof=oofs[fold],
+            covariance_group_scope=args.covariance_groups,
+        )
         for fold in range(NUM_FOLDS)
     ]
     selections = []
@@ -330,7 +359,12 @@ def main() -> int:
     report = {
         "contract": {
             "baseline": "locked CAM++ LME-20",
-            "wccn_groups": "train-only 446 known + 554 fixed pseudo-unknown",
+            "wccn_groups": (
+                "train-only 446 ground-truth known"
+                if args.covariance_groups == "known"
+                else "train-only 446 known + 554 fixed pseudo-unknown"
+            ),
+            "covariance_group_scope": args.covariance_groups,
             "candidate_strengths": list(STRENGTHS),
             "eigenvalue_floor": EIGENVALUE_FLOOR,
             "lme_beta": LME_BETA,
