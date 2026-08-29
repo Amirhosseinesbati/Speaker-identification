@@ -515,12 +515,23 @@ def _restore_training_state_for_resume(
         ),
         "start_epoch": source_epoch + 1,
         "ema_restored": False,
+        # Legacy source checkpoints predate RNG-state capture.  Re-seeding the
+        # continuation preserves the model/optimizer/scheduler trajectory but
+        # starts a fresh, reproducible augmentation/DataLoader RNG branch.  Be
+        # explicit so a receipt can never imply bitwise stochastic continuity.
+        "rng_state_restored": False,
+        "dataloader_worker_rng_restored": False,
+        "rng_resume_policy": "reseeded_branch_from_training_seed",
     }
     print(f"  ✓ Restored stateful continuation from {path}")
     print(f"    SHA256: {receipt['sha256']}")
     print(
         f"    Model/optimizer/scheduler restored through epoch {source_epoch}; "
         "EMA restarts as diagnostic only."
+    )
+    print(
+        "    RNG state was unavailable in the source checkpoint; augmentation "
+        "and DataLoader workers restart as a reproducibly seeded branch."
     )
     return receipt, history
 

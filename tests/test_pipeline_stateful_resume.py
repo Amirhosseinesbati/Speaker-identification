@@ -108,6 +108,9 @@ def test_stateful_resume_restores_all_training_state(tmp_path: Path) -> None:
     assert receipt["source_epoch"] == 3
     assert receipt["start_epoch"] == 4
     assert receipt["ema_restored"] is False
+    assert receipt["rng_state_restored"] is False
+    assert receipt["dataloader_worker_rng_restored"] is False
+    assert receipt["rng_resume_policy"] == "reseeded_branch_from_training_seed"
     assert len(receipt["sha256"]) == 64
     assert len(receipt["source_history_sha256"]) == 64
     assert [row["epoch"] for row in history] == [1, 2, 3]

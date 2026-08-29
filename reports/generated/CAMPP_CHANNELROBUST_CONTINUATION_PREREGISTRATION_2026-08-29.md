@@ -14,7 +14,7 @@ an arbitrary early epoch scientifically weak.  It does **not** imply that more
 epochs must help; strong augmentation can also leave augmentation residuals.
 
 The active process, config and checkout must remain unchanged.  This document
-only defines when a separate state-preserving continuation may be launched
+only defines when a separate optimizer-state-preserving continuation may be launched
 after the source supervisor reaches a terminal state.
 
 ## Eligibility gate fixed before terminal evidence
@@ -50,6 +50,15 @@ source terminates; their constants may not be changed using Fold 0.
 - EMA may be restarted only as a labelled diagnostic because its shadow state
   is not currently present in the resumable Raw checkpoint.  EMA cannot select
   the final model or satisfy a gate.
+- The legacy source checkpoints do not contain Python, NumPy, Torch, CUDA or
+  DataLoader-worker RNG states.  The continuation therefore restores the
+  model, optimiser and scheduler exactly but restarts augmentation and worker
+  RNGs from the fixed training seed.  It is a reproducible **stateful branch**,
+  not a bitwise replay of the source stochastic trajectory.  The receipt must
+  record `rng_state_restored=false`,
+  `dataloader_worker_rng_restored=false` and
+  `rng_resume_policy=reseeded_branch_from_training_seed`; unavailable RNG state
+  must never be reconstructed or claimed as restored.
 - Permit at most three additional wall-clock hours and `$0.55` incremental
   cost.  The campaign total remains capped at `$20`.
 
