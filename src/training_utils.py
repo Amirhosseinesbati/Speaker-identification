@@ -55,6 +55,73 @@ def seed_everything(seed: int, deterministic: bool = True) -> dict:
     }
 
 
+def capture_rng_state() -> dict:
+    """Capture every RNG that can affect the next training epoch.
+
+    DataLoader workers are not persistent in the current pipeline. Their next
+    epoch seeds are derived from Torch's CPU RNG when the iterator is created,
+    so restoring the CPU state also restores their future base-seed stream.
+    """
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": (
+            torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        ),
+    }
+
+
+def restore_rng_state(state: object) -> dict:
+    """Restore a captured RNG payload and return an auditable receipt.
+
+    ``None`` is accepted for legacy checkpoints and deliberately reports a
+    reseeded branch. A present but malformed payload is a hard provenance
+    failure rather than a silent partial restore.
+    """
+    if state is None:
+        return {
+            "restored": False,
+            "python_restored": False,
+            "numpy_restored": False,
+            "torch_cpu_restored": False,
+            "torch_cuda_restored": False,
+            "policy": "reseeded_branch_from_training_seed",
+        }
+    if not isinstance(state, dict):
+        raise ValueError("Checkpoint rng_state must be a mapping")
+    required = {"python", "numpy", "torch_cpu", "torch_cuda"}
+    missing = sorted(required - set(state))
+    if missing:
+        raise ValueError("Checkpoint rng_state missing: " + ", ".join(missing))
+
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch_cpu"])
+
+    cuda_restored = False
+    if torch.cuda.is_available():
+        cuda_states = state["torch_cuda"]
+        if not isinstance(cuda_states, (list, tuple)):
+            raise ValueError("Checkpoint rng_state lacks CUDA RNG states")
+        if len(cuda_states) != torch.cuda.device_count():
+            raise ValueError(
+                "Checkpoint CUDA RNG device-count mismatch: "
+                f"checkpoint={len(cuda_states)}, current={torch.cuda.device_count()}"
+            )
+        torch.cuda.set_rng_state_all(list(cuda_states))
+        cuda_restored = True
+
+    return {
+        "restored": True,
+        "python_restored": True,
+        "numpy_restored": True,
+        "torch_cpu_restored": True,
+        "torch_cuda_restored": cuda_restored,
+        "policy": "restored_checkpoint_rng_state",
+    }
+
+
 # ═══════════════════════════════════════════════════════════
 #  Per-window training helper (root cause R2 fix)
 # ═══════════════════════════════════════════════════════════

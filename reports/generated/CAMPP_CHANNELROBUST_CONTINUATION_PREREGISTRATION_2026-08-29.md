@@ -59,6 +59,12 @@ source terminates; their constants may not be changed using Fold 0.
   `dataloader_worker_rng_restored=false` and
   `rng_resume_policy=reseeded_branch_from_training_seed`; unavailable RNG state
   must never be reconstructed or claimed as restored.
+- Checkpoints written by the continuation implementation now capture Python,
+  NumPy, Torch CPU and all active CUDA RNG states immediately after validation
+  and scheduler advancement.  Any later resume from those new checkpoints must
+  restore those states and record
+  `rng_resume_policy=restored_checkpoint_rng_state`, making the *next* boundary
+  an exact stochastic continuation as well as a model/optimizer continuation.
 - Permit at most three additional wall-clock hours and `$0.55` incremental
   cost.  The campaign total remains capped at `$20`.
 

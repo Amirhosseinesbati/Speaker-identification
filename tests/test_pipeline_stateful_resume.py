@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import copy
+import random
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
 from src.pipelines.steps import _restore_training_state_for_resume
+from src.training_utils import capture_rng_state, seed_everything
 
 
 def _source_config() -> dict:
@@ -49,6 +52,7 @@ def _write_checkpoint(
     path: Path,
     *,
     include_scheduler: bool = True,
+    include_rng: bool = False,
     checkpoint_history: list[dict] | None = None,
 ) -> tuple[dict, torch.nn.Module, torch.optim.Optimizer, object]:
     class_map = {"unknown": 0, "speaker-a": 1}
@@ -74,6 +78,9 @@ def _write_checkpoint(
     }
     if include_scheduler:
         payload["scheduler_state_dict"] = scheduler.state_dict()
+    if include_rng:
+        seed_everything(2026)
+        payload["rng_state"] = capture_rng_state()
     torch.save(payload, path)
     return class_map, model, optimizer, scheduler
 
@@ -145,6 +152,29 @@ def test_stateful_resume_uses_external_history_and_truncates_to_checkpoint(
     assert receipt["source_history_epochs"] == 3
     assert receipt["source_history_path"] == str(history_path.resolve())
     assert len(receipt["source_history_file_sha256"]) == 64
+
+
+def test_stateful_resume_restores_rng_state_when_available(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "source-with-rng.pt"
+    class_map, _, _, _ = _write_checkpoint(checkpoint, include_rng=True)
+    config = _resume_config(checkpoint)
+    model, optimizer, scheduler = _target_state(config)
+
+    random.seed(9)
+    np.random.seed(9)
+    torch.manual_seed(9)
+    receipt, _ = _restore_training_state_for_resume(
+        model, optimizer, scheduler, config, class_map,
+    )
+
+    assert receipt is not None
+    assert receipt["rng_state_restored"] is True
+    assert receipt["dataloader_worker_rng_restored"] is True
+    assert receipt["rng_resume_policy"] == "restored_checkpoint_rng_state"
+    assert random.random() == random.Random(2026).random()
+    assert np.isclose(np.random.random(), np.random.RandomState(2026).random())
+    expected_torch = torch.rand(1, generator=torch.Generator().manual_seed(2026))
+    assert torch.equal(torch.rand(1), expected_torch)
 
 
 def test_stateful_resume_rejects_contract_change(tmp_path: Path) -> None:

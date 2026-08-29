@@ -55,7 +55,9 @@ from src.training_utils import (
     apply_encoder_finetune_mode,
     build_amp,
     build_scheduler,
+    capture_rng_state,
     encoder_will_train,
+    restore_rng_state,
     seed_everything,
 )
 from src.heads import ood_head_enabled
@@ -495,6 +497,7 @@ def _restore_training_state_for_resume(
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    rng_restore = restore_rng_state(checkpoint.get("rng_state"))
 
     receipt = {
         "path": str(path),
@@ -515,13 +518,12 @@ def _restore_training_state_for_resume(
         ),
         "start_epoch": source_epoch + 1,
         "ema_restored": False,
-        # Legacy source checkpoints predate RNG-state capture.  Re-seeding the
-        # continuation preserves the model/optimizer/scheduler trajectory but
-        # starts a fresh, reproducible augmentation/DataLoader RNG branch.  Be
-        # explicit so a receipt can never imply bitwise stochastic continuity.
-        "rng_state_restored": False,
-        "dataloader_worker_rng_restored": False,
-        "rng_resume_policy": "reseeded_branch_from_training_seed",
+        "rng_state_restored": bool(rng_restore["restored"]),
+        # Workers are non-persistent and derive their next base seeds from the
+        # restored Torch CPU RNG. Legacy checkpoints report false here.
+        "dataloader_worker_rng_restored": bool(rng_restore["restored"]),
+        "rng_resume_policy": str(rng_restore["policy"]),
+        "rng_components": rng_restore,
     }
     print(f"  ✓ Restored stateful continuation from {path}")
     print(f"    SHA256: {receipt['sha256']}")
@@ -529,10 +531,13 @@ def _restore_training_state_for_resume(
         f"    Model/optimizer/scheduler restored through epoch {source_epoch}; "
         "EMA restarts as diagnostic only."
     )
-    print(
-        "    RNG state was unavailable in the source checkpoint; augmentation "
-        "and DataLoader workers restart as a reproducibly seeded branch."
-    )
+    if rng_restore["restored"]:
+        print("    RNG state restored for exact stochastic continuation.")
+    else:
+        print(
+            "    RNG state was unavailable in the source checkpoint; augmentation "
+            "and DataLoader workers restart as a reproducibly seeded branch."
+        )
     return receipt, history
 
 @step
@@ -1099,6 +1104,10 @@ def train_model(
             "lr": head_lr,
         }
         history_with_current = [*history, current_history_row]
+        # Capture after validation and scheduler.step(), immediately before any
+        # checkpoint write. Restoring this state reproduces the RNG stream used
+        # to create the next epoch's DataLoader workers and CUDA operations.
+        epoch_rng_state = capture_rng_state()
 
         # Save best model (based on val Macro-F1) + Early stopping (also Macro-F1)
         should_save = (
@@ -1119,6 +1128,7 @@ def train_model(
                 "class_map": class_map,
                 "weight_variant": "raw",
                 "reproducibility": reproducibility,
+                "rng_state": epoch_rng_state,
                 "resume": resume_receipt,
                 "val_loss": val_metrics["loss"],
                 "val_ood_acc": val_metrics["ood_acc"],
@@ -1152,6 +1162,7 @@ def train_model(
                 "class_map": class_map,
                 "weight_variant": "ema",
                 "reproducibility": reproducibility,
+                "rng_state": epoch_rng_state,
                 "resume": resume_receipt,
                 "val_loss": ema_val_metrics["loss"],
                 "val_ood_acc": ema_val_metrics["ood_acc"],
@@ -1181,6 +1192,7 @@ def train_model(
             "class_map": class_map,
             "weight_variant": "raw",
             "reproducibility": reproducibility,
+            "rng_state": epoch_rng_state,
             "resume": resume_receipt,
         }, config, class_map, history=history)
         torch.save(latest_ckpt, checkpoint_dir / f"{encoder_type}_latest.pt")
