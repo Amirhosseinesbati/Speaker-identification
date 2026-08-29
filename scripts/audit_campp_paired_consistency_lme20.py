@@ -304,7 +304,7 @@ def matched_extension_diagnostic(
 
     This does not accept the treatment or authorize an asymmetric continuation.
     It only identifies the specific under-training pattern that warrants a new
-    preregistered matched extension after the 80/80 decision experiment.
+    preregistered matched extension after the configured paired horizon.
     """
     matched_gap = (
         matched_curve["tail_means"]["val_macro_f1"]
