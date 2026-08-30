@@ -69,3 +69,30 @@ The only admissible next action remains unchanged: finish and audit the locked
 120-epoch control, then run the matched fixed-0.1 treatment after its separate
 VRAM/throughput preflight.  Final conclusions must use the full trajectories,
 the preregistered Known/OOD guardrails and the fixed ensemble/rescue gates.
+
+## Dynamics update through epoch 63
+
+The latest checkpoint remained readable with a contiguous 63-row history and
+the same selected Raw epoch 51.  The latest-ten versus first-ten comparison
+showed training loss lower by `0.1751989` but validation loss higher by
+`0.0131187`.  Over the latest 20 epochs, slopes per epoch were:
+
+- Raw probability-average Macro-F1: `-0.00012305`;
+- logit-average Macro-F1: `-0.00008272`;
+- EMA Macro-F1: `-0.00002004`;
+- Known Accuracy: `-0.00012897`; and
+- OOD-F1: `-0.00008466`.
+
+This is a mild interim over-fitting signal after the epoch-51 peak, not a stop
+rule.  The cosine schedule is only around mid-progress, the scheduler-aligned
+comparison above remains positive, and the preregistered epoch-80 milestone
+and terminal 120-epoch tail are required before interpreting the shape.
+
+The training-history fields `train_pair_cosine`,
+`train_embedding_std_augmented`, and `train_embedding_std_clean` are exactly
+zero in the matched control because the disabled consistency branch does not
+perform or instrument the extra clean/augmented embedding pair.  Their zeros
+are therefore missing diagnostics, not evidence of representational collapse.
+The terminal auditor instead rebuilds deterministic train embeddings for both
+arms and computes the preregistered treatment/control spread ratio from those
+artifacts; only that statistic may exercise the collapse guard.
