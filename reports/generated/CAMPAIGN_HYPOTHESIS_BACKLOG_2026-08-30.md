@@ -221,15 +221,31 @@ run, and do not launch a successor until the pair is terminal and auditable.
   support/query objective is scientifically distinct only if prototypes are
   constructed inside speaker-balanced episodes rather than kept as global EMA
   centroids; it remains research-only behind the preregistered cross-file pair.
-- A second SciSpace pass found OpenFEAT and cross-channel meta-learning as the
-  closest published matches to the dominant LME20 residual (`87`
-  known-to-unknown errors).  Their common useful factor is
-  enrolment-conditioned support/query adaptation, with guest/unknown examples
-  retained during training.  If the paired consistency and cross-file branches
-  both fail without collapse, this is a more distinct later hypothesis than
-  another global prototype loss.  PLDA/cohort/T-Norm papers from the same
-  search do not reopen score normalisation: our NAP, LDA, WCCN and adaptive
-  AS-Norm cross-fit audits already rejected that family.
+- A second SciSpace pass found OpenFEAT and cross-channel meta-learning as
+  superficially close to the dominant LME20 residual (`87` known-to-unknown
+  errors), but a targeted follow-up did not find a controlled study that
+  simultaneously isolates support/query adaptation, retains real unknown
+  speakers, and evaluates open-set identification under channel mismatch.
+  MSEN optimizes support/query embedding differences and adds distribution
+  optimization for cross-channel *verification* on HI-MIA; it does not isolate
+  an open-set unknown-aware factor
+  ([ICASSP 2021](https://doi.org/10.1109/ICASSP39728.2021.9413978)).
+  Statistics decomposition/linear
+  transformation relies on condition-specific statistics and, for its strongest
+  form, parallel cross-condition speaker data
+  ([TASLP 2022](https://doi.org/10.1109/TASLP.2022.3140558)).
+  Session-embedding compensation
+  adds an auxiliary session network and a score compensator while freezing the
+  speaker extractor
+  ([ICASSP 2024](https://doi.org/10.1109/ICASSP48485.2024.10445987)).
+  IAAA has no reliable direct session/channel labels, so
+  inventing them from filenames or bundling a new head, loss and score fusion
+  would be an unsupported multi-variable experiment.  Keep episodic
+  enrolment-conditioned adaptation research-only until a one-factor contract
+  can use actual metadata or a strictly augmentation-defined condition.  The
+  PLDA/cohort/T-Norm papers from the same searches do not reopen score
+  normalisation: our NAP, LDA, WCCN and adaptive AS-Norm cross-fit audits already
+  rejected that family.
 - Duration-aware embedding objectives such as DAME are relevant to the hard
   short-utterance tail, but are a larger representation change and remain
   research-only until cheaper paired hypotheses fail
