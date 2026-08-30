@@ -233,3 +233,34 @@ directly transferable here, it independently supports the preregistered
 embedding-spread ratio as a mandatory safety gate.  A Macro-F1 gain with spread
 below `0.95` must still reject the current treatment rather than invite a tuned
 consistency weight.
+
+## Consistency-schedule boundary and long-control diagnostic (2026-08-30)
+
+A focused SciSpace query tested whether speech/audio studies directly compare
+a fixed consistency coefficient with a ramped or warmed coefficient.  Three
+full-text conclusion extracts succeeded after the methodology column was
+unavailable (`0/3`): CR-Aug (IJCNN 2022, DOI
+`10.1109/IJCNN55064.2022.9892448`), supervised audio consistency learning
+(ICASSP 2021, DOI `10.1109/ICASSP39728.2021.9414316`), and asymmetric
+clean/augmented speaker verification (ICASSP 2024, DOI
+`10.1109/ICASSP48485.2024.10446161`).  Together they support explicit
+clean/augmented consistency, stop-gradient/asymmetric targets, and protecting
+speaker information.  None establishes a speaker-recognition advantage for a
+ramp over a fixed coefficient at a long horizon.  A separate search found
+progressive augmentation scheduling in ASR (arXiv `2412.00415`), but that
+changes augmentation probability rather than isolating the consistency-loss
+coefficient.  It is therefore not transferable to the active single-variable
+pair.
+
+The matched control remained healthy through epoch 28: 28/28 contiguous points
+for all 33 MLflow metrics, no NaN/OOM/traceback, and a new run-best Raw
+probability-average Macro-F1 of `0.9421086008`.  Epoch 28 had logit-average
+`0.9391351187`, Known Accuracy `0.9517937220`, OOD-F1 `0.9493844049`, and EMA
+Macro-F1 `0.9403364786`.  The long run's scheduler has six warm-up epochs and
+114 cosine epochs, whereas the 40-epoch pilot had two warm-up and 38 cosine
+epochs.  At epoch 28 the observed head LR was `9.1534446e-5`; the longer run is
+therefore still adapting at an LR far above the corresponding late-pilot
+regime.  The earlier small trajectory deficit is not evidence of failure and
+does not justify stopping, changing the loss, or selecting an interim
+checkpoint.  The preregistered 120-epoch control/treatment pair remains the
+only admissible test.
