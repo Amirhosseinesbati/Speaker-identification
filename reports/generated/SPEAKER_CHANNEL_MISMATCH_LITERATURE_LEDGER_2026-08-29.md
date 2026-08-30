@@ -315,3 +315,36 @@ boundary evidence: it does **not** justify changing the preregistered `0.1`
 coefficient or inserting a warm-up after observing Fold 0.  A delayed or
 scheduled-off term remains a separately preregistered fallback only after the
 matched 120-epoch pair is terminal and audited.
+
+## Speaker-separation preservation search (2026-08-30)
+
+A further SciSpace semantic search asked how clean/noisy invariance has been
+combined with an explicit mechanism that preserves inter-speaker separation.
+Conclusion extraction succeeded for five of five selected records after the
+generic methodology column returned no data.  The most directly relevant new
+result is noisy/clean alignment at both feature and embedding levels (ICASSP
+2025, DOI `10.1109/ICASSP49660.2025.10889792`): the reported system combines a
+noise-adaptive-margin supervised contrastive loss, Barlow Twins redundancy
+reduction, classification supervision and a feature-enhancement module, and
+reports improved intra-speaker compactness and inter-speaker separability on
+noise-synthesised VoxCeleb1 tests.  Barlow Twins speaker learning (Interspeech
+2022, DOI `10.21437/Interspeech.2022-11301`) independently reports improvements
+in clean and noisy conditions, while NAW-SV (Interspeech 2024, DOI
+`10.21437/Interspeech.2024-1630`) explicitly adds an extended angular
+prototypical objective to avoid distorting speaker information during robust
+teacher-student adaptation.  Within-Sample Variability-Invariant Loss (ICASSP
+2020, DOI `10.1109/ICASSP40776.2020.9053407`) supplies a simpler supervised
+clean/noisy pairing precedent, and Cross-Domain ArcFace (FFSVC 2022, DOI
+`10.21437/ffsvc.2022-2`) shows that domain-specific angular margins can help in
+far-field mismatch.
+
+These studies support the mechanism suggested by the active paired prefix:
+reducing clean/augmented distance can improve nuisance robustness while still
+needing a separate force that preserves speaker boundaries.  They do **not**
+authorise bundling a new margin, Barlow covariance terms, feature enhancement
+and a sampler change after seeing Fold 0.  If the locked same-crop treatment is
+terminally neutral or harmful without collapse, the existing sampler-matched
+cross-file positive-pair ablation remains the first isolated test.  Only if
+that test shows improved invariance but repeats the Known-accuracy penalty
+should one separately preregister either an angular/prototypical preservation
+term or a redundancy/variance regulariser, never both in the same first Run.
