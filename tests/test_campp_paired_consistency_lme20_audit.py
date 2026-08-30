@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from scripts.audit_campp_paired_consistency_lme20 import (
+    CROSS_FILE_HORIZON_SPECS,
     HORIZON_SPECS,
     LONG120_MATCHED_CONFIG_SHA256,
     LONG120_MATCHED_CONTROL_PROFILE,
@@ -13,6 +14,10 @@ from scripts.audit_campp_paired_consistency_lme20 import (
     LONG120_TREATMENT_PROFILE,
     MATCHED_CONFIG_SHA256,
     MATCHED_CONTROL_PROFILE,
+    P5_CROSS_FILE_MATCHED_CONFIG_SHA256,
+    P5_CROSS_FILE_MATCHED_PROFILE,
+    P5_CROSS_FILE_TREATMENT_CONFIG_SHA256,
+    P5_CROSS_FILE_TREATMENT_PROFILE,
     ROOT,
     TREATMENT_CONFIG_SHA256,
     TREATMENT_PROFILE,
@@ -69,6 +74,33 @@ def test_long120_contract_and_raw_config_hashes_are_preregistered() -> None:
         treatment,
         expected_epochs=120,
         expected_milestones=(40, 80),
+    )
+
+
+def test_p5_cross_file_contract_and_hashes_are_preregistered() -> None:
+    spec = CROSS_FILE_HORIZON_SPECS[120]
+    assert spec["matched_profile"] == P5_CROSS_FILE_MATCHED_PROFILE
+    assert spec["treatment_profile"] == P5_CROSS_FILE_TREATMENT_PROFILE
+    assert spec["pairing"] == "cross_file_batch"
+    assert spec["ood_batch_ratio"] == 0.5
+
+    expected = {
+        P5_CROSS_FILE_MATCHED_PROFILE: P5_CROSS_FILE_MATCHED_CONFIG_SHA256,
+        P5_CROSS_FILE_TREATMENT_PROFILE: P5_CROSS_FILE_TREATMENT_CONFIG_SHA256,
+    }
+    for profile, digest in expected.items():
+        path = ROOT / "configs" / "experiments" / f"{profile}.yaml"
+        assert sha256_file(path) == digest
+
+    matched = load_profile(P5_CROSS_FILE_MATCHED_PROFILE)
+    treatment = load_profile(P5_CROSS_FILE_TREATMENT_PROFILE)
+    assert_paired_single_objective_contract(
+        matched,
+        treatment,
+        expected_epochs=120,
+        expected_milestones=(40, 80),
+        expected_pairing="cross_file_batch",
+        expected_ood_batch_ratio=0.5,
     )
 
 
