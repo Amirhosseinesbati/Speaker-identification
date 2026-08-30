@@ -47,6 +47,25 @@ Every batch satisfied 24 OOD + 24 known, exactly 12 distinct known speakers and
 two distinct file ids per selected speaker.  Across one epoch all 446 speakers
 were exposed; per-speaker known-row exposure was min/median/max `2/4/4`.
 
+## Literature boundary
+
+A focused SciSpace retrieval found speaker-specific support for treating the
+recording identity of a positive pair as a real experimental variable.  SSPS
+(Interspeech 2025, DOI `10.21437/Interspeech.2025-183`) identifies standard
+same-utterance positive sampling as a source of retained recording-channel
+information and reports lower intra-speaker variance when positives come from
+different recording conditions.  Augmentation-adversarial speaker training
+(arXiv `2007.12085`) makes the related observation that two segments from one
+utterance share acoustic conditions, while asymmetric clean/noisy pairing
+(arXiv `2309.04265`) supports a stable clean target for augmented views.
+
+These papers motivate the dormant branch but do not validate its competition
+decision layer: none demonstrates preservation of a joint 446-way known
+classifier and binary unknown-speaker detector under this dataset's split.
+Consequently the evidence cannot waive the preregistered Known Accuracy and
+OOD-F1 guardrails, cannot select a consistency coefficient, and cannot justify
+launching this branch before the active same-crop pair is terminal.
+
 ## Safeguards implemented
 
 - fail if known samples per batch are odd;
