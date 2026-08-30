@@ -301,6 +301,14 @@ def milestone_diagnostic(
     history = checkpoint.get("training_history", checkpoint.get("history", []))
     if not isinstance(history, list) or not history:
         raise RuntimeError(f"Milestone history missing: {path}")
+    epochs = np.asarray(
+        [int(item.get("epoch", -1)) for item in history], dtype=np.int64,
+    )
+    expected_epochs = np.arange(1, expected_epoch + 1, dtype=np.int64)
+    if not np.array_equal(epochs, expected_epochs):
+        raise RuntimeError(
+            f"Milestone history is not contiguous 1..{expected_epoch}: {path}"
+        )
     row = history[-1]
     if int(row.get("epoch", -1)) != expected_epoch:
         raise RuntimeError(
@@ -326,11 +334,72 @@ def milestone_diagnostic(
     finite = [value for value in metrics.values() if value is not None]
     if not all(np.isfinite(value) for value in finite):
         raise RuntimeError(f"Milestone contains non-finite metrics: {path}")
+
+    trajectory_keys = (
+        "val_macro_f1",
+        "val_logit_avg_macro_f1",
+        "val_ema_macro_f1",
+        "val_known_acc",
+        "val_ood_f1",
+        "train_loss",
+        "val_loss",
+    )
+    curves = {
+        key: np.asarray([float(item[key]) for item in history], dtype=np.float64)
+        for key in trajectory_keys
+    }
+    if not all(np.isfinite(values).all() for values in curves.values()):
+        raise RuntimeError(
+            f"Milestone history contains non-finite trajectory metrics: {path}"
+        )
+    window = min(TAIL_WINDOW_EPOCHS, expected_epoch // 2)
+    if window < 1:
+        raise RuntimeError(f"Milestone history is too short for windows: {path}")
+    previous_slice = slice(-2 * window, -window)
+    tail_slice = slice(-window, None)
+    previous_means = {
+        key: float(values[previous_slice].mean())
+        for key, values in curves.items()
+    }
+    tail_means = {
+        key: float(values[tail_slice].mean())
+        for key, values in curves.items()
+    }
+    slope_width = min(2 * TAIL_WINDOW_EPOCHS, expected_epoch)
+    slope_x = np.arange(slope_width, dtype=np.float64)
+    slopes = {
+        key: float(np.polyfit(slope_x, values[-slope_width:], 1)[0])
+        for key, values in curves.items()
+    }
+    best_index = int(np.argmax(curves["val_macro_f1"]))
     return {
         "path": str(path),
         "sha256": sha256_file(path),
         "epoch": expected_epoch,
         "metrics": metrics,
+        "history_length": len(history),
+        "history_contiguous": True,
+        "trajectory": {
+            "window_epochs": window,
+            "previous_window": [
+                expected_epoch - 2 * window + 1,
+                expected_epoch - window,
+            ],
+            "tail_window": [expected_epoch - window + 1, expected_epoch],
+            "previous_means": previous_means,
+            "tail_means": tail_means,
+            "tail_minus_previous": {
+                key: float(tail_means[key] - previous_means[key])
+                for key in trajectory_keys
+            },
+            "slopes_last_20": slopes,
+            "best_raw_epoch": int(epochs[best_index]),
+            "best_raw_macro_f1": float(curves["val_macro_f1"][best_index]),
+            "best_raw_known_accuracy": float(
+                curves["val_known_acc"][best_index]
+            ),
+            "best_raw_ood_f1": float(curves["val_ood_f1"][best_index]),
+        },
     }
 
 

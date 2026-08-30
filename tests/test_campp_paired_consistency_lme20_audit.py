@@ -161,32 +161,53 @@ def test_acceptance_gate_requires_every_preregistered_guardrail() -> None:
 
 def test_milestone_diagnostic_binds_epoch_profile_and_finite_metrics(tmp_path) -> None:
     path = tmp_path / "campp_milestone_epoch040_raw.pt"
-    torch.save({
-        "epoch": 40,
-        "config": {"logging": {"checkpoint_dir": f"checkpoints/{TREATMENT_PROFILE}"}},
-        "training_history": [{
-            "epoch": 40,
-            "val_macro_f1": 0.94,
-            "val_logit_avg_macro_f1": 0.93,
-            "val_known_acc": 0.95,
-            "val_ood_f1": 0.96,
-            "val_ema_macro_f1": 0.94,
-            "train_loss": 1.0,
+    history = []
+    for epoch in range(1, 41):
+        history.append({
+            "epoch": epoch,
+            "val_macro_f1": 0.90 + epoch * 0.001,
+            "val_logit_avg_macro_f1": 0.89 + epoch * 0.001,
+            "val_known_acc": 0.91 + epoch * 0.001,
+            "val_ood_f1": 0.92 + epoch * 0.001,
+            "val_ema_macro_f1": 0.90 + epoch * 0.001,
+            "train_loss": 2.0 - epoch * 0.01,
+            "val_loss": 1.5 - epoch * 0.005,
             "train_loss_consistency": 0.2,
             "train_loss_consistency_weighted": 0.02,
             "train_pair_cosine": 0.8,
             "train_embedding_std_augmented": 0.1,
             "train_embedding_std_clean": 0.1,
-        }],
+        })
+    torch.save({
+        "epoch": 40,
+        "config": {"logging": {"checkpoint_dir": f"checkpoints/{TREATMENT_PROFILE}"}},
+        "training_history": history,
     }, path)
     result = milestone_diagnostic(path, TREATMENT_PROFILE)
     assert result["epoch"] == 40
     assert result["metrics"]["train_loss_consistency_weighted"] == pytest.approx(0.02)
+    assert result["history_length"] == 40
+    assert result["trajectory"]["best_raw_epoch"] == 40
+    assert result["trajectory"]["tail_minus_previous"]["val_macro_f1"] > 0
+    assert result["trajectory"]["slopes_last_20"]["val_macro_f1"] > 0
 
     payload = torch.load(path, map_location="cpu", weights_only=False)
     payload["training_history"][-1]["val_macro_f1"] = float("nan")
     torch.save(payload, path)
     with pytest.raises(RuntimeError, match="non-finite"):
+        milestone_diagnostic(path, TREATMENT_PROFILE)
+
+
+def test_milestone_diagnostic_rejects_history_gap(tmp_path) -> None:
+    path = tmp_path / "campp_milestone_epoch040_raw.pt"
+    history = _terminal_history(treatment=False)[:40]
+    history.pop(19)
+    torch.save({
+        "epoch": 40,
+        "config": {"logging": {"checkpoint_dir": f"checkpoints/{TREATMENT_PROFILE}"}},
+        "training_history": history,
+    }, path)
+    with pytest.raises(RuntimeError, match="not contiguous"):
         milestone_diagnostic(path, TREATMENT_PROFILE)
 
 
