@@ -23,6 +23,7 @@ used to choose thresholds, fusion weights, epochs, or augmentation strength.
 | Augmentation-adversarial speaker learning ([arXiv](https://arxiv.org/abs/2007.12085)) | Contrasting segments from the same utterance can retain shared channel cues; explicitly suppressing augmentation information encourages speaker-discriminative, channel-invariant embeddings and improved VoxCeleb/VOiCES robustness. | The active dataset produces eight independently cropped and augmented windows, so ordinary same-label supervision does not require the embedding to agree with a clean view of the identical crop. | This independently supports a paired clean/aug consistency ablation if the current treatment fails.  Use the supervised ArcFace/OOD model and one predefined cosine-consistency coefficient; do not add an adversarial domain classifier and a consistency term in the same Run. |
 | Gradient regularization for noise robustness ([DOI](https://doi.org/10.21437/Interspeech.2021-1216)) | Aligning gradients from clean utterances and their noisy counterparts reduced speaker-irrelevant noise directions and improved both seen and unseen noisy conditions. | The active strong-augmentation treatment is still learning but retains a small validation-loss penalty relative to matched Control, which is compatible with useful robustness plus augmentation-specific gradients. | Treat clean/noisy gradient alignment as mechanistic corroboration, not the first implementation: its sequential inner optimization and gradient-level objective are costlier and less isolated than a paired embedding-consistency term. |
 | Label-efficient speaker VICReg ([DOI](https://doi.org/10.21437/Interspeech.2022-802)) | Two independently augmented views are pulled together, but variance and covariance terms are needed to prevent collapse and redundant dimensions; the reported VICReg speaker system outperformed its InfoNCE-only comparison. | A plain cosine-consistency loss would preserve same-crop invariance but could over-compress the already discriminative 446-way embedding space, especially with batch 48 and an open-set OOD head. | If paired consistency is tested, retain ArcFace and OOD supervision and preregister an embedding-variance/covariance diagnostic guardrail.  Do not transplant the full self-supervised projector or jointly tune several VICReg coefficients. |
+| Multi-Head Multi-Mode distillation ([DOI](https://doi.org/10.21437/Interspeech.2024-360)) | The authors found embedding-level contrastive learning useful only in early training and dynamically stopped that auxiliary term while continuing knowledge distillation. | The active treatment will add a fixed clean/aug cosine term to an already discriminative supervised model.  A longer horizon may be needed for the harder objective, but the same auxiliary pressure may also become unhelpful late in training. | Preserve the locked fixed-weight 120-epoch A/B test, but do not equate extra epochs with benefit.  The preregistered epochs 101--120 tail slope, best-epoch location, Known/OOD balance and spread guardrail decide whether a separately matched extension is warranted.  A future scheduled-off consistency ablation would require a new preregistration, never a post-hoc edit to this Run. |
 | Self-Supervised Positive Sampling ([DOI](https://doi.org/10.21437/Interspeech.2025-183)) | Same-utterance positive pairs can retain recording-channel information; selecting same-speaker positives from different recording conditions reduced intra-speaker variance and improved both SimCLR and DINO speaker verification. | The current paired treatment compares clean and augmented views of the identical crop.  Worker EDA confirms all 446 known speakers have at least five distinct files: 439 have 5, five have 6, one has 9 and one has 20; the single collapsed unknown label has 2,275 files. Direct session/channel metadata is absent, but distinct known files are an available recording proxy. | If same-crop consistency fails or only marginally helps, the next isolated representation hypothesis is a known-only speaker-balanced sampler with cross-file positive pairs.  Use different files as a declared recording proxy, leave the OOD objective unchanged, and test against a matched sampler control; do not add SSPS clustering, a memory queue and a new loss in one bundled run. |
 | Codec/domain robustness evaluation ([DOI](https://doi.org/10.21437/Interspeech.2025-2167)) | ECAPA-family and other deep speaker embeddings all degrade under sampling-rate and low-bitrate codec mismatch, indicating dependence on high-frequency information rather than architecture-specific immunity. | The current treatment includes MP3 but no isolated resampling/bandwidth factor; a previous complementary encoder did not clear its standalone gate. | Do not switch encoder merely because it is newer. If terminal error analysis remains codec-sensitive, test one predefined bandwidth/codec factor against the same CAM++ baseline before considering another backbone. |
 | NEC-TT SRE18 system ([DOI](https://doi.org/10.21437/Interspeech.2019-1517)) | Diverse augmentation plus mixed-bandwidth training strengthened the embedding extractor, while CORAL/CORAL+ adapted the PLDA backend under mismatch. | The competition has no trusted target-domain labels or PLDA backend; the record package already uses a validated open-set prototype decision layer. | Treat mixed-bandwidth training as corroboration for one isolated bandwidth ablation.  Do not transplant CORAL/PLDA into the current open-set pipeline without a separate leakage-free contract. |
@@ -34,8 +35,30 @@ used to choose thresholds, fusion weights, epochs, or augmentation strength.
 
 ## Active experiment and interpretation boundary
 
-The active profile is `p3-campp-known446-ood-channelrobust-oof-f0`, commit
-`eb433629b85a07a0665056d1bf6fcd84694cf1ca`.  It changes only the augmentation
+The active decision experiment is now the matched long-horizon pair declared in
+`CAMPP_PAIRED_CONSISTENCY_LONG120_PREREG_2026-08-30.md`.  Its no-consistency
+control, `p4-campp-known446-ood-channelrobust-paired-control-long120-oof-f0`,
+started first from the selected P3 Raw checkpoint on commit `e1059813`.  Both
+control and treatment have a fixed 120-epoch cosine schedule, no metric early
+stopping, and identical data/model/optimisation settings; the treatment's only
+scientific difference is the fixed-weight clean/aug cosine term.  Epochs 40 and
+80 are diagnostics only.
+
+The first 16 complete long-control epochs reproduce the earlier 40-epoch
+engineering control closely: mean Raw Macro-F1 is `0.93793125` versus
+`0.9380944840` (delta `-0.0001632340`), and both early bests are approximately
+`0.94110`.  This argues against catastrophic warm-start forgetting or a broken
+long scheduler, but is deliberately non-decision evidence.  The control must
+finish before the treatment starts, and the harder treatment receives the same
+120-epoch opportunity.  A further extension is allowed only if the locked late
+tail checks pass for the treatment relative to this compute-matched control;
+the MeMo result above is explicit counter-evidence against assuming that an
+embedding consistency term improves indefinitely with time.
+
+### Historical P3 channel-robust source
+
+The historical source profile was `p3-campp-known446-ood-channelrobust-oof-f0`,
+commit `eb433629b85a07a0665056d1bf6fcd84694cf1ca`.  It changed only the augmentation
 policy relative to Control Fold 0.  Its early epoch-8 advantage did not persist
 through the frozen-encoder phase, but the post-unfreeze trajectory is converging
 toward Control.  At matched epoch 33, treatment probability-average Macro-F1
