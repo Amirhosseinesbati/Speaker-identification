@@ -1,0 +1,57 @@
+# P5 cross-file research backlog — 2026-08-30
+
+## Boundary
+
+This note was created after the P5 matched-control launch.  It cannot change
+the active cross-file recipes, their fixed 120-epoch horizon, coefficient,
+sampler, gate or ordering.  It only ranks mutually exclusive follow-up
+hypotheses if the complete P5 pair fails.
+
+## Evidence retrieved with SciSpace
+
+1. **Different-recording positives.**  SSPS (Interspeech 2025, DOI
+   `10.21437/Interspeech.2025-183`) directly supports using different
+   recordings of one speaker rather than two views of one utterance to reduce
+   intra-speaker variance.  This is the isolated P5 treatment already running.
+2. **Explicit inter-speaker angular separation.**  Chen, Ren and Xu (APSIPA
+   2019, DOI `10.1109/APSIPAASC47483.2019.9023165`) report that an exclusive
+   inter-class regularizer complements angular-margin embedding learning.  This
+   is the lowest-complexity anti-collapse guard returned by the search.
+3. **Angular-margin centroid training.**  Wei, Du and Liu (Interspeech 2020,
+   DOI `10.21437/INTERSPEECH.2020-2538`) jointly contract same-speaker
+   embeddings and separate speaker centroids.  This is a training objective,
+   not the already rejected post-hoc centroid decision rule.
+4. **Discriminant variance objective.**  Gao, Song and McLoughlin
+   (Interspeech 2019, DOI `10.21437/INTERSPEECH.2019-1489`) explicitly optimize
+   small intra-speaker and large inter-speaker variance and report gains with a
+   simple cosine backend.
+5. **Channel adversarial learning.**  Chen, Wang and Qian (ICASSP 2020, DOI
+   `10.1109/ICASSP40776.2020.9053905`) suppress device/environment information
+   with joint multi-task and adversarial training.  It requires reliable
+   channel labels or proxies that the local dataset does not currently expose.
+6. **Cross-channel meta-learning.**  Zhang, Wang and Lee (ICASSP 2021, DOI
+   `10.1109/ICASSP39728.2021.9413978`) align support/query embeddings under
+   unseen-channel evaluation.  This adds an episodic optimizer and a second
+   distribution objective, so it is not a one-variable continuation.
+
+## Locked decision order after P5
+
+- If P5 passes its complete gate, do not add any of these losses; preregister
+  leakage-safe multi-fold confirmation first.
+- If P5 is neutral and embedding spread remains healthy, the first eligible
+  follow-up is **one** matched Fold-0 ablation adding exclusive inter-class
+  angular separation to the cross-file treatment.  Its coefficient and gate
+  must be fixed before outcome observation; no grid search is permitted.
+- If P5 collapses or degrades Known Accuracy, retire positive-only invariance.
+  Angular-margin centroid training is then the preferred alternative because
+  it couples compactness to explicit separation; it must start from the same
+  immutable source checkpoint and use a matched control.
+- Channel-adversarial or meta-learning variants remain ineligible unless EDA
+  first establishes leakage-safe channel/session groups.  Acoustic proxies may
+  diagnose shift but may not be silently promoted to channel labels.
+- Triplet, memory-queue, teacher-student, PLDA and multi-loss combinations are
+  not concurrent fallbacks.  Each would require a separate hypothesis,
+  budget, single-variable ablation and Known/OOD guardrail.
+
+The leaderboard cannot select among these branches.  Only OOF evidence and the
+predeclared error-rescue/guardrail criteria may activate the next one.
