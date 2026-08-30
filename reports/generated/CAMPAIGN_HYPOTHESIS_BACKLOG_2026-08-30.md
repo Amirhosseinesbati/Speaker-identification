@@ -53,6 +53,17 @@ these effect-size and safety gates.
 
 ## Locked decision tree after the pair
 
+Before launching any new GPU training, run the preregistered CPU-only
+enrollment test in
+`CAMPP_LME20_SPEAKER_SPECIFIC_THRESHOLD_PREREG_2026-08-30.md`.  This is not a
+reopening of global threshold or AS-Norm: each target Fold's threshold for a
+known identity is computed only from maximum cross-speaker enrollment cosine,
+with no OOF-selected scalar.  The source paper (arXiv `2306.00952`) tested
+watchlists of 5 and 10 speakers, so the 446-speaker maximum may over-reject and
+the branch is expected to fail closed unless every Fold is non-negative,
+aggregate Macro-F1 gains at least `0.001`, and Known/OOD guardrails both hold.
+No quantile, offset or leaderboard result may be used to repair a rejection.
+
 ### A. Treatment passes every gate
 
 Write a separate Fold-1/2 preregistration with unchanged scientific settings.
