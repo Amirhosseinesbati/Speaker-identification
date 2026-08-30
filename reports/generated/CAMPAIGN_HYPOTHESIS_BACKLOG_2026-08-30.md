@@ -97,6 +97,13 @@ path and never receive a fabricated cross-file positive.  This design is only
 a conditional backlog item; no config or Run is authorised before the active
 same-crop pair is terminal.
 
+The latest SciSpace conclusion audit reinforces this order.  SSPS supplies
+direct speaker evidence for cross-recording positives, while the stage-wise
+fixed-anchor strategy (arXiv `2510.18530`) supplies only indirect evidence for
+an asymmetric clean-anchor teacher.  Therefore a fixed-anchor/stop-gradient
+variant remains a later contingency, not a reason to change the running pair
+or to bundle teacher asymmetry with the cross-file sampler test.
+
 ### D. Consistency causes spread loss or late degradation
 
 Retire invariance-pressure variants.  Prefer one isolated training-side factor:

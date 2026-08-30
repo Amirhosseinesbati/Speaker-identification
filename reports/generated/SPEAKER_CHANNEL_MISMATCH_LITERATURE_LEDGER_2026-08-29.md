@@ -264,3 +264,17 @@ regime.  The earlier small trajectory deficit is not evidence of failure and
 does not justify stopping, changing the loss, or selecting an interim
 checkpoint.  The preregistered 120-epoch control/treatment pair remains the
 only admissible test.
+
+A follow-up SciSpace semantic search sharpened the conditional branch without
+changing the active pair.  SSPS (Interspeech 2025, DOI
+`10.21437/Interspeech.2025-183`) directly attributes a same-utterance positive
+sampling limitation to retained recording-channel information and reports that
+same-speaker positives from different recordings reduce intra-speaker
+variance.  A newer stage-wise fixed-anchor study (arXiv `2510.18530`) instead
+freezes clean base-model embeddings while adapting a noisy-input copy, which
+supports asymmetric stable targets but does not isolate a consistency-weight
+ramp.  The evidence therefore strengthens the existing order: evaluate the
+locked same-crop pair first; if neutral without collapse, test a sampler-matched
+cross-file positive-pair ablation before considering a larger fixed-anchor
+teacher design.  It still provides no scientific basis for changing the
+current fixed `0.1` coefficient during training.
