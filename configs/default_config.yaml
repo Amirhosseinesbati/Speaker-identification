@@ -242,6 +242,10 @@ training:
       scope: metric
     speaker:
       focal_gamma: 2.0
+      inter_class:
+        enabled: false
+        type: exclusive_angular_energy
+        weight: 0.01
       label_smoothing: 0.05
       type: ce
       weight: 0.85

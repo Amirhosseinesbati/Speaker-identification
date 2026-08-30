@@ -49,6 +49,7 @@ from src.train import (
     compute_speaker_accuracy,
     setup_device,
     PrototypicalLoss,
+    resolve_inter_class_regularizer,
 )
 from src.training_utils import (
     EMA,
@@ -683,6 +684,9 @@ def train_model(
     consistency_pairing = str(
         consistency_cfg.get("pairing", "clean_aug")
     ).lower().strip()
+    inter_class_weight, inter_class_type = resolve_inter_class_regularizer(
+        train_cfg
+    )
     if consistency_enabled and consistency_weight <= 0:
         raise ValueError(
             "training.loss.consistency.enabled requires a positive weight"
@@ -962,6 +966,12 @@ def train_model(
             f"(pairing={consistency_pairing}, cosine weight="
             f"{consistency_weight:g}, target stop-gradient)"
         )
+    if inter_class_weight > 0.0:
+        print(
+            "  🧭 Inter-class speaker regularizer enabled "
+            f"(type={inter_class_type}, convex weight="
+            f"{inter_class_weight:g})"
+        )
 
     # ── Training Loop with MLflow autologging ──
     log_cfg = config.get("logging", {})
@@ -1038,6 +1048,7 @@ def train_model(
                 consistency_weight if consistency_enabled else 0.0
             ),
             consistency_pairing=consistency_pairing,
+            inter_class_weight=inter_class_weight,
         )
         # Validate + competition metric (Macro-F1 over all 447 classes)
         val_metrics = validate_epoch(model, val_loader, criterion, device)
@@ -1109,6 +1120,13 @@ def train_model(
             ],
             "train_loss_ood": train_metrics["loss_ood"],
             "train_loss_speaker": train_metrics["loss_speaker"],
+            "train_loss_speaker_effective": train_metrics[
+                "loss_speaker_effective"
+            ],
+            "train_loss_inter_class": train_metrics["loss_inter_class"],
+            "train_loss_inter_class_weighted": train_metrics[
+                "loss_inter_class_weighted"
+            ],
             "train_ood_acc": train_metrics["ood_acc"],
             "train_speaker_acc": train_metrics["speaker_acc"],
             "val_loss": val_metrics["loss"],

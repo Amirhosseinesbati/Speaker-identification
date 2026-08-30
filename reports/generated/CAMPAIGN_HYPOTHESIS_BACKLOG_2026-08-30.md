@@ -182,6 +182,16 @@ regulariser evidence already recorded in the research ledger.  Class-aware
 hard-negative weighting and automatic multi-objective balancing change more
 than one variable and remain later hypotheses.
 
+That branch is now preregistered, implemented and CPU-tested—but still dormant—as
+`p6-campp-known446-ood-crossfile-consistency-interclass-e01-long120-oof-f0`.
+It changes only the APSIPA-2019 exclusive inter-class angular term from disabled
+to enabled, uses the paper-fixed convex coefficient `0.01`, and is locked by raw
+config SHA256
+`d30c5631b8fd8499a4f2655f7dc41c5e3d5f6b0194ec4cfdcdf40628a5a2dbdc`.
+Exact activation exclusions, score/guardrail/mechanism gates and transfer caveats
+are in `reports/generated/P6_INTER_CLASS_ANGULAR_PREREGISTRATION_2026-08-30.md`.
+No P6 launch is permitted before the complete terminal P5 pair audit.
+
 ### C. P5 loses embedding spread or violates the Known guardrail
 
 Retire positive-pair invariance.  Select exactly one alternative from terminal

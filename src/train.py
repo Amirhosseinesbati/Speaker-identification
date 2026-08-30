@@ -242,6 +242,8 @@ class TwoPartLoss(nn.Module):
         ood_logits: Optional[torch.Tensor],   # (batch, 1) | None (cluster mode)
         speaker_logits: torch.Tensor,          # (batch, 446)
         labels: torch.Tensor,                  # (batch,)  — 0 for unknown, 1..446 for known
+        speaker_regularizer: Optional[torch.Tensor] = None,
+        speaker_regularizer_weight: float = 0.0,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Returns:
@@ -278,12 +280,49 @@ class TwoPartLoss(nn.Module):
 
         loss_speaker = self.ce_loss(speaker_logits, speaker_labels_mapped)
 
+        # Optional literature-fixed exclusive inter-class angular energy. The
+        # source paper combines angular classification and regularization as
+        # (1-lambda)*L_speaker + lambda*L_inter, so preserve that convex mixture
+        # rather than silently adding an unnormalised auxiliary objective.
+        speaker_regularizer_weight = float(speaker_regularizer_weight)
+        if not 0.0 <= speaker_regularizer_weight < 1.0:
+            raise ValueError(
+                "speaker_regularizer_weight must be in [0, 1)"
+            )
+        if speaker_regularizer_weight > 0.0:
+            if speaker_regularizer is None:
+                raise ValueError(
+                    "A positive speaker_regularizer_weight requires a scalar "
+                    "speaker_regularizer tensor"
+                )
+            if speaker_regularizer.numel() != 1:
+                raise ValueError("speaker_regularizer must be scalar")
+            if not torch.isfinite(speaker_regularizer):
+                raise RuntimeError("speaker_regularizer is NaN/Inf")
+            loss_speaker_effective = (
+                (1.0 - speaker_regularizer_weight) * loss_speaker
+                + speaker_regularizer_weight * speaker_regularizer
+            )
+        else:
+            speaker_regularizer = torch.zeros_like(loss_speaker)
+            loss_speaker_effective = loss_speaker
+
         # ── Total Loss (weighted) ──
-        total_loss = self.ood_weight * loss_ood + self.speaker_weight * loss_speaker
+        total_loss = (
+            self.ood_weight * loss_ood
+            + self.speaker_weight * loss_speaker_effective
+        )
 
         loss_dict = {
             "loss_ood": loss_ood.item(),
             "loss_speaker": loss_speaker.item(),
+            "loss_speaker_effective": loss_speaker_effective.item(),
+            "loss_inter_class": speaker_regularizer.item(),
+            "loss_inter_class_weighted": (
+                self.speaker_weight
+                * speaker_regularizer_weight
+                * speaker_regularizer.item()
+            ),
             "loss_total": total_loss.item(),
         }
 
@@ -344,6 +383,63 @@ def build_criterion(
             speaker_cfg.get("scope", speaker_target_scope)
         ),
     )
+
+
+def resolve_inter_class_regularizer(train_cfg: dict) -> Tuple[float, str]:
+    """Validate the single preregistered speaker-head regularizer.
+
+    Returns ``(effective_weight, type)``. Disabled configurations always use a
+    zero effective weight while retaining their declared type for provenance.
+    """
+    loss_cfg = train_cfg.get("loss", {}) or {}
+    speaker_cfg = loss_cfg.get("speaker", {}) or {}
+    inter_cfg = speaker_cfg.get("inter_class", {}) or {}
+    enabled = bool(inter_cfg.get("enabled", False))
+    inter_type = str(
+        inter_cfg.get("type", "exclusive_angular_energy")
+    ).lower().strip()
+    weight = float(inter_cfg.get("weight", 0.01))
+    if inter_type != "exclusive_angular_energy":
+        raise ValueError(
+            "Only training.loss.speaker.inter_class.type="
+            "exclusive_angular_energy is supported"
+        )
+    if enabled and not 0.0 < weight < 1.0:
+        raise ValueError(
+            "Enabled inter-class angular regularization requires weight in "
+            "(0, 1)"
+        )
+    return (weight if enabled else 0.0), inter_type
+
+
+def exclusive_inter_class_angular_loss(
+    class_weights: torch.Tensor,
+) -> torch.Tensor:
+    """Exclusive positive-cosine energy between normalized class weights.
+
+    Implements Chen, Ren & Xu (APSIPA ASC 2019):
+    ``(1/C) * ||relu(W_n W_n^T) - I||_F^2``. ArcFace stores classes by row,
+    whereas the paper uses column-oriented notation. Negative inter-class
+    cosines are intentionally unpenalized. The computation stays in float32
+    for stability under fp16 autocast.
+    """
+    if not isinstance(class_weights, torch.Tensor):
+        raise TypeError("class_weights must be a torch.Tensor")
+    if class_weights.ndim != 2:
+        raise ValueError(
+            "exclusive inter-class angular loss requires a 2-D ArcFace "
+            "class-weight matrix"
+        )
+    if class_weights.shape[0] < 2:
+        raise ValueError("at least two class weights are required")
+    normalized = F.normalize(class_weights.float(), p=2, dim=1)
+    gram_positive = torch.relu(normalized @ normalized.transpose(0, 1))
+    identity = torch.eye(
+        normalized.shape[0],
+        dtype=gram_positive.dtype,
+        device=gram_positive.device,
+    )
+    return (gram_positive - identity).square().sum() / normalized.shape[0]
 
 
 # ─────────────────────────────────────────────────────────
@@ -681,6 +777,7 @@ def train_epoch(
     proto_weight: float = 0.0,
     consistency_weight: float = 0.0,
     consistency_pairing: str = "clean_aug",
+    inter_class_weight: float = 0.0,
 ) -> Dict[str, float]:
     """
     Train for one epoch with AMP.
@@ -704,6 +801,21 @@ def train_epoch(
     """
     if consistency_weight < 0:
         raise ValueError("consistency_weight must be non-negative")
+    if not 0.0 <= inter_class_weight < 1.0:
+        raise ValueError("inter_class_weight must be in [0, 1)")
+    if inter_class_weight > 0.0:
+        speaker_head = getattr(model, "head_speaker", None)
+        class_weights = getattr(speaker_head, "weight", None)
+        if not isinstance(class_weights, torch.Tensor):
+            raise ValueError(
+                "inter-class angular regularization requires an ArcFace-like "
+                "speaker head with a 2-D weight tensor"
+            )
+        if class_weights.ndim != 2:
+            raise ValueError(
+                "inter-class angular regularization supports only a single-"
+                "center ArcFace weight matrix"
+            )
     consistency_pairing = str(consistency_pairing).lower().strip()
     if consistency_pairing not in {"clean_aug", "cross_file_batch"}:
         raise ValueError(
@@ -727,6 +839,9 @@ def train_epoch(
     total_speaker_acc = 0.0
     total_loss_ood = 0.0
     total_loss_spk = 0.0
+    total_loss_spk_effective = 0.0
+    total_loss_inter_class = 0.0
+    total_loss_inter_class_weighted = 0.0
     num_batches = len(dataloader)
 
     progress_bar = tqdm(dataloader, desc="  Train", leave=False)
@@ -788,6 +903,9 @@ def train_epoch(
         step_spk_acc = 0.0
         step_loss_ood = 0.0
         step_loss_spk = 0.0
+        step_loss_spk_effective = 0.0
+        step_loss_inter_class = 0.0
+        step_loss_inter_class_weighted = 0.0
         for w in range(W):
             wf = waveforms[:, w] if W > 1 else waveforms  # (B, 1, T)
 
@@ -817,8 +935,19 @@ def train_epoch(
                         wf, labels=labels, return_embedding=True)
                 else:
                     ood_logits, speaker_logits = model(wf, labels=labels)
+                inter_class_loss = (
+                    exclusive_inter_class_angular_loss(
+                        model.head_speaker.weight
+                    )
+                    if inter_class_weight > 0.0
+                    else None
+                )
                 primary_loss, loss_dict = criterion(
-                    ood_logits, speaker_logits, labels
+                    ood_logits,
+                    speaker_logits,
+                    labels,
+                    speaker_regularizer=inter_class_loss,
+                    speaker_regularizer_weight=inter_class_weight,
                 )
                 proto_loss = torch.zeros_like(primary_loss)
                 if proto_criterion is not None:
@@ -893,6 +1022,11 @@ def train_epoch(
             )
             step_loss_ood += loss_dict["loss_ood"]
             step_loss_spk += loss_dict["loss_speaker"]
+            step_loss_spk_effective += loss_dict["loss_speaker_effective"]
+            step_loss_inter_class += loss_dict["loss_inter_class"]
+            step_loss_inter_class_weighted += loss_dict[
+                "loss_inter_class_weighted"
+            ]
             step_ood_acc += compute_ood_accuracy(
                 ood_logits, labels, criterion.competition_known_count)
             spk_acc, _ = compute_speaker_accuracy(
@@ -938,6 +1072,11 @@ def train_epoch(
         total_speaker_acc += step_spk_acc / W
         total_loss_ood += step_loss_ood / W
         total_loss_spk += step_loss_spk / W
+        total_loss_spk_effective += step_loss_spk_effective / W
+        total_loss_inter_class += step_loss_inter_class / W
+        total_loss_inter_class_weighted += (
+            step_loss_inter_class_weighted / W
+        )
 
         # Update progress bar
         progress_bar.set_postfix({
@@ -971,6 +1110,11 @@ def train_epoch(
         "embedding_std_clean": total_embedding_std_clean / num_batches,
         "loss_ood": total_loss_ood / num_batches,
         "loss_speaker": total_loss_spk / num_batches,
+        "loss_speaker_effective": total_loss_spk_effective / num_batches,
+        "loss_inter_class": total_loss_inter_class / num_batches,
+        "loss_inter_class_weighted": (
+            total_loss_inter_class_weighted / num_batches
+        ),
         "ood_acc": total_ood_acc / num_batches,
         "speaker_acc": total_speaker_acc / num_batches,
     }
@@ -1081,6 +1225,9 @@ def train(config_path: str = "configs/default_config.yaml"):
     consistency_pairing = str(
         consistency_cfg.get("pairing", "clean_aug")
     ).lower().strip()
+    inter_class_weight, inter_class_type = resolve_inter_class_regularizer(
+        train_cfg
+    )
     if consistency_enabled and consistency_weight <= 0:
         raise ValueError(
             "training.loss.consistency.enabled requires a positive weight"
@@ -1116,6 +1263,11 @@ def train(config_path: str = "configs/default_config.yaml"):
             "  Embedding consistency: "
             f"pairing={consistency_pairing}, cosine weight="
             f"{consistency_weight:g} (target stop-gradient)"
+        )
+    if inter_class_weight > 0.0:
+        print(
+            "  Inter-class speaker regularizer: "
+            f"type={inter_class_type}, convex weight={inter_class_weight:g}"
         )
     print()
 
@@ -1265,6 +1417,7 @@ def train(config_path: str = "configs/default_config.yaml"):
                 consistency_weight if consistency_enabled else 0.0
             ),
             consistency_pairing=consistency_pairing,
+            inter_class_weight=inter_class_weight,
         )
 
         # Validate

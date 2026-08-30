@@ -56,8 +56,11 @@ hypotheses if the complete P5 pair fails.
   leakage-safe multi-fold confirmation first.
 - If P5 is neutral and embedding spread remains healthy, the first eligible
   follow-up is **one** matched Fold-0 ablation adding exclusive inter-class
-  angular separation to the cross-file treatment.  Its coefficient and gate
-  must be fixed before outcome observation; no grid search is permitted.
+  angular separation to the cross-file treatment.  This is now locked as the
+  dormant P6 profile with the literature-fixed convex coefficient `0.01` and
+  the score/guardrail/mechanism gates in
+  `reports/generated/P6_INTER_CLASS_ANGULAR_PREREGISTRATION_2026-08-30.md`;
+  no grid search is permitted.
 - A neutral P5 result must not be answered by tuning the positive-consistency
   coefficient.  The literature-backed next variable is separation, while
   class-aware hard-negative weighting or automatic multi-objective balancing
