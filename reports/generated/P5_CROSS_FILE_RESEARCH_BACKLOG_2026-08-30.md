@@ -13,6 +13,9 @@ hypotheses if the complete P5 pair fails.
    `10.21437/Interspeech.2025-183`) directly supports using different
    recordings of one speaker rather than two views of one utterance to reduce
    intra-speaker variance.  This is the isolated P5 treatment already running.
+   The paper is self-supervised speaker verification rather than this
+   closed-set-plus-OOD task, so it supports the mechanism but cannot by itself
+   establish the P5 decision policy or expected gain.
 2. **Explicit inter-speaker angular separation.**  Chen, Ren and Xu (APSIPA
    2019, DOI `10.1109/APSIPAASC47483.2019.9023165`) report that an exclusive
    inter-class regularizer complements angular-margin embedding learning.  This
@@ -33,6 +36,19 @@ hypotheses if the complete P5 pair fails.
    `10.1109/ICASSP39728.2021.9413978`) align support/query embeddings under
    unseen-channel evaluation.  This adds an episodic optimizer and a second
    distribution objective, so it is not a one-variable continuation.
+7. **Angular supervised contrastive separation.**  Li and Mak (APSIPA 2022,
+   DOI `10.23919/APSIPAASC55919.2022.9980014`) combine label-aware positive and
+   negative pairs with an additive angular margin.  Their result supports the
+   specific follow-up of coupling cross-file compactness to explicit
+   inter-speaker separation, rather than increasing the positive-only weight.
+8. **Hard-negative and objective-balance failure modes.**  Li, Mak and Meng
+   (ICASSP 2023, DOI `10.1109/ICASSP49357.2023.10096230`) report that plain
+   softmax contrastive learning may lack discrimination and that hard negatives
+   can dominate learning; they use class-aware attention and gradient-based
+   multi-objective balancing.  Those additions are intentionally not eligible
+   as an immediate follow-up because they change more than one variable, but
+   they are a warning against interpreting positive-pair contraction alone as
+   sufficient evidence.
 
 ## Locked decision order after P5
 
@@ -42,6 +58,10 @@ hypotheses if the complete P5 pair fails.
   follow-up is **one** matched Fold-0 ablation adding exclusive inter-class
   angular separation to the cross-file treatment.  Its coefficient and gate
   must be fixed before outcome observation; no grid search is permitted.
+- A neutral P5 result must not be answered by tuning the positive-consistency
+  coefficient.  The literature-backed next variable is separation, while
+  class-aware hard-negative weighting or automatic multi-objective balancing
+  remain later, separately preregistered hypotheses.
 - If P5 collapses or degrades Known Accuracy, retire positive-only invariance.
   Angular-margin centroid training is then the preferred alternative because
   it couples compactness to explicit separation; it must start from the same
