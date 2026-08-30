@@ -368,7 +368,8 @@ EER reduction over its self-supervised baselines in a low-resource setting,
 although its semi-supervised data assumptions do not transfer directly here.
 
 The only retrieved paper that directly targets open-set speaker identification
-is SRPL+ with negative-sample learning (arXiv `2409.15742`).  It supports the
+is SpeakerRPL+ with negative-sample learning (IEEE/ACM TASLP 2025, DOI
+`10.1109/TASLPRO.2025.3587591`; earlier arXiv `2409.15742`).  It supports the
 general value of modelling reciprocal/open space and real negative speakers,
 but it jointly changes a WavLM frontend, rapid-tuning backend and negative-data
 construction; importing it wholesale would be a confounded experiment.
