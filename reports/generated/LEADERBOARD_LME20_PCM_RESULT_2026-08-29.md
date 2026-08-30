@@ -73,6 +73,6 @@ The active paired clean/aug consistency experiment tests a narrower mechanism:
 retain the strong ArcFace/OOD representation while explicitly aligning the
 same speech crop before and after channel augmentation.  The engineering
 40-epoch no-consistency pilot is excluded from the decision.  The locked
-long-horizon decision remains an 80/80 matched A/B with no metric early stop,
+long-horizon decision remains a 120/120 matched A/B with no metric early stop,
 followed by exact LME20, error-rescue, Known/OOD and embedding-collapse audits.
 No new leaderboard package is warranted unless that internal gate passes.
