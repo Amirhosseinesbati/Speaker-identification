@@ -14,8 +14,11 @@ The campaign has already performed leakage-free three-Fold tests of the closest 
 
 - AS-Norm cross-fit: aggregate `ΔMacro-F1 = -0.0094302638`, `ΔKnown = -0.0076301616`, `ΔOOD-F1 = -0.0089981543`; all held-out Fold gates failed.
 - LDA cross-fit: aggregate `ΔMacro-F1 = -0.0038690176`, `ΔKnown = -0.0004488330`, `ΔOOD-F1 = -0.0038736529`; only one of three held-out Fold gates passed.
+- NAP cross-fit: aggregate `ΔMacro-F1 = -0.0013184902`, `ΔKnown = +0.0008976661`, `ΔOOD-F1 = -0.0024992207`; only one of three held-out Fold gates passed.
+- shrinkage-WCCN with known plus fixed pseudo-unknown groups: aggregate `ΔMacro-F1 = +0.0001572191`, `ΔKnown = +0.0004488330`, `ΔOOD-F1 = -0.0011516186`; only one of three held-out Fold gates passed.
+- known-only shrinkage-WCCN: aggregate `ΔMacro-F1 = +0.0007247944`, `ΔKnown = +0.0008976661`, `ΔOOD-F1 = +0.0003900025`; despite the positive aggregate, only one of three held-out Fold gates passed.
 
-Therefore cohort-size, LDA-dimension or threshold sweeps would tune rejected evidence. AS-Norm and LDA remain closed unless a genuinely different representation supplies independent evidence.
+Therefore cohort-size, projection-dimension, shrinkage-strength or threshold sweeps would tune rejected evidence. AS-Norm, LDA, NAP and both WCCN variants remain closed unless a genuinely different representation supplies independent evidence.
 
 ### Linear alignment is distinct, but not an immediate backend candidate
 
