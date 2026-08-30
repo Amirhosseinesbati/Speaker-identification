@@ -1,0 +1,50 @@
+{
+  "decision_role": "paired_milestone_diagnostic_only_cannot_stop_or_authorize_run",
+  "epoch": 40,
+  "treatment": {
+    "path": "checkpoints/p5-campp-known446-ood-crossfile-consistency-c01-long120-oof-f0/campp_milestone_epoch040_raw.pt",
+    "sha256": "e21026f1aa97dcce7f5272a9c4ce093c9a4c483fe1265a27acbebcf8baca8061"
+  },
+  "control": {
+    "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_latest.pt",
+    "sha256": "053dc32b69c7cbcea55739506b9afd74e13cd7ce789c338ee9ff89a58e0202d2"
+  },
+  "same_epoch_treatment_minus_control": {
+    "val_macro_f1": -0.00043789439540198316,
+    "val_logit_avg_macro_f1": -0.0002673253256849639,
+    "val_ema_macro_f1": 0.0011928246439597556,
+    "val_known_acc": -0.0011210762331838042,
+    "val_ood_f1": -0.0020880010939653415,
+    "train_loss": 0.047576231046997375,
+    "train_loss_consistency": 0.5020430546639294,
+    "train_pair_cosine": 0.4979569395554477,
+    "train_embedding_std_clean": 0.06711042876323235,
+    "train_embedding_std_augmented": 0.06712696497360694
+  },
+  "tail_mean_treatment_minus_control": {
+    "val_macro_f1": 0.0006358997904851726,
+    "val_logit_avg_macro_f1": 0.0013327144296775284,
+    "val_ema_macro_f1": 0.0006819252075049853,
+    "val_known_acc": 0.0008968609865469546,
+    "val_ood_f1": 0.0007551428548382422,
+    "train_loss": 0.04837700940411693,
+    "val_loss": -0.0020129677127389556
+  },
+  "slope_last20_treatment_minus_control": {
+    "val_macro_f1": 5.8520533489752804e-05,
+    "val_logit_avg_macro_f1": 6.941718171876192e-05,
+    "val_ema_macro_f1": -6.186729303891449e-05,
+    "val_known_acc": 3.371657844168987e-06,
+    "val_ood_f1": 4.256951169581447e-07,
+    "train_loss": -0.00020825784631206426,
+    "val_loss": 4.1923136481251144e-05
+  },
+  "best_raw_within_horizon": {
+    "treatment_epoch": 25,
+    "treatment_macro_f1": 0.9376238344558367,
+    "control_epoch": 38,
+    "control_macro_f1": 0.9364301156941749,
+    "macro_f1_delta": 0.001193718761661855
+  },
+  "warning": "Milestone evidence is descriptive. Only the preregistered terminal paired LME20 gate may accept or reject P5."
+}
