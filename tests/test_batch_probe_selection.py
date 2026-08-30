@@ -27,6 +27,26 @@ def test_returns_none_when_every_candidate_is_oom_or_over_limit():
     assert select_recommended_batch(rows, 24.0, 0.10) is None
 
 
+def test_reserved_vram_must_also_preserve_headroom():
+    rows = [
+        {
+            "batch_size": 48,
+            "status": "ok",
+            "peak_vram_gib": 18.0,
+            "reserved_vram_gib": 22.5,
+            "files_per_second": 20.0,
+        },
+        {
+            "batch_size": 32,
+            "status": "ok",
+            "peak_vram_gib": 17.0,
+            "reserved_vram_gib": 19.0,
+            "files_per_second": 15.0,
+        },
+    ]
+    assert select_recommended_batch(rows, 24.0, 0.10) == 32
+
+
 def test_probe_extracts_supervised_view_from_paired_batch():
     augmented = torch.zeros(4, 8, 1, 160)
     clean = torch.ones_like(augmented)
