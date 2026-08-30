@@ -1299,6 +1299,8 @@ class BalancedOODBatchSampler(Sampler[List[int]]):
         seed: int = 42,
         competition_known_count: Optional[int] = None,
         known_sampling_weights: Optional[np.ndarray] = None,
+        pair_known_files: bool = False,
+        train_file_ids: Optional[np.ndarray] = None,
     ) -> None:
         labels = np.asarray(train_labels)
         if labels.ndim != 1:
@@ -1321,6 +1323,27 @@ class BalancedOODBatchSampler(Sampler[List[int]]):
             )
 
         self.known_probabilities: Optional[np.ndarray] = None
+        self.pair_known_files = bool(pair_known_files)
+        self.known_indices_by_label: Dict[int, np.ndarray] = {}
+        self.known_speaker_labels = np.asarray([], dtype=np.int64)
+        if self.pair_known_files and known_sampling_weights is not None:
+            raise ValueError(
+                "pair_known_files is incompatible with known_sampling_weights: "
+                "pairing must select speakers uniformly before selecting files"
+            )
+        file_ids = None
+        if train_file_ids is not None:
+            file_ids = np.asarray(train_file_ids).astype(str)
+            if file_ids.shape != labels.shape:
+                raise ValueError(
+                    "train_file_ids must match train_labels shape: "
+                    f"{file_ids.shape} != {labels.shape}"
+                )
+        if self.pair_known_files and file_ids is None:
+            raise ValueError(
+                "pair_known_files requires train_file_ids so distinct rows "
+                "cannot silently refer to the same audio file"
+            )
         if known_sampling_weights is not None:
             weights = np.asarray(known_sampling_weights, dtype=np.float64)
             if weights.shape != labels.shape:
@@ -1343,6 +1366,40 @@ class BalancedOODBatchSampler(Sampler[List[int]]):
         if self.n_known <= 0:
             self.n_known = 1
             self.n_ood = self.batch_size - 1
+        if self.pair_known_files:
+            if self.n_known % 2:
+                raise ValueError(
+                    "pair_known_files requires an even number of known samples "
+                    f"per batch, got {self.n_known}"
+                )
+            known_labels = labels[self.known_indices]
+            for label in sorted(np.unique(known_labels).tolist()):
+                indices = self.known_indices[known_labels == label]
+                if len(indices) < 2:
+                    raise ValueError(
+                        "pair_known_files requires at least two distinct files "
+                        f"for every known speaker; label {int(label)} has "
+                        f"{len(indices)}"
+                    )
+                assert file_ids is not None
+                speaker_files = file_ids[indices]
+                if len(np.unique(speaker_files)) != len(speaker_files):
+                    raise ValueError(
+                        "pair_known_files requires unique audio_file rows within "
+                        f"each known speaker; label {int(label)} contains a "
+                        "duplicate file id"
+                    )
+                self.known_indices_by_label[int(label)] = indices
+            self.known_speaker_labels = np.asarray(
+                sorted(self.known_indices_by_label), dtype=np.int64,
+            )
+            pairs_per_batch = self.n_known // 2
+            if pairs_per_batch > len(self.known_speaker_labels):
+                raise ValueError(
+                    "pair_known_files requires at least one distinct speaker per "
+                    f"known pair: pairs={pairs_per_batch}, speakers="
+                    f"{len(self.known_speaker_labels)}"
+                )
         self.num_batches = max(1, len(labels) // self.batch_size)
         self.seed = int(seed)
         self.epoch = 0
@@ -1370,7 +1427,46 @@ class BalancedOODBatchSampler(Sampler[List[int]]):
         rng = np.random.RandomState(self.seed + self.epoch)
         ood_stream = self._draw(
             self.ood_indices, self.num_batches * self.n_ood, rng)
-        if self.known_probabilities is None:
+        if self.pair_known_files:
+            known_batches: List[np.ndarray] = []
+            pairs_per_batch = self.n_known // 2
+            # Consume complete shuffled speaker permutations before starting
+            # another one.  This preserves full known-speaker exposure within
+            # an epoch whenever the number of pair slots is large enough,
+            # unlike independent per-batch choices that can omit many speakers.
+            speaker_queue: List[int] = []
+            for _ in range(self.num_batches):
+                speakers: List[int] = []
+                deferred: List[int] = []
+                while len(speakers) < pairs_per_batch:
+                    if not speaker_queue:
+                        speaker_queue.extend(
+                            int(label)
+                            for label in rng.permutation(
+                                self.known_speaker_labels
+                            ).tolist()
+                        )
+                    candidate = speaker_queue.pop()
+                    if candidate in speakers:
+                        deferred.append(candidate)
+                    else:
+                        speakers.append(candidate)
+                # A duplicate deferred at a permutation boundary becomes an
+                # early candidate for the next batch rather than being lost.
+                speaker_queue.extend(deferred)
+                paired_indices = [
+                    rng.choice(
+                        self.known_indices_by_label[label],
+                        size=2,
+                        replace=False,
+                    )
+                    for label in speakers
+                ]
+                known_batches.append(
+                    np.concatenate(paired_indices).astype(np.int64, copy=False)
+                )
+            known_stream = np.concatenate(known_batches)
+        elif self.known_probabilities is None:
             known_stream = self._draw(
                 self.known_indices, self.num_batches * self.n_known, rng)
         else:
@@ -1398,6 +1494,8 @@ def make_balanced_batch_sampler(
     seed: int = 42,
     competition_known_count: Optional[int] = None,
     known_sampling_weights: Optional[np.ndarray] = None,
+    pair_known_files: bool = False,
+    train_file_ids: Optional[np.ndarray] = None,
 ) -> BalancedOODBatchSampler:
     """
     Build a real batch sampler so every emitted batch contains ~`ood_ratio`
@@ -1415,6 +1513,10 @@ def make_balanced_batch_sampler(
         ood_ratio:    target fraction of unknown samples per batch (0.5 matches
                       the ~50/50 eval mix).
         seed:         RNG seed for reproducibility.
+        pair_known_files: emit the known half as two distinct files for every
+                          selected speaker.
+        train_file_ids: exact file ids aligned with ``train_labels``; required
+                        when ``pair_known_files`` is enabled.
 
     Returns:
         ``BalancedOODBatchSampler`` for use as DataLoader ``batch_sampler``.
@@ -1426,6 +1528,8 @@ def make_balanced_batch_sampler(
         seed=seed,
         competition_known_count=competition_known_count,
         known_sampling_weights=known_sampling_weights,
+        pair_known_files=pair_known_files,
+        train_file_ids=train_file_ids,
     )
 
 
@@ -1530,6 +1634,9 @@ def get_dataloaders(
     consistency_enabled = bool(consistency_cfg.get("enabled", False))
     consistency_weight = float(consistency_cfg.get("weight", 0.0))
     consistency_type = str(consistency_cfg.get("type", "cosine")).lower()
+    consistency_pairing = str(
+        consistency_cfg.get("pairing", "clean_aug")
+    ).lower().strip()
     if consistency_enabled and consistency_weight <= 0:
         raise ValueError(
             "training.loss.consistency.enabled requires a positive weight"
@@ -1537,6 +1644,19 @@ def get_dataloaders(
     if consistency_enabled and consistency_type != "cosine":
         raise ValueError(
             "Only training.loss.consistency.type=cosine is supported"
+        )
+    if consistency_pairing not in {"clean_aug", "cross_file_batch"}:
+        raise ValueError(
+            "training.loss.consistency.pairing must be clean_aug or "
+            "cross_file_batch"
+        )
+    known_sampling_cfg = data_cfg.get("known_sampling", {}) or {}
+    pair_known_files = bool(known_sampling_cfg.get("pair_files", False))
+    if (consistency_enabled and consistency_pairing == "cross_file_batch"
+            and not pair_known_files):
+        raise ValueError(
+            "cross_file_batch consistency requires "
+            "data.known_sampling.pair_files=true"
         )
 
     batch_size = hw_profile["batch_size"]
@@ -1617,7 +1737,9 @@ def get_dataloaders(
         eval_speech_aware=audio_cfg.get("eval_speech_aware", False),
         speech_relative_db=audio_cfg.get("speech_relative_db", 35.0),
         short_audio_mode=audio_cfg.get("short_audio_mode", "pad"),
-        return_clean_aug_pair=consistency_enabled,
+        return_clean_aug_pair=(
+            consistency_enabled and consistency_pairing == "clean_aug"
+        ),
     )
 
     val_dataset = SpeakerDataset(
@@ -1667,6 +1789,8 @@ def get_dataloaders(
             train_labels, batch_size, ood_ratio=ood_ratio, seed=42,
             competition_known_count=competition_known_count,
             known_sampling_weights=known_sampling_weights,
+            pair_known_files=pair_known_files,
+            train_file_ids=train_df["audio_file"].astype(str).to_numpy(),
         )
         is_ood = ((train_labels == 0) | (train_labels > competition_known_count)
                   if competition_known_count is not None else train_labels == 0)
@@ -1676,6 +1800,8 @@ def get_dataloaders(
         print(f"     OOD pool: {is_ood.sum():,} samples | "
               f"Known pool: {(~is_ood).sum():,} samples "
               f"across {len(class_map) - 1} speakers")
+        if pair_known_files:
+            print("     Known sampler: two distinct files per selected speaker")
     train_loader_kwargs = {
         "num_workers": num_workers,
         "pin_memory": hw_profile["device"] == "cuda",

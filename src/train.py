@@ -612,6 +612,59 @@ def forward_multi_window_evaluation(
 #  Training Epoch
 # ─────────────────────────────────────────────────────────
 
+def cross_file_pair_consistency(
+    embeddings: torch.Tensor,
+    labels: torch.Tensor,
+    competition_known_count: int,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Cosine consistency for two distinct files of each known speaker.
+
+    The paired batch sampler guarantees exactly two rows for every selected
+    known speaker and keeps OOD rows unchanged.  The first row after the
+    deterministic batch shuffle is the student and the second is a detached
+    target.  Both rows still receive the ordinary supervised loss, so this
+    auxiliary term changes only cross-file invariance pressure.
+    """
+    if embeddings.ndim != 2:
+        raise ValueError(
+            f"embeddings must be two-dimensional, got {embeddings.shape}"
+        )
+    if labels.ndim != 1 or len(labels) != len(embeddings):
+        raise ValueError(
+            "labels must be one-dimensional and align with embeddings"
+        )
+    known_mask = (labels > 0) & (labels <= int(competition_known_count))
+    known_labels = labels[known_mask]
+    if not len(known_labels):
+        raise ValueError("cross-file consistency batch contains no known rows")
+
+    unique_labels, counts = torch.unique(known_labels, return_counts=True)
+    if not torch.all(counts == 2):
+        bad = [
+            (int(label.item()), int(count.item()))
+            for label, count in zip(unique_labels, counts)
+            if int(count.item()) != 2
+        ]
+        raise ValueError(
+            "cross-file consistency requires exactly two files for every "
+            f"selected known speaker; bad_counts={bad[:5]}"
+        )
+
+    anchor_indices = []
+    target_indices = []
+    for label in unique_labels:
+        indices = torch.nonzero(labels == label, as_tuple=False).flatten()
+        anchor_indices.append(indices[0])
+        target_indices.append(indices[1])
+    anchor = embeddings[torch.stack(anchor_indices)]
+    target = embeddings[torch.stack(target_indices)].detach()
+    cosines = F.cosine_similarity(anchor.float(), target.float(), dim=1)
+    pair_cosine = cosines.mean()
+    loss = 1.0 - pair_cosine
+    anchor_std = anchor.float().std(dim=0, unbiased=False).mean()
+    target_std = target.float().std(dim=0, unbiased=False).mean()
+    return loss, pair_cosine, anchor_std, target_std
+
 def train_epoch(
     model: nn.Module,
     dataloader: DataLoader,
@@ -627,6 +680,7 @@ def train_epoch(
     proto_criterion: Optional[nn.Module] = None,
     proto_weight: float = 0.0,
     consistency_weight: float = 0.0,
+    consistency_pairing: str = "clean_aug",
 ) -> Dict[str, float]:
     """
     Train for one epoch with AMP.
@@ -641,12 +695,20 @@ def train_epoch(
     on the augmented branch and a stop-gradient clean embedding acts as the
     target for a cosine consistency term.  The clean branch is evaluated with
     dropout disabled so the auxiliary target measures channel distortion, not
-    two unrelated dropout masks.
+    two unrelated dropout masks.  In ``cross_file_batch`` mode the balanced
+    sampler instead places two distinct files from every selected known speaker
+    in the same ordinary supervised batch; their already-computed embeddings
+    form a stop-gradient positive pair and OOD rows are excluded.
 
     Returns dict of average metrics.
     """
     if consistency_weight < 0:
         raise ValueError("consistency_weight must be non-negative")
+    consistency_pairing = str(consistency_pairing).lower().strip()
+    if consistency_pairing not in {"clean_aug", "cross_file_batch"}:
+        raise ValueError(
+            "consistency_pairing must be clean_aug or cross_file_batch"
+        )
     if autocast_fn is None:
         def autocast_fn():
             return autocast()
@@ -671,6 +733,11 @@ def train_epoch(
     for step, (batch_views, labels) in enumerate(progress_bar):
         clean_waveforms = None
         if isinstance(batch_views, dict):
+            if consistency_pairing != "clean_aug":
+                raise ValueError(
+                    "Paired clean/aug dataset views require "
+                    "consistency_pairing=clean_aug"
+                )
             if set(batch_views) != {"augmented", "clean"}:
                 raise ValueError(
                     "Paired training view dict must contain exactly "
@@ -684,7 +751,7 @@ def train_epoch(
                 )
         else:
             waveforms = batch_views
-            if consistency_weight > 0:
+            if consistency_weight > 0 and consistency_pairing != "cross_file_batch":
                 raise ValueError(
                     "consistency_weight > 0 requires paired clean/augmented dataset views"
                 )
@@ -740,7 +807,10 @@ def train_epoch(
 
             with autocast_fn():
                 need_embedding = (
-                    proto_criterion is not None or clean_embedding is not None
+                    proto_criterion is not None
+                    or clean_embedding is not None
+                    or (consistency_weight > 0
+                        and consistency_pairing == "cross_file_batch")
                 )
                 if need_embedding:
                     ood_logits, speaker_logits, emb = model(
@@ -770,6 +840,16 @@ def train_epoch(
                     embedding_std_clean = clean_embedding.float().std(
                         dim=0, unbiased=False,
                     ).mean()
+                elif (consistency_weight > 0
+                      and consistency_pairing == "cross_file_batch"):
+                    (
+                        consistency_loss,
+                        pair_cosine,
+                        embedding_std_augmented,
+                        embedding_std_clean,
+                    ) = cross_file_pair_consistency(
+                        emb, labels, criterion.competition_known_count,
+                    )
                 weighted_consistency_loss = (
                     consistency_weight * consistency_loss
                 )
@@ -998,6 +1078,9 @@ def train(config_path: str = "configs/default_config.yaml"):
     consistency_enabled = bool(consistency_cfg.get("enabled", False))
     consistency_weight = float(consistency_cfg.get("weight", 0.0))
     consistency_type = str(consistency_cfg.get("type", "cosine")).lower()
+    consistency_pairing = str(
+        consistency_cfg.get("pairing", "clean_aug")
+    ).lower().strip()
     if consistency_enabled and consistency_weight <= 0:
         raise ValueError(
             "training.loss.consistency.enabled requires a positive weight"
@@ -1005,6 +1088,11 @@ def train(config_path: str = "configs/default_config.yaml"):
     if consistency_enabled and consistency_type != "cosine":
         raise ValueError(
             "Only training.loss.consistency.type=cosine is supported"
+        )
+    if consistency_pairing not in {"clean_aug", "cross_file_batch"}:
+        raise ValueError(
+            "training.loss.consistency.pairing must be clean_aug or "
+            "cross_file_batch"
         )
     encoder_type = str(config.get("model", {}).get("encoder_type", "model"))
     reproducibility = seed_everything(
@@ -1025,8 +1113,9 @@ def train(config_path: str = "configs/default_config.yaml"):
           f"deterministic: {reproducibility['deterministic_algorithms']}")
     if consistency_enabled:
         print(
-            "  Paired clean/aug embedding consistency: "
-            f"cosine weight={consistency_weight:g} (clean stop-gradient)"
+            "  Embedding consistency: "
+            f"pairing={consistency_pairing}, cosine weight="
+            f"{consistency_weight:g} (target stop-gradient)"
         )
     print()
 
@@ -1175,6 +1264,7 @@ def train(config_path: str = "configs/default_config.yaml"):
             consistency_weight=(
                 consistency_weight if consistency_enabled else 0.0
             ),
+            consistency_pairing=consistency_pairing,
         )
 
         # Validate

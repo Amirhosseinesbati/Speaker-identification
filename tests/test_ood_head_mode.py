@@ -41,6 +41,7 @@ from src.pooling import IdentityPooling  # noqa: E402
 from src.train import (  # noqa: E402
     TwoPartLoss,
     compute_ood_accuracy,
+    cross_file_pair_consistency,
     forward_multi_window,
     forward_multi_window_evaluation,
     tune_ood_threshold,
@@ -332,6 +333,108 @@ def test_weighted_known_sampler_rejects_invalid_weights():
         make_balanced_batch_sampler(
             labels, batch_size=4,
             known_sampling_weights=np.asarray([1.0, 1.0, 0.0, 1.0]),
+        )
+
+
+def test_cross_file_pair_sampler_is_deterministic_and_emits_distinct_pairs():
+    labels = np.asarray(
+        [0] * 16 + [label for label in range(1, 9) for _ in range(3)],
+        dtype=np.int64,
+    )
+    sampler = make_balanced_batch_sampler(
+        labels,
+        batch_size=8,
+        ood_ratio=0.5,
+        seed=43,
+        pair_known_files=True,
+        train_file_ids=np.asarray([f"row-{index}" for index in range(len(labels))]),
+    )
+
+    first = list(sampler)
+    assert first == list(sampler)
+    for batch_indices in first:
+        indices = np.asarray(batch_indices)
+        batch_labels = labels[indices]
+        assert (batch_labels == 0).sum() == 4
+        known_labels = batch_labels[batch_labels > 0]
+        unique, counts = np.unique(known_labels, return_counts=True)
+        assert len(unique) == 2
+        np.testing.assert_array_equal(counts, np.asarray([2, 2]))
+        for label in unique:
+            pair_indices = indices[batch_labels == label]
+            assert len(np.unique(pair_indices)) == 2
+
+    sampler.set_epoch(1)
+    assert list(sampler) != first
+
+
+def test_cross_file_pair_sampler_rejects_unpairable_contracts():
+    with pytest.raises(ValueError, match="even number of known"):
+        make_balanced_batch_sampler(
+            np.asarray([0] * 5 + [1, 1, 2, 2, 3, 3]),
+            batch_size=6,
+            ood_ratio=0.5,
+            pair_known_files=True,
+            train_file_ids=np.asarray([f"row-{index}" for index in range(11)]),
+        )
+    with pytest.raises(ValueError, match="at least two distinct files"):
+        make_balanced_batch_sampler(
+            np.asarray([0, 0, 1, 1, 2, 3]),
+            batch_size=4,
+            pair_known_files=True,
+            train_file_ids=np.asarray([f"row-{index}" for index in range(6)]),
+        )
+    with pytest.raises(ValueError, match="incompatible"):
+        make_balanced_batch_sampler(
+            np.asarray([0, 0, 1, 1, 2, 2]),
+            batch_size=4,
+            pair_known_files=True,
+            known_sampling_weights=np.ones(6),
+        )
+    with pytest.raises(ValueError, match="duplicate file id"):
+        make_balanced_batch_sampler(
+            np.asarray([0, 0, 1, 1, 2, 2]),
+            batch_size=4,
+            pair_known_files=True,
+            train_file_ids=np.asarray(
+                ["ood-a", "ood-b", "same", "same", "two-a", "two-b"]
+            ),
+        )
+
+
+def test_cross_file_pair_consistency_uses_known_pairs_and_detached_targets():
+    embeddings = torch.tensor(
+        [
+            [0.5, 0.5],   # OOD ignored
+            [1.0, 0.0],   # speaker 1 anchor
+            [0.0, 1.0],   # speaker 2 anchor
+            [0.0, 1.0],   # speaker 1 target
+            [0.5, -0.5],  # OOD ignored
+            [1.0, 0.0],   # speaker 2 target
+        ],
+        requires_grad=True,
+    )
+    labels = torch.tensor([0, 1, 2, 1, 0, 2])
+
+    loss, cosine, anchor_std, target_std = cross_file_pair_consistency(
+        embeddings, labels, competition_known_count=2,
+    )
+    assert cosine.item() == pytest.approx(0.0)
+    assert loss.item() == pytest.approx(1.0)
+    assert anchor_std.item() > 0
+    assert target_std.item() > 0
+    loss.backward()
+    assert embeddings.grad is not None
+    assert embeddings.grad[[1, 2]].abs().sum().item() > 0
+    assert embeddings.grad[[3, 5]].abs().sum().item() == pytest.approx(0.0)
+
+
+def test_cross_file_pair_consistency_rejects_nonpaired_known_rows():
+    embeddings = torch.randn(5, 3)
+    labels = torch.tensor([0, 1, 1, 2, 3])
+    with pytest.raises(ValueError, match="exactly two files"):
+        cross_file_pair_consistency(
+            embeddings, labels, competition_known_count=3,
         )
 
 

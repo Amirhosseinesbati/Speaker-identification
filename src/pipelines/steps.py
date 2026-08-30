@@ -680,6 +680,9 @@ def train_model(
     consistency_enabled = bool(consistency_cfg.get("enabled", False))
     consistency_weight = float(consistency_cfg.get("weight", 0.0))
     consistency_type = str(consistency_cfg.get("type", "cosine")).lower()
+    consistency_pairing = str(
+        consistency_cfg.get("pairing", "clean_aug")
+    ).lower().strip()
     if consistency_enabled and consistency_weight <= 0:
         raise ValueError(
             "training.loss.consistency.enabled requires a positive weight"
@@ -687,6 +690,11 @@ def train_model(
     if consistency_enabled and consistency_type != "cosine":
         raise ValueError(
             "Only training.loss.consistency.type=cosine is supported"
+        )
+    if consistency_pairing not in {"clean_aug", "cross_file_batch"}:
+        raise ValueError(
+            "training.loss.consistency.pairing must be clean_aug or "
+            "cross_file_batch"
         )
     reproducibility = seed_everything(
         train_cfg.get("seed", 42),
@@ -702,6 +710,14 @@ def train_model(
     # ── DataLoaders (from train_df/val_df directly) ──
     audio_cfg = config["audio"]
     data_cfg = config["data"]
+    known_sampling_cfg = data_cfg.get("known_sampling", {}) or {}
+    pair_known_files = bool(known_sampling_cfg.get("pair_files", False))
+    if (consistency_enabled and consistency_pairing == "cross_file_batch"
+            and not pair_known_files):
+        raise ValueError(
+            "cross_file_batch consistency requires "
+            "data.known_sampling.pair_files=true"
+        )
     hw_profile = get_active_profile(config)
 
     # ── Filter short/corrupted files (min_valid_duration) ──
@@ -757,7 +773,9 @@ def train_model(
         eval_speech_aware=audio_cfg.get("eval_speech_aware", False),
         speech_relative_db=audio_cfg.get("speech_relative_db", 35.0),
         short_audio_mode=audio_cfg.get("short_audio_mode", "pad"),
-        return_clean_aug_pair=consistency_enabled,
+        return_clean_aug_pair=(
+            consistency_enabled and consistency_pairing == "clean_aug"
+        ),
     )
     val_dataset = SpeakerDataset(
         df=val_df,
@@ -795,6 +813,8 @@ def train_model(
             train_labels, hw_profile["batch_size"], ood_ratio=ood_ratio,
             competition_known_count=competition_known_count,
             known_sampling_weights=known_sampling_weights,
+            pair_known_files=pair_known_files,
+            train_file_ids=train_df["audio_file"].astype(str).to_numpy(),
         )
     train_loader_kwargs = {
         "num_workers": hw_profile["num_workers"],
@@ -932,10 +952,15 @@ def train_model(
         proto_weight = float(proto_cfg.get("weight", 0.1))
         print(f"  🎯 Prototypical loss enabled (weight={proto_weight}, "
               f"scale={proto_cfg.get('scale', 30.0)}, margin={proto_cfg.get('margin', 0.2)})")
+    if pair_known_files:
+        print(
+            "  🔗 Known sampler emits two distinct files per selected speaker"
+        )
     if consistency_enabled:
         print(
-            "  🔗 Paired clean/aug embedding consistency enabled "
-            f"(cosine weight={consistency_weight:g}, clean target stop-gradient)"
+            "  🔗 Embedding consistency enabled "
+            f"(pairing={consistency_pairing}, cosine weight="
+            f"{consistency_weight:g}, target stop-gradient)"
         )
 
     # ── Training Loop with MLflow autologging ──
@@ -1012,6 +1037,7 @@ def train_model(
             consistency_weight=(
                 consistency_weight if consistency_enabled else 0.0
             ),
+            consistency_pairing=consistency_pairing,
         )
         # Validate + competition metric (Macro-F1 over all 447 classes)
         val_metrics = validate_epoch(model, val_loader, criterion, device)

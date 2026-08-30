@@ -74,8 +74,10 @@ contract for both branches; never continue treatment alone.
 
 The next representation hypothesis is a known-only, speaker-balanced
 **cross-file positive-pair** treatment, compared with a sampler-matched control.
-Every known speaker has at least five distinct local files, so different files
-are a feasible declared recording proxy.  Keep the OOD objective unchanged.
+After the exact Fold-0 split, duration filtering and duplicate cleaning, all
+446 known speakers retain at least two distinct training files (median three,
+maximum five), so different files are a feasible declared recording proxy.
+Keep the OOD objective unchanged.
 Do not import SSPS clustering, memory queues and a new loss together.  This
 choice follows SSPS evidence that same-utterance positives retain channel cues
 ([Interspeech 2025](https://doi.org/10.21437/Interspeech.2025-183)).
@@ -91,11 +93,14 @@ would confound pair identity with a new classifier objective.  Therefore the
 cleanest conditional test is positive-only cosine alignment between two
 different files of the same known speaker, using the same declared coefficient
 as the current consistency test.  Its control must use the identical
-speaker-balanced two-file sampler, primary losses and two forward passes but
-zero cross-file alignment weight.  Unknown examples retain the existing OOD
-path and never receive a fabricated cross-file positive.  This design is only
-a conditional backlog item; no config or Run is authorised before the active
-same-crop pair is terminal.
+speaker-balanced two-file sampler and primary losses but zero cross-file
+alignment weight.  Both files are already ordinary supervised rows in the
+same batch, so treatment reuses their existing embeddings and does not add a
+second audio forward pass.  Unknown examples retain the existing OOD path and
+never receive a fabricated cross-file positive.  A deterministic sampler and
+loss path are implemented and CPU-tested, but this remains a conditional
+backlog item: no config or Run is authorised before the active same-crop pair
+is terminal.
 
 The latest SciSpace conclusion audit reinforces this order.  SSPS supplies
 direct speaker evidence for cross-recording positives, while the stage-wise
