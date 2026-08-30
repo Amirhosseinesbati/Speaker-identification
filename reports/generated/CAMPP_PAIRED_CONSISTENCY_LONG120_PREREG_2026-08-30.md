@@ -118,3 +118,41 @@ consistency weight from Fold-0 feedback, or interpreting extra epochs as an
 acceptance-gate pass.  The extension must preserve equal horizons and all
 scientific settings for both branches; its scheduler/resume contract and cost
 ceiling must be fixed before either extension branch starts.
+
+## Control diagnostic at epoch 40
+
+The first diagnostic milestone completed without intervention.  The Raw
+checkpoint `campp_milestone_epoch040_raw.pt` is readable, is `69,185,377`
+bytes, and has SHA256
+`8e5edec9853f992d788deaa7d81e01de311596e286887a52fdb37faa142323c8`.
+It binds epoch 40 to a 40-row history, scheduler `last_epoch=40`, 948 model
+tensors, optimizer state, RNG state, split `fold0/folds3/seed42`, the fixed
+120-epoch horizon, and milestones `[40, 80]`.  The worker remained on commit
+`e1059813cc974f269c9e4ec717b1210786197731`; the on-worker config SHA256
+remained
+`88eed2d8f3ab1a4e37f72ae1955ded78887e84332308fc965c66b777cae0b5e1`.
+The milestone intentionally snapshots the Raw `latest` checkpoint: validation
+metrics live in its embedded history and EMA is diagnostic rather than
+statefully resumed.  Their absence as top-level/EMA state fields is therefore
+not artifact corruption.
+
+At epoch 40, Raw probability-average Macro-F1 was
+`0.9380598877266396`, logit-average was `0.9359668513192003`, Known
+Accuracy was `0.9517937219730942`, and OOD-F1 was
+`0.9508650519031142`.  EMA Macro-F1 was `0.9401857297300604` with Known
+Accuracy `0.9506726457399103` and OOD-F1 `0.9487354750512645`.  The long
+control's best Raw point through this milestone was epoch 34 at
+`0.9424689925372944`, only `+0.0004976466519496` over the 40-epoch pilot's
+best.  Conversely, the current matched delta was `-0.0013302587084196`, the
+mean matched delta was `-0.0008078365415769`, the last-five delta was
+`-0.0021131896081753`, and the last-ten slope was
+`-0.0001506433522042` per epoch.  Thus the longer schedule has demonstrated a
+slightly higher isolated peak but not a sustained advantage by epoch 40.
+
+Operational integrity remained healthy: zero NaN, OOM, or traceback events;
+all 33 MLflow metric series were contiguous at 40/40 points; the Run stayed
+`RUNNING` with 22 parameters and five initial artifacts; GPU memory was
+`7,276/24,576 MiB`, temperature `55 C`, and workspace use `63%`.  These mixed
+scientific signals neither accept nor reject the control.  Per preregistration,
+training continues unchanged through epoch 120 and epoch 80 remains diagnostic
+only.
