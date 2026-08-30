@@ -93,16 +93,18 @@ def _training_view(batch: tuple[Any, Any]) -> torch.Tensor:
     return views
 
 
-def _consistency_weight(config: dict) -> float:
+def _consistency_settings(config: dict) -> tuple[float, str]:
     consistency = (
         ((config.get("training", {}).get("loss", {}) or {})
          .get("consistency", {}) or {})
     )
-    return (
+    weight = (
         float(consistency.get("weight", 0.0))
         if bool(consistency.get("enabled", False))
         else 0.0
     )
+    pairing = str(consistency.get("pairing", "clean_aug")).lower().strip()
+    return weight, pairing
 
 
 def main() -> int:
@@ -181,7 +183,7 @@ def main() -> int:
                 int(supervised_view.shape[1])
                 if supervised_view.dim() == 4 else 1
             )
-            consistency_weight = _consistency_weight(config)
+            consistency_weight, consistency_pairing = _consistency_settings(config)
             optimizer = _optimizer(model, config)
             hw_profile = get_active_profile(config)
             autocast_fn, scaler = build_amp(
@@ -200,6 +202,7 @@ def main() -> int:
                     proto_criterion=proto_criterion,
                     proto_weight=proto_weight,
                     consistency_weight=consistency_weight,
+                    consistency_pairing=consistency_pairing,
                 )
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats()
@@ -213,6 +216,7 @@ def main() -> int:
                     proto_criterion=proto_criterion,
                     proto_weight=proto_weight,
                     consistency_weight=consistency_weight,
+                    consistency_pairing=consistency_pairing,
                 )
             torch.cuda.synchronize()
             elapsed = time.perf_counter() - started

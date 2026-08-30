@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from scripts.probe_training_batch import _consistency_weight, _training_view
+from scripts.probe_training_batch import _consistency_settings, _training_view
 from src.batch_probe import select_recommended_batch
 
 
@@ -58,14 +58,22 @@ def test_probe_extracts_supervised_view_from_paired_batch():
         _training_view(({"augmented": augmented}, torch.arange(4)))
 
 
-def test_probe_passes_only_enabled_consistency_weight():
+def test_probe_passes_enabled_consistency_weight_and_pairing():
     config = {
         "training": {
             "loss": {
-                "consistency": {"enabled": True, "weight": 0.1},
+                "consistency": {
+                    "enabled": True,
+                    "weight": 0.1,
+                    "pairing": "cross_file_batch",
+                },
             }
         }
     }
-    assert _consistency_weight(config) == pytest.approx(0.1)
+    weight, pairing = _consistency_settings(config)
+    assert weight == pytest.approx(0.1)
+    assert pairing == "cross_file_batch"
     config["training"]["loss"]["consistency"]["enabled"] = False
-    assert _consistency_weight(config) == 0.0
+    weight, pairing = _consistency_settings(config)
+    assert weight == 0.0
+    assert pairing == "cross_file_batch"

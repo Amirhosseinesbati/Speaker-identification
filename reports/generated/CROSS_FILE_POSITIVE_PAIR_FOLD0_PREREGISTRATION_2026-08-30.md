@@ -21,6 +21,21 @@ branches is established:
 No milestone, selected checkpoint or leaderboard result may rewrite these
 branches.  Only one campaign Run may be active at a time.
 
+### Activation evidence (locked after the prerequisites completed)
+
+The same-crop Long-120 pair is terminal.  Its selected-treatment LME20 gain
+over the matched control was only `+0.0009816106`, its fixed fusion delta versus
+the external Control anchor was `-0.0023666564`, and it rescued `5/48` anchor
+errors.  Its deterministic spread ratio was `0.9998629037`, so the treatment
+was neutral rather than collapsed; the matched-extension checks also all
+failed.  This establishes activation branch 2 above.
+
+The subsequent CPU-only speaker-specific threshold diagnostic reproduced the
+locked three-Fold LME20 baseline exactly (`0.9633564052154656`) and was rejected
+on all folds: aggregate Macro-F1 delta `-0.0325577308`, Known Accuracy delta
+`-0.0345601436`, OOD-F1 delta `-0.0172666956`, with 10 rescued and 77 introduced
+errors.  It is retired and cannot alter this experiment.
+
 ## Hypothesis
 
 The dominant residual error after the externally validated LME20 package is
@@ -62,7 +77,12 @@ Known Accuracy and OOD-F1 remain the predeclared anti-collapse guardrails.
 
 Both branches will be created only after activation and will use:
 
-- profile family `p5-campp-known446-ood-crossfile-paired-long120-oof-f0`;
+- matched profile
+  `p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0`, raw config
+  SHA256 `c4e22f5c57d35fd8dabfa5f5ada39c93f5815c2d352aa0050d3a09c9eeb6822a`;
+- treatment profile
+  `p5-campp-known446-ood-crossfile-consistency-c01-long120-oof-f0`, raw config
+  SHA256 `f31cc022448fbf40147ec0254a28502bdd95a55271266552937870dedd44f4a1`;
 - CAM++ warm-started from the immutable selected P3 Raw checkpoint
   `checkpoints/p3-campp-known446-ood-channelrobust-oof-f0/campp_best_raw.pt`,
   SHA256 `a46715e603173201a35bf20d9b43f6ad27f0352561b4c834ce7a2b3a3ae67a06`;
