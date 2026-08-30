@@ -4,6 +4,9 @@ from pathlib import Path
 
 from src.experiment_config import load_profile
 from src.pipelines.steps import _training_milestone_epochs
+from scripts.audit_campp_paired_consistency_lme20 import (
+    assert_paired_single_objective_contract,
+)
 
 
 CONTROL = "p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0"
@@ -78,3 +81,14 @@ def test_cross_file_raw_configs_match_preregistered_hashes() -> None:
     for profile, expected in RAW_SHA256.items():
         path = root / "configs" / "experiments" / f"{profile}.yaml"
         assert hashlib.sha256(path.read_bytes()).hexdigest() == expected
+
+
+def test_terminal_audit_accepts_the_locked_cross_file_contract() -> None:
+    assert_paired_single_objective_contract(
+        load_profile(CONTROL),
+        load_profile(TREATMENT),
+        expected_epochs=120,
+        expected_milestones=(40, 80),
+        expected_pairing="cross_file_batch",
+        expected_ood_batch_ratio=0.5,
+    )

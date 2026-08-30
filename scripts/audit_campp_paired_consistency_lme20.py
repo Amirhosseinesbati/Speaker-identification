@@ -93,6 +93,33 @@ HORIZON_SPECS = {
         "milestones": (40, 80),
     },
 }
+P5_CROSS_FILE_MATCHED_PROFILE = (
+    "p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0"
+)
+P5_CROSS_FILE_TREATMENT_PROFILE = (
+    "p5-campp-known446-ood-crossfile-consistency-c01-long120-oof-f0"
+)
+P5_CROSS_FILE_MATCHED_CONFIG_SHA256 = (
+    "ceae8376e4bf6963063295e2e7d0a44a64aa492988fde9caa091989ea464726e"
+)
+P5_CROSS_FILE_TREATMENT_CONFIG_SHA256 = (
+    "5243b42eebf82d5f2fb75588ec0040072137a44ee9d811ee50cacff6ac98d5ec"
+)
+CROSS_FILE_HORIZON_SPECS = {
+    120: {
+        "matched_profile": P5_CROSS_FILE_MATCHED_PROFILE,
+        "treatment_profile": P5_CROSS_FILE_TREATMENT_PROFILE,
+        "matched_config_sha256": P5_CROSS_FILE_MATCHED_CONFIG_SHA256,
+        "treatment_config_sha256": P5_CROSS_FILE_TREATMENT_CONFIG_SHA256,
+        "milestones": (40, 80),
+        "pairing": "cross_file_batch",
+        "ood_batch_ratio": 0.5,
+    },
+}
+PAIRING_MODE_SPECS = {
+    "same_crop": HORIZON_SPECS,
+    "cross_file": CROSS_FILE_HORIZON_SPECS,
+}
 EXTERNAL_CONTROL_LME20_MACRO_F1 = 0.9611456662793696
 MINIMUM_MATCHED_MACRO_GAIN = 0.002
 MINIMUM_FUSION_MACRO_GAIN = 0.002
@@ -127,6 +154,8 @@ def assert_paired_single_objective_contract(
     *,
     expected_epochs: int = 80,
     expected_milestones: tuple[int, ...] = (40,),
+    expected_pairing: str | None = None,
+    expected_ood_batch_ratio: float | None = None,
 ) -> None:
     """Require identical paired science except the enabled consistency term."""
     matched = _normalise_identity(matched_config)
@@ -151,20 +180,40 @@ def assert_paired_single_objective_contract(
         configured_source = str(training.get("warm_start_checkpoint", ""))
         if not configured_source.replace("\\", "/").endswith(expected_source):
             raise RuntimeError(f"{name} warm start is not the locked source Raw")
+        if expected_pairing is not None:
+            pair_files = bool(
+                ((config.get("data", {}) or {}).get("known_sampling", {}) or {})
+                .get("pair_files", False)
+            )
+            if not pair_files:
+                raise RuntimeError(f"{name} does not enable matched file pairing")
+        if expected_ood_batch_ratio is not None:
+            actual_ratio = float(
+                (config.get("audio", {}) or {}).get("ood_batch_ratio", -1.0)
+            )
+            if actual_ratio != float(expected_ood_batch_ratio):
+                raise RuntimeError(
+                    f"{name} OOD batch ratio does not match the locked contract"
+                )
 
     matched_consistency = matched["training"]["loss"]["consistency"]
     treatment_consistency = treatment["training"]["loss"]["consistency"]
-    if matched_consistency != {
+    expected_matched_consistency = {
         "enabled": False,
         "type": "cosine",
         "weight": 0.1,
-    }:
-        raise RuntimeError("Unexpected matched-control consistency config")
-    if treatment_consistency != {
+    }
+    expected_treatment_consistency = {
         "enabled": True,
         "type": "cosine",
         "weight": 0.1,
-    }:
+    }
+    if expected_pairing is not None:
+        expected_matched_consistency["pairing"] = expected_pairing
+        expected_treatment_consistency["pairing"] = expected_pairing
+    if matched_consistency != expected_matched_consistency:
+        raise RuntimeError("Unexpected matched-control consistency config")
+    if treatment_consistency != expected_treatment_consistency:
         raise RuntimeError("Unexpected treatment consistency config")
     treatment_consistency["enabled"] = False
     if treatment != matched:
@@ -576,11 +625,7 @@ def main() -> int:
         type=Path,
         default=ROOT / "data" / "experiments" / "campp_control_centroid_crossfit",
     )
-    parser.add_argument(
-        "--cache-dir",
-        type=Path,
-        default=ROOT / "data" / "experiments" / "campp_paired_consistency_lme20",
-    )
+    parser.add_argument("--cache-dir", type=Path)
     parser.add_argument(
         "--labels",
         type=Path,
@@ -597,20 +642,42 @@ def main() -> int:
         default=ROOT / "data" / "processed" / "unknown_clusters_oof_f0.json",
     )
     parser.add_argument("--horizon", type=int, choices=sorted(HORIZON_SPECS), default=120)
+    parser.add_argument(
+        "--pairing-mode",
+        choices=sorted(PAIRING_MODE_SPECS),
+        default="same_crop",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--batch-size", type=int, default=48)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
 
-    spec = HORIZON_SPECS[args.horizon]
+    mode_specs = PAIRING_MODE_SPECS[args.pairing_mode]
+    if args.horizon not in mode_specs:
+        raise RuntimeError(
+            f"No {args.horizon}-epoch contract for {args.pairing_mode}"
+        )
+    spec = mode_specs[args.horizon]
     matched_profile = str(spec["matched_profile"])
     treatment_profile = str(spec["treatment_profile"])
     milestones = tuple(int(value) for value in spec["milestones"])
+    if args.cache_dir is None:
+        cache_name = (
+            "campp_cross_file_consistency_lme20"
+            if args.pairing_mode == "cross_file"
+            else "campp_paired_consistency_lme20"
+        )
+        args.cache_dir = ROOT / "data" / "experiments" / cache_name
     if args.output is None:
+        report_stem = (
+            "campp_cross_file_consistency"
+            if args.pairing_mode == "cross_file"
+            else "campp_paired_consistency"
+        )
         args.output = (
             ROOT / "reports" / "generated"
-            / f"campp_paired_consistency_long{args.horizon}_fold0.json"
+            / f"{report_stem}_long{args.horizon}_fold0.json"
         )
 
     device = (
@@ -704,6 +771,8 @@ def main() -> int:
         treatment["checkpoint"]["config"],
         expected_epochs=args.horizon,
         expected_milestones=milestones,
+        expected_pairing=spec.get("pairing"),
+        expected_ood_batch_ratio=spec.get("ood_batch_ratio"),
     )
     source_checkpoint = (
         args.checkpoint_root / SOURCE_PROFILE / "campp_best_raw.pt"
@@ -773,10 +842,15 @@ def main() -> int:
 
     report = {
         "contract": {
-            "scope": f"Fold 0 long{args.horizon} matched A/B",
+            "scope": (
+                f"Fold 0 long{args.horizon} {args.pairing_mode} matched A/B"
+            ),
             "matched_control_profile": matched_profile,
             "treatment_profile": treatment_profile,
-            "single_training_treatment": "fixed cosine consistency weight 0.1",
+            "single_training_treatment": (
+                f"fixed cosine consistency weight 0.1; "
+                f"pairing={spec.get('pairing', 'clean_aug')}"
+            ),
             "horizon": args.horizon,
             "diagnostic_milestones": list(milestones),
             "decision": "selected Raw probability-average LME20 direct argmax",
