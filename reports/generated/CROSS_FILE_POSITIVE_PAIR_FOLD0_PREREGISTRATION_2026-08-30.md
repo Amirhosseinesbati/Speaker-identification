@@ -48,6 +48,16 @@ to make pair identity the single changed variable relative to the active
 same-crop consistency experiment.  No coefficient or schedule search is
 authorised from Fold-0 outcomes.
 
+A later decision-focused SciSpace retrieval also found recording-level channel
+adversarial pairing (ICASSP 2020, DOI `10.1109/ICASSP40776.2020.9053323`) and
+noise-adaptive teacher--student training with an angular prototype guardrail
+(Interspeech 2024, DOI `10.21437/interspeech.2024-1630`).  These results support
+the need to suppress channel variation while explicitly preserving speaker
+separation, but they do not justify adding an adversary, teacher, adaptive
+margin or anchor to this paired ablation.  Those components remain excluded so
+that recording identity is the only treatment variable and embedding spread,
+Known Accuracy and OOD-F1 remain the predeclared anti-collapse guardrails.
+
 ## Exact paired recipes
 
 Both branches will be created only after activation and will use:
