@@ -36,6 +36,38 @@ AAMSoftmax from `8.79%` EER to `8.49%` EER with AAMSupCon.
 
 Primary source: <https://arxiv.org/pdf/2210.16636>
 
+The full-text methodology also sharpens an important transfer limitation. The
+paper forms each view from an utterance and one stochastic augmentation of
+that same utterance; it does not isolate the harder distinct-recording
+positive-pair question that P5 tests. Its ablation reports progressively lower
+EER as the contrastive batch grows from `128` to `512` to `1024`, while the
+main configuration uses batch size `3072`. A direct SupCon treatment at this
+campaign's batch size `48` would therefore remove one of the mechanism's
+experimentally supported ingredients and is not a defensible next run.
+
+### Identical-condition angular metric-learning evidence
+
+Chung et al. compare classification, triplet, prototypical, GE2E, and angular
+prototypical objectives under a shared speaker-recognition training setup.
+Their metric-learning batches contain `M` utterances from each of `N`
+speakers. Triplet mining uses `M=2`; prototypical and angular-prototypical
+losses classify a query against same-batch speaker centroids, so the softmax
+over multiple centroids supplies hard negatives without selecting one triplet
+per anchor. Angular prototypical performs best with `M=2` in their reported
+table and improves as total batch size increases from `200` to `800`.
+
+This is stronger support for P6's *combination* of cross-file compactness and
+explicit inter-class angular separation than for positive-only consistency.
+It is not a transferable coefficient or a licence to replace P6: the paper
+uses VoxCeleb verification EER, thousands of identities, much larger batches,
+and a test-time verification protocol. It also reports that difficult hard
+negative mining is delayed until epoch 100 because enabling it early can make
+training diverge. Any later P7 hard-negative mechanism must consequently have
+a preregistered warm-up and must not mine the aggregate `unknown` label as if
+it were one speaker.
+
+Primary source: <https://arxiv.org/pdf/2003.11982>
+
 ### Prototypical momentum contrastive speaker learning
 
 Xia et al. use a momentum encoder and a queue of `10000` negatives with
