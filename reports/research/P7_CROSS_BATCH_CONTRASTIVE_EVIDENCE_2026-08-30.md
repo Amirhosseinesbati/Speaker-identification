@@ -215,6 +215,18 @@ dependent on the quality of its latent assignments.  P5 avoids the assignment
 error by using authoritative known-speaker labels, but its positive-only
 consistency term still lacks SSPS's explicit contrastive negative mechanism.
 
+The primary paper's controlled comparison is especially relevant.  Replacing
+same-utterance positives with label-verified, different-recording positives
+reduces SimCLR EER from `6.30%` to `1.72%` and DINO EER from `3.07%` to
+`2.36%`; the authors describe these as roughly `73%` and `23%` relative
+reductions.  This is stronger support for the *pair provenance* in P5 than the
+pseudo-label result alone.  It still cannot be copied as an expected gain:
+their models are first trained for 80--100 SSL epochs, then resumed for 20
+positive-sampling epochs, use batch sizes `128` or `256`, and run on multiple
+A100 80GB GPUs.  P5 instead adds a low-weight detached cosine term alongside
+supervised ArcFace at batch `48`, so only the distinct-recording mechanism is
+shared.
+
 The same SciSpace pass surfaced three adjacent findings:
 
 - nearest-neighbour i-vector normalization reports recovering `46%` of unseen-
