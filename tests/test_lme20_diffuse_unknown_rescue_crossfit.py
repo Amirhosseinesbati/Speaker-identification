@@ -112,4 +112,7 @@ def test_gate_accepts_only_complete_crossfit_support() -> None:
             "ood_f1": -0.001,
         }
     }
-    assert crossfit_gate(selections, aggregate)["passed"] is True
+    gate = crossfit_gate(selections, aggregate)
+    assert gate["passed"] is True
+    assert gate["submission_authorized"] is False
+    assert "independent confirmation" in gate["next_action_if_passed"]

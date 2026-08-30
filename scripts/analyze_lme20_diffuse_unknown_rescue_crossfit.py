@@ -224,6 +224,12 @@ def crossfit_gate(selections: list[dict], aggregate: dict) -> dict:
         for row in selections
     ]
     return {
+        "scientific_role": "exploratory hypothesis screen only",
+        "submission_authorized": False,
+        "next_action_if_passed": (
+            "freeze the selected rule and preregister an independent "
+            "confirmation; do not promote this pooled-topology screen alone"
+        ),
         "minimum_aggregate_macro_gain": 0.001,
         "maximum_known_accuracy_drop": 0.001,
         "maximum_ood_f1_drop": 0.001,
@@ -332,7 +338,8 @@ def main() -> int:
             ),
             "scientific_role": (
                 "exploratory cross-fit after pooled descriptive topology; "
-                "not independent confirmation"
+                "not independent confirmation and never a standalone "
+                "submission authorization"
             ),
             "leaderboard_used": False,
         },
