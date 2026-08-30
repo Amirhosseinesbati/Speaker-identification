@@ -278,3 +278,16 @@ locked same-crop pair first; if neutral without collapse, test a sampler-matched
 cross-file positive-pair ablation before considering a larger fixed-anchor
 teacher design.  It still provides no scientific basis for changing the
 current fixed `0.1` coefficient during training.
+
+A still more targeted SciSpace pass returned Channel Adversarial Training
+(ICASSP 2020, DOI `10.1109/ICASSP40776.2020.9053323`).  Its Siamese adversary
+uses same-speaker pairs to predict whether they came from the same recording;
+discouraging that prediction produced recording-granular channel invariance and
+reported a 4% relative EER improvement over its VoxCeleb baseline.  Together
+with SSPS, this is independent evidence that the **recording identity of the
+positive pair**, not only augmentation strength, is a meaningful variable.
+However, the competition data do not expose reliable recording/session labels.
+Therefore distinct files can only be declared as a proxy, and importing an
+adversarial channel classifier would add an unidentifiable target and confound
+the planned single-variable ablation.  The conditional cross-file test remains
+positive-only and sampler-matched.

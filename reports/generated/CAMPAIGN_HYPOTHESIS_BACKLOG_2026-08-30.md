@@ -104,6 +104,14 @@ an asymmetric clean-anchor teacher.  Therefore a fixed-anchor/stop-gradient
 variant remains a later contingency, not a reason to change the running pair
 or to bundle teacher asymmetry with the cross-file sampler test.
 
+Channel-adversarial speaker training (ICASSP 2020, DOI
+`10.1109/ICASSP40776.2020.9053323`) provides a second, supervised indication
+that same-speaker **recording identity** is the relevant nuisance granularity.
+It does not authorise copying its adversary here: this dataset has no reliable
+session/channel labels and different files are only a declared proxy.  Keep
+the conditional test positive-only, and do not bundle an adversarial head with
+the sampler change.
+
 ### D. Consistency causes spread loss or late degradation
 
 Retire invariance-pressure variants.  Prefer one isolated training-side factor:
