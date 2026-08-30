@@ -291,3 +291,26 @@ Therefore distinct files can only be declared as a proxy, and importing an
 adversarial channel classifier would add an unidentifiable target and confound
 the planned single-variable ablation.  The conditional cross-file test remains
 positive-only and sampler-matched.
+
+## Speaker-specific schedule search (2026-08-30)
+
+A new SciSpace semantic search asked the narrower question that matters for the
+locked treatment: whether speaker-recognition studies compare applying a
+same-speaker cross-recording consistency/invariance loss throughout
+fine-tuning with introducing it only after a warm-up.  The retrieval surfaced
+Channel Adversarial Training (ICASSP 2020, DOI
+`10.1109/ICASSP40776.2020.9053323`), Within-Sample Variability-Invariant Loss
+(ICASSP 2020, DOI `10.1109/ICASSP40776.2020.9053407`) and Adaptive Large Margin
+Fine-Tuning (ICASSP 2023, DOI `10.1109/ICASSP49357.2023.10094744`).  SciSpace
+could extract conclusions for all three papers, although its methodology
+column had no data for these records.
+
+The first two papers support recording/channel-granular or clean/noisy
+invariance as a useful auxiliary objective; the third warns that a harder
+fine-tuning objective can fail under duration mismatch and motivates adapting
+the objective to the deployment condition.  None reports a controlled
+fixed-from-start versus delayed-consistency comparison.  This is negative
+boundary evidence: it does **not** justify changing the preregistered `0.1`
+coefficient or inserting a warm-up after observing Fold 0.  A delayed or
+scheduled-off term remains a separately preregistered fallback only after the
+matched 120-epoch pair is terminal and audited.

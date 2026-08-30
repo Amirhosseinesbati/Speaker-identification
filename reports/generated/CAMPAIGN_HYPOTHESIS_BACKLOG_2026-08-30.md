@@ -148,6 +148,11 @@ new loss in one Run.
   it requires a new preregistration and cannot be invented from the active
   treatment curve
   ([Interspeech 2024](https://doi.org/10.21437/Interspeech.2024-360)).
+- A speaker-specific SciSpace search found support for channel/recording and
+  clean/noisy invariance, but no controlled evidence that delaying the
+  consistency coefficient is better than applying it from the start.  Keep
+  schedule changes out of the locked pair; if needed, evaluate one as a new
+  matched experiment rather than a post-hoc rescue.
 
 ## Resource and execution rules
 
