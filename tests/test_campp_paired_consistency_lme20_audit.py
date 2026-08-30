@@ -246,12 +246,12 @@ def test_milestone_cli_writes_diagnostic_only_receipt(tmp_path) -> None:
     assert receipt["diagnostic"]["sha256"]
 
 
-def _terminal_history(*, treatment: bool) -> list[dict]:
+def _terminal_history(*, treatment: bool, horizon: int = 80) -> list[dict]:
     rows = []
-    for epoch in range(1, 81):
+    for epoch in range(1, horizon + 1):
         macro = 0.94
         if treatment:
-            macro = 0.930 + max(0, epoch - 60) * 0.00012
+            macro = 0.930 + max(0, epoch - (horizon - 20)) * 0.00012
         rows.append({
             "epoch": epoch,
             "val_macro_f1": macro,
@@ -290,6 +290,36 @@ def test_terminal_curve_and_matched_extension_gate_are_predeclared(tmp_path) -> 
         spread_ratio=0.90,
     )
     assert collapsed["eligible_for_separate_matched_extension"] is False
+
+
+def test_long120_terminal_curve_uses_epochs_101_to_120(tmp_path) -> None:
+    curves = {}
+    for profile, treatment in (
+        (LONG120_MATCHED_CONTROL_PROFILE, False),
+        (LONG120_TREATMENT_PROFILE, True),
+    ):
+        path = tmp_path / f"{profile}.pt"
+        torch.save({
+            "epoch": 120,
+            "config": {"logging": {"checkpoint_dir": f"checkpoints/{profile}"}},
+            "training_history": _terminal_history(
+                treatment=treatment, horizon=120,
+            ),
+        }, path)
+        curves[profile] = terminal_curve_diagnostic(
+            path, profile, expected_epoch=120,
+        )
+
+    treatment_curve = curves[LONG120_TREATMENT_PROFILE]
+    assert treatment_curve["previous_window"] == [101, 110]
+    assert treatment_curve["tail_window"] == [111, 120]
+    assert treatment_curve["best_raw_epoch"] == 120
+    diagnostic = matched_extension_diagnostic(
+        curves[LONG120_MATCHED_CONTROL_PROFILE],
+        treatment_curve,
+        spread_ratio=0.98,
+    )
+    assert diagnostic["eligible_for_separate_matched_extension"] is True
 
 
 def test_terminal_curve_rejects_incomplete_history(tmp_path) -> None:
