@@ -1,0 +1,198 @@
+{
+  "profile": "p4-campp-known446-ood-channelrobust-paired-control-oof-f0",
+  "git_commit": "2fd34a32a39c50e683416c58c47f2513568b7b48",
+  "config_sha256": "2406a262e8208ad2e79223cd42453fb947bc09669e7959d50dabdd3d4a80a626",
+  "started_at_utc": "2026-08-29T21:37:31.329353+00:00",
+  "finished_at_utc": "2026-08-29T23:36:00.808105+00:00",
+  "exit_code": 0,
+  "receipt_artifacts": [
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/best_model.pt",
+      "size_bytes": 69120567,
+      "sha256": "4acb2e73fa1e70c395adc5aa5527a1ac60f7bb29f4f253b7bea7d7a5694b13fe"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best.pt",
+      "size_bytes": 69120631,
+      "sha256": "ac98ffd5f7caad31cd993490a2515d65992d99813f79e976d9530f610afabac6"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_bundle/MODEL_CARD.md",
+      "size_bytes": 600,
+      "sha256": "c25c905027620c696ae531c8acf75da383da2115c0920aecf0a4dc3845790769"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_bundle/class_map.json",
+      "size_bytes": 33615,
+      "sha256": "de9f082ebdbcfc9857cf93df44f186defefe31b44dffeada1a800a85affda32d"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_bundle/manifest.json",
+      "size_bytes": 592,
+      "sha256": "dd39dc78dc3c128225f9f3a25abd38ea6e329e59099d88e3af2faa0dca5e6fcc"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_bundle/metadata.json",
+      "size_bytes": 2865,
+      "sha256": "695406dc96076af6765a9a72194227ab6e9e7fe725e345fbca6e9d7fa7290777"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_bundle/oof_predictions.npz",
+      "size_bytes": 5262315,
+      "sha256": "fc0a657a54cfadbd46be0d34e8066098aa05f5bf0cf6e4139d7ba83127f3216b"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_bundle/resolved_config.yaml",
+      "size_bytes": 6713,
+      "sha256": "11343e56725ad7ebb27b235cdffd45ff1cf1e0aa3238c0475bdd74d55ce271b6"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_bundle/training_history.json",
+      "size_bytes": 64201,
+      "sha256": "f785bfdf0c7f0603f5af5f5ff1a28d945eed509728679ce0889af3d04d4ef019"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_bundle/unknown_clusters.json",
+      "size_bytes": 72198,
+      "sha256": "321dd54d57c27e7ac8ac7beea8211aca1b3f236dfe7dfba35d49f97e562ab5f9"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_ema.pt",
+      "size_bytes": 69129323,
+      "sha256": "ba04bc96c7c5ab5a55aa0b1f0e34172af2cef6e2ea7b8d53c92d75d4bf9cc5ab"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_ema_bundle/MODEL_CARD.md",
+      "size_bytes": 604,
+      "sha256": "8fe1bd6a685ccfaa56e3ccb083b58e8bbee598e8c1ddabbbf02f01c86a131454"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_ema_bundle/class_map.json",
+      "size_bytes": 33615,
+      "sha256": "de9f082ebdbcfc9857cf93df44f186defefe31b44dffeada1a800a85affda32d"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_ema_bundle/manifest.json",
+      "size_bytes": 452,
+      "sha256": "9d1b61d9cc009a59d071041aa015e48862edcf4cdf5459c12573d332800a1762"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_ema_bundle/metadata.json",
+      "size_bytes": 2821,
+      "sha256": "118c35d118dd71f0460ab86f67fa9ee184ebd6e25974705265643b9339d2f1b1"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_ema_bundle/resolved_config.yaml",
+      "size_bytes": 6713,
+      "sha256": "11343e56725ad7ebb27b235cdffd45ff1cf1e0aa3238c0475bdd74d55ce271b6"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_ema_bundle/training_history.json",
+      "size_bytes": 64201,
+      "sha256": "f785bfdf0c7f0603f5af5f5ff1a28d945eed509728679ce0889af3d04d4ef019"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_ema_bundle/unknown_clusters.json",
+      "size_bytes": 72198,
+      "sha256": "321dd54d57c27e7ac8ac7beea8211aca1b3f236dfe7dfba35d49f97e562ab5f9"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_raw.pt",
+      "size_bytes": 69129323,
+      "sha256": "ceac6e2d24abd7951055e2a1007bcb8f9dd3b686a8e4900118c6202546f90c64"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_raw_bundle/MODEL_CARD.md",
+      "size_bytes": 604,
+      "sha256": "5f94fcd488f9b81d19484f9be4b7f16f3743a3e200872bda748ec47ca672d2eb"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_raw_bundle/class_map.json",
+      "size_bytes": 33615,
+      "sha256": "de9f082ebdbcfc9857cf93df44f186defefe31b44dffeada1a800a85affda32d"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_raw_bundle/manifest.json",
+      "size_bytes": 452,
+      "sha256": "5f5b5f65ce39914e8589bb4befd782d73d022433c81328cbcc841998d0d22078"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_raw_bundle/metadata.json",
+      "size_bytes": 2821,
+      "sha256": "ee15d268e19f59046158dbb67ae1844c6e4a4346fc34e09b58aff531be778b65"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_raw_bundle/resolved_config.yaml",
+      "size_bytes": 6713,
+      "sha256": "11343e56725ad7ebb27b235cdffd45ff1cf1e0aa3238c0475bdd74d55ce271b6"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_raw_bundle/training_history.json",
+      "size_bytes": 64201,
+      "sha256": "f785bfdf0c7f0603f5af5f5ff1a28d945eed509728679ce0889af3d04d4ef019"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_raw_bundle/unknown_clusters.json",
+      "size_bytes": 72198,
+      "sha256": "321dd54d57c27e7ac8ac7beea8211aca1b3f236dfe7dfba35d49f97e562ab5f9"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_latest.pt",
+      "size_bytes": 69150161,
+      "sha256": "6c0c01ed5c2d0c12cd08775977e2601f7316f6d1c8599f30f296655104699459"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/init_model.pt",
+      "size_bytes": 30758533,
+      "sha256": "0372b81fc1fd2b8ca598923e6358cc5dda2a639607213756d08d8f29a96ae32d"
+    },
+    {
+      "path": "checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/latest_model.pt",
+      "size_bytes": 69150161,
+      "sha256": "9e2fcaac5de15b4ca993482c79ec2144c0a791007410e43586d932af55e72128"
+    },
+    {
+      "path": "configs/experiments/p4-campp-known446-ood-channelrobust-paired-control-oof-f0.yaml",
+      "size_bytes": 3088,
+      "sha256": "2406a262e8208ad2e79223cd42453fb947bc09669e7959d50dabdd3d4a80a626"
+    },
+    {
+      "path": "data/experiments/campaign_logs/20260829T213731Z_p4-campp-known446-ood-channelrobust-paired-control-oof-f0.log",
+      "size_bytes": 1062321,
+      "sha256": "3e54fbc2982e00ffaf26fd68ed7836510637566b1b8c7b5eb32e79c56bd638de"
+    }
+  ],
+  "readable_checkpoints": 7,
+  "canonical_checkpoint": {
+    "path": "/workspace/iaaa-speaker/checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best.pt",
+    "sha256": "ac98ffd5f7caad31cd993490a2515d65992d99813f79e976d9530f610afabac6",
+    "configured_epochs": 40,
+    "history_points": 40,
+    "selected_epoch": 26,
+    "weight_variant": "raw",
+    "class_map_size": 1001,
+    "competition_num_known": 446,
+    "competition_class_count": 447,
+    "split": {
+      "fold": 0,
+      "folds": 3,
+      "scheme": "kfold",
+      "seed": 42
+    }
+  },
+  "oof": {
+    "sha256": "fc0a657a54cfadbd46be0d34e8066098aa05f5bf0cf6e4139d7ba83127f3216b",
+    "path": "/workspace/iaaa-speaker/checkpoints/p4-campp-known446-ood-channelrobust-paired-control-oof-f0/campp_best_bundle/oof_predictions.npz",
+    "rows": 1632,
+    "unique_files": 1632,
+    "competition_classes": 447,
+    "embedding_dim": 192,
+    "split": {
+      "scheme": "kfold",
+      "folds": 3,
+      "fold": 0,
+      "seed": 42
+    }
+  },
+  "passed": true
+}

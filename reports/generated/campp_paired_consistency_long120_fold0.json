@@ -1,0 +1,709 @@
+{
+  "contract": {
+    "scope": "Fold 0 long120 matched A/B",
+    "matched_control_profile": "p4-campp-known446-ood-channelrobust-paired-control-long120-oof-f0",
+    "treatment_profile": "p4-campp-known446-ood-channelrobust-consistency-c01-long120-oof-f0",
+    "single_training_treatment": "fixed cosine consistency weight 0.1",
+    "horizon": 120,
+    "diagnostic_milestones": [
+      40,
+      80
+    ],
+    "decision": "selected Raw probability-average LME20 direct argmax",
+    "fusion": "fixed 50/50 probability-evidence average",
+    "parameter_search": false,
+    "leaderboard_tuning": false
+  },
+  "provenance": {
+    "cleaning": {
+      "source_rows": 4467,
+      "corrupted_files": [
+        "01ebadf4-5eda-4e3f-a736-ff181c60d40b.wav",
+        "05006e09-6c16-4640-8dad-108a558eae85.wav",
+        "050ce7bc-672c-42fc-b3c9-6da88dd7133a.wav",
+        "0841e792-edc5-4aaf-8ec6-8053094a6f44.wav",
+        "0f2bebd9-4651-4e53-96cd-42dd2acbace1.wav",
+        "13754650-99ed-4dfa-8d8b-f89dbcd556ac.wav",
+        "1974c5f7-0cbd-4dfe-8279-30d23313a91f.wav",
+        "1ca9b207-db27-424d-a611-5c2995a2e9d1.wav",
+        "1fe8a839-b21e-4bb8-bf18-222952e42d3b.wav",
+        "2301671f-fc16-489d-904d-4d7381b8def0.wav",
+        "2563e0dd-c66c-4db9-aeaf-9c39ee0f2688.wav",
+        "2705dcc7-9fc2-412a-bc8f-fa26287b5a91.wav",
+        "286a8f8f-8781-459e-8b7b-dcfa6a91c5dd.wav",
+        "28cadf09-485a-46c4-92f9-58a5e807185b.wav",
+        "291f16d2-6949-4aef-a707-bede941efe46.wav",
+        "3394469b-819a-4a59-a630-cdf4a0e2505f.wav",
+        "384821fc-22b9-46e7-9395-08c3acafbbe7.wav",
+        "407a931e-1d0c-4f81-9f0b-2aa14da8e678.wav",
+        "4381a3fd-9ba5-436d-8a25-f5b35b04b726.wav",
+        "4f018d8d-c5cd-48e8-af14-309c3cecab46.wav",
+        "52083e6d-3de3-4043-b2d7-9cfc4afd420b.wav",
+        "520d1af7-c49f-4122-a8fd-741a38c63be5.wav",
+        "55efd02e-abd3-444e-80e8-874506eded35.wav",
+        "59b87369-b40e-4947-a7a7-6603f0d39701.wav",
+        "5a33a496-6aff-4623-822a-3d56e35ebc77.wav",
+        "5edbc0d1-59ce-4afe-bc5e-f11ff206ceba.wav",
+        "600c513a-cec9-42a7-961c-2d889898ebdf.wav",
+        "6102b145-5327-4236-964b-148283cf69b6.wav",
+        "6173f7bf-b974-4624-ba29-00fde27b07b9.wav",
+        "662fead2-276f-4a41-8a10-0820197a4ce0.wav",
+        "69efee7f-4887-46ca-a5dc-23a2cb0f461d.wav",
+        "69f3c7ed-73f0-41f7-b9e8-e4b1a2bfd86f.wav",
+        "6d2f60eb-bc77-4088-bff7-5bba59b4dbe3.wav",
+        "6fb370fe-3d52-4391-83c6-9273d9862936.wav",
+        "711d7c9c-37b3-4373-a284-6fd3b3a2399b.wav",
+        "72be17b0-6947-41f7-ba65-9009bcec8d22.wav",
+        "747366a9-0495-481a-b20a-5b02a980801a.wav",
+        "750ee4de-01e6-4ea4-9f8d-a3865e7dd2f0.wav",
+        "75f12450-2591-4c3e-97b4-2554cc5b5feb.wav",
+        "7c633893-0cee-4f18-835d-98cf934d561b.wav",
+        "806ebbc1-b431-401d-8251-a407a40e0f6f.wav",
+        "85e0ab73-a06c-4ec4-90b7-de5522bed596.wav",
+        "901010ae-8754-4082-a295-8c2b60c35817.wav",
+        "91b8ef1e-7ca6-4589-8eba-3f1a872a45e7.wav",
+        "91dd13be-9043-485c-b452-8a698e5c1f52.wav",
+        "94682e07-0fc7-41a3-b799-52f157933c56.wav",
+        "95958d3a-4120-4dce-95f4-0b6ba0b5bd0f.wav",
+        "987db356-e28f-4717-ae19-6f7b54b067b6.wav",
+        "a067816d-4c07-49d7-bdd2-83e26157673a.wav",
+        "a4bfa480-215e-48a7-b20b-829936b82437.wav",
+        "a557ed64-77f7-4942-9a6e-ae20291103a0.wav",
+        "ae762722-727d-47e1-a4c7-dda063a979cd.wav",
+        "b0d9350a-696b-4b24-bdb3-23889660a145.wav",
+        "b0e8bdbd-e5bc-4962-9a2f-f329bdd314e9.wav",
+        "b150a109-ea47-4ef8-8300-087961a63121.wav",
+        "b4e3d54e-16f0-4a21-aa92-c565c9da17ca.wav",
+        "b5938eaa-5e2a-457f-9c45-00087fb66eef.wav",
+        "b80023f3-fc9e-429d-a095-291bc17cade8.wav",
+        "b9ec2ad9-a81a-4253-88d2-501435bae914.wav",
+        "c936f82d-777c-4e83-805c-cf17fa03e822.wav",
+        "ce7be02b-48e1-4271-84b6-029d6e6ab53e.wav",
+        "d533c46c-061c-4551-b0db-fb9b7616b596.wav",
+        "d6a041e4-e35d-4863-8d14-98a8f34c21b6.wav",
+        "d7ea415b-9e49-442d-a015-80df764c31c9.wav",
+        "df5e420e-8774-4e8f-9fcc-da98a5501174.wav",
+        "e5c9e374-4b29-43a4-a68a-137c5cd5d847.wav",
+        "ef41298d-eb76-4fb8-85fe-310dab534976.wav",
+        "f27230a3-97c7-42b5-9776-dd46a121b972.wav",
+        "f5063538-f2aa-4175-bab9-af413d6c5b72.wav",
+        "fa8d25c8-3718-45f4-bb9b-4919e14f8413.wav"
+      ],
+      "duplicate_groups": 9,
+      "duplicate_cleaning": {
+        "n_raw_files": 4529,
+        "n_conflicting_files_dropped": 48,
+        "n_nonconflicting_duplicates_dropped": 14,
+        "n_files_after_clean": 4467
+      }
+    },
+    "source_checkpoint_sha256": "a46715e603173201a35bf20d9b43f6ad27f0352561b4c834ce7a2b3a3ae67a06",
+    "config_sha256": {
+      "p4-campp-known446-ood-channelrobust-paired-control-long120-oof-f0": "88eed2d8f3ab1a4e37f72ae1955ded78887e84332308fc965c66b777cae0b5e1",
+      "p4-campp-known446-ood-channelrobust-consistency-c01-long120-oof-f0": "823891d4aa396b02d21563efc487acbe71f3bcff84572b96eb8a2d1554826f77"
+    },
+    "external_control_artifact": {
+      "fold": 0,
+      "checkpoint": "/workspace/iaaa-speaker/checkpoints/p0-campp-known446-ood-control-oof-f0/campp_best_raw.pt",
+      "checkpoint_sha256": "f50f67f549b913b57111043b43daca1ff8bcbbf49bebe5dccab91ade8b19ae0d",
+      "cluster_map": "/workspace/iaaa-speaker/data/processed/unknown_clusters_oof_f0.json",
+      "cluster_map_sha256": "321dd54d57c27e7ac8ac7beea8211aca1b3f236dfe7dfba35d49f97e562ab5f9",
+      "train_file_sha256": "e2aaa52efcdd8ef03f2eae25bb5102e75c5ca36d889c17c1c60df5167555528d",
+      "train_files": 2819,
+      "max_eval_windows": 8,
+      "embedding_dim": 192,
+      "known_train_files": 1337,
+      "unknown_train_files": 1482,
+      "known_size_min": 2,
+      "known_size_max": 5,
+      "unknown_size_min": 1,
+      "unknown_size_max": 10,
+      "artifact_sha256": "2c919d29eaf66df3cb35918b64f78324affd43ff0b009993eeb0e952d1540fc5"
+    },
+    "validation_files": 1632,
+    "validation_file_sha256": "94a756be2fc528b4cc0d079a07d8d4ad680f0c392ede9f8b3148e393ce6e19ca",
+    "matched": {
+      "checkpoint_sha256": "db9a8f7b39a8be8d6de494079d1ad6d4d2e0fb8ef3957d1009a8d40cde265af2",
+      "latest_sha256": "3660c8136815ca17266cfef688e5f65577b343de92f2550e6c5d4594b357b654",
+      "oof_sha256": "6e0c5e4c6761b8a501d9e73ed0979bd05730ed0dedb73ffea74011171d91071a",
+      "bundle_binding": {
+        "manifest_sha256": "36925b9b7db046a7117edfb86be1b0baf81552d31b9b55a46bd5b2603403abe6",
+        "selected_checkpoint_sha256": "cbd2329c6244a577dff60b189d4d82057b333e650daa039e1d0459a064ed1307",
+        "raw_checkpoint_sha256": "db9a8f7b39a8be8d6de494079d1ad6d4d2e0fb8ef3957d1009a8d40cde265af2",
+        "oof_predictions_sha256": "6e0c5e4c6761b8a501d9e73ed0979bd05730ed0dedb73ffea74011171d91071a",
+        "selected_epoch": 51,
+        "selected_val_macro_f1": 0.9437080966861129,
+        "weight_variant": "raw"
+      },
+      "train_artifact": {
+        "fold": 0,
+        "checkpoint": "/workspace/iaaa-speaker/checkpoints/p4-campp-known446-ood-channelrobust-paired-control-long120-oof-f0/campp_best_raw.pt",
+        "checkpoint_sha256": "db9a8f7b39a8be8d6de494079d1ad6d4d2e0fb8ef3957d1009a8d40cde265af2",
+        "cluster_map": "/workspace/iaaa-speaker/data/processed/unknown_clusters_oof_f0.json",
+        "cluster_map_sha256": "321dd54d57c27e7ac8ac7beea8211aca1b3f236dfe7dfba35d49f97e562ab5f9",
+        "train_file_sha256": "e2aaa52efcdd8ef03f2eae25bb5102e75c5ca36d889c17c1c60df5167555528d",
+        "train_files": 2819,
+        "max_eval_windows": 8,
+        "embedding_dim": 192,
+        "known_train_files": 1337,
+        "unknown_train_files": 1482,
+        "known_size_min": 2,
+        "known_size_max": 5,
+        "unknown_size_min": 1,
+        "unknown_size_max": 10,
+        "artifact_sha256": "70c9abf8c55c700ed5dcc5374cfeb6995e4b4d53709106f14ce816619484aaf1"
+      },
+      "milestones": {
+        "40": {
+          "path": "/workspace/iaaa-speaker/checkpoints/p4-campp-known446-ood-channelrobust-paired-control-long120-oof-f0/campp_milestone_epoch040_raw.pt",
+          "sha256": "8e5edec9853f992d788deaa7d81e01de311596e286887a52fdb37faa142323c8",
+          "epoch": 40,
+          "metrics": {
+            "val_macro_f1": 0.9380598877266396,
+            "val_logit_avg_macro_f1": 0.9359668513192003,
+            "val_known_acc": 0.9517937219730942,
+            "val_ood_f1": 0.9508650519031142,
+            "val_ema_macro_f1": 0.9401857297300604,
+            "train_loss": 1.3786166350132432,
+            "train_loss_consistency": 0.0,
+            "train_loss_consistency_weighted": 0.0,
+            "train_pair_cosine": 0.0,
+            "train_embedding_std_augmented": 0.0,
+            "train_embedding_std_clean": 0.0
+          },
+          "history_length": 40,
+          "history_contiguous": true,
+          "trajectory": {
+            "window_epochs": 10,
+            "previous_window": [
+              21,
+              30
+            ],
+            "tail_window": [
+              31,
+              40
+            ],
+            "previous_means": {
+              "val_macro_f1": 0.9383975947988554,
+              "val_logit_avg_macro_f1": 0.9360930473877588,
+              "val_ema_macro_f1": 0.9393042750769858,
+              "val_known_acc": 0.9485426008968609,
+              "val_ood_f1": 0.947981729345296,
+              "train_loss": 1.4106375919590737,
+              "val_loss": 1.2809246671550416
+            },
+            "tail_means": {
+              "val_macro_f1": 0.9386314089724671,
+              "val_logit_avg_macro_f1": 0.9362754027168041,
+              "val_ema_macro_f1": 0.9404246008912429,
+              "val_known_acc": 0.9492152466367714,
+              "val_ood_f1": 0.9477347601877216,
+              "train_loss": 1.3856782716538372,
+              "val_loss": 1.2847233833635552
+            },
+            "tail_minus_previous": {
+              "val_macro_f1": 0.00023381417361167944,
+              "val_logit_avg_macro_f1": 0.00018235532904531393,
+              "val_ema_macro_f1": 0.0011203258142571393,
+              "val_known_acc": 0.000672645739910438,
+              "val_ood_f1": -0.00024696915757438376,
+              "train_loss": -0.02495932030523651,
+              "val_loss": 0.003798716208513575
+            },
+            "slopes_last_20": {
+              "val_macro_f1": 3.211129780227589e-05,
+              "val_logit_avg_macro_f1": 4.105100804236162e-05,
+              "val_ema_macro_f1": 9.899110748073367e-05,
+              "val_known_acc": 0.00010789305101318321,
+              "val_ood_f1": 6.239402175197678e-05,
+              "train_loss": -0.0021435348453695425,
+              "val_loss": 0.00040466112934445166
+            },
+            "best_raw_epoch": 34,
+            "best_raw_macro_f1": 0.9424689925372944,
+            "best_raw_known_accuracy": 0.9506726457399103,
+            "best_raw_ood_f1": 0.9503063308373043
+          }
+        },
+        "80": {
+          "path": "/workspace/iaaa-speaker/checkpoints/p4-campp-known446-ood-channelrobust-paired-control-long120-oof-f0/campp_milestone_epoch080_raw.pt",
+          "sha256": "a061ffcc3422e3a02dd6720bd79c3d1f0d498e65a2a34e1d9c2ba5327f483ca9",
+          "epoch": 80,
+          "metrics": {
+            "val_macro_f1": 0.9402796624328146,
+            "val_logit_avg_macro_f1": 0.9378181739925323,
+            "val_known_acc": 0.9484304932735426,
+            "val_ood_f1": 0.9494535519125683,
+            "val_ema_macro_f1": 0.9383145038893258,
+            "train_loss": 1.3007950423092678,
+            "train_loss_consistency": 0.0,
+            "train_loss_consistency_weighted": 0.0,
+            "train_pair_cosine": 0.0,
+            "train_embedding_std_augmented": 0.0,
+            "train_embedding_std_clean": 0.0
+          },
+          "history_length": 80,
+          "history_contiguous": true,
+          "trajectory": {
+            "window_epochs": 10,
+            "previous_window": [
+              61,
+              70
+            ],
+            "tail_window": [
+              71,
+              80
+            ],
+            "previous_means": {
+              "val_macro_f1": 0.9383123745210409,
+              "val_logit_avg_macro_f1": 0.9366501885596856,
+              "val_ema_macro_f1": 0.9392760589470983,
+              "val_known_acc": 0.9464125560538117,
+              "val_ood_f1": 0.9492822045560325,
+              "train_loss": 1.3059203216741824,
+              "val_loss": 1.287582000213511
+            },
+            "tail_means": {
+              "val_macro_f1": 0.9384482918685111,
+              "val_logit_avg_macro_f1": 0.937312717143687,
+              "val_ema_macro_f1": 0.9387299396321348,
+              "val_known_acc": 0.947085201793722,
+              "val_ood_f1": 0.9487674176053706,
+              "train_loss": 1.2775370110597075,
+              "val_loss": 1.2898615523296244
+            },
+            "tail_minus_previous": {
+              "val_macro_f1": 0.00013591734747020467,
+              "val_logit_avg_macro_f1": 0.0006625285840013984,
+              "val_ema_macro_f1": -0.0005461193149635113,
+              "val_known_acc": 0.0006726457399103269,
+              "val_ood_f1": -0.0005147869506618719,
+              "train_loss": -0.028383310614474855,
+              "val_loss": 0.0022795521161134147
+            },
+            "slopes_last_20": {
+              "val_macro_f1": 3.367407032382717e-05,
+              "val_logit_avg_macro_f1": 9.727396089727241e-05,
+              "val_ema_macro_f1": -5.0887195638745176e-05,
+              "val_known_acc": 7.249064364945591e-05,
+              "val_ood_f1": -4.973138157610235e-05,
+              "train_loss": -0.002291457051068911,
+              "val_loss": 0.00032171457939995116
+            },
+            "best_raw_epoch": 51,
+            "best_raw_macro_f1": 0.9437080966861129,
+            "best_raw_known_accuracy": 0.9517937219730942,
+            "best_raw_ood_f1": 0.9549795361527967
+          }
+        }
+      },
+      "terminal_curve": {
+        "path": "/workspace/iaaa-speaker/checkpoints/p4-campp-known446-ood-channelrobust-paired-control-long120-oof-f0/campp_latest.pt",
+        "sha256": "3660c8136815ca17266cfef688e5f65577b343de92f2550e6c5d4594b357b654",
+        "terminal_epoch": 120,
+        "window_epochs": 10,
+        "previous_window": [
+          101,
+          110
+        ],
+        "tail_window": [
+          111,
+          120
+        ],
+        "previous_means": {
+          "val_macro_f1": 0.9381575249312771,
+          "val_known_acc": 0.9463004484304933,
+          "val_ood_f1": 0.9495882474554802
+        },
+        "tail_means": {
+          "val_macro_f1": 0.9379324098319668,
+          "val_known_acc": 0.945403587443946,
+          "val_ood_f1": 0.9492792583811523
+        },
+        "tail_minus_previous": {
+          "val_macro_f1": -0.0002251150993103357,
+          "val_known_acc": -0.0008968609865472876,
+          "val_ood_f1": -0.00030898907432785894
+        },
+        "macro_slope_last_20": 1.2898431192023306e-05,
+        "best_raw_epoch": 51,
+        "best_raw_macro_f1": 0.9437080966861129
+      }
+    },
+    "treatment": {
+      "checkpoint_sha256": "9388cd005392d8dea641a88c8b91991e685b813c46b695c7e17a44bf32a9ea8b",
+      "latest_sha256": "2dfaaeeba0abaa29efafcbf56a89afa978419416e855870ed7f3e0d05116c67f",
+      "oof_sha256": "e2664cfb6a2c3046c355167a793c94dac0261592d43f32f05bb20036094c3bca",
+      "bundle_binding": {
+        "manifest_sha256": "f8f6bcfa04e341ddd0d2d22b8c317ac27701410639bc72bc89c330619863ea51",
+        "selected_checkpoint_sha256": "0564db728dcd713933602926f52d55029d9fdbb092f5f0725e3fcb24624f4d10",
+        "raw_checkpoint_sha256": "9388cd005392d8dea641a88c8b91991e685b813c46b695c7e17a44bf32a9ea8b",
+        "oof_predictions_sha256": "e2664cfb6a2c3046c355167a793c94dac0261592d43f32f05bb20036094c3bca",
+        "selected_epoch": 28,
+        "selected_val_macro_f1": 0.941949892413103,
+        "weight_variant": "raw"
+      },
+      "train_artifact": {
+        "fold": 0,
+        "checkpoint": "/workspace/iaaa-speaker/checkpoints/p4-campp-known446-ood-channelrobust-consistency-c01-long120-oof-f0/campp_best_raw.pt",
+        "checkpoint_sha256": "9388cd005392d8dea641a88c8b91991e685b813c46b695c7e17a44bf32a9ea8b",
+        "cluster_map": "/workspace/iaaa-speaker/data/processed/unknown_clusters_oof_f0.json",
+        "cluster_map_sha256": "321dd54d57c27e7ac8ac7beea8211aca1b3f236dfe7dfba35d49f97e562ab5f9",
+        "train_file_sha256": "e2aaa52efcdd8ef03f2eae25bb5102e75c5ca36d889c17c1c60df5167555528d",
+        "train_files": 2819,
+        "max_eval_windows": 8,
+        "embedding_dim": 192,
+        "known_train_files": 1337,
+        "unknown_train_files": 1482,
+        "known_size_min": 2,
+        "known_size_max": 5,
+        "unknown_size_min": 1,
+        "unknown_size_max": 10,
+        "artifact_sha256": "6138be358f8ff3ffcb124a367f34803b56b1b98ddf86fe9769e6f763e6a4a1a4"
+      },
+      "milestones": {
+        "40": {
+          "path": "/workspace/iaaa-speaker/checkpoints/p4-campp-known446-ood-channelrobust-consistency-c01-long120-oof-f0/campp_milestone_epoch040_raw.pt",
+          "sha256": "b845d814d709c370fc438308a396f0c4b4155a8f247cf995092f40122efd66b0",
+          "epoch": 40,
+          "metrics": {
+            "val_macro_f1": 0.9408881995749812,
+            "val_logit_avg_macro_f1": 0.9378576320719983,
+            "val_known_acc": 0.9506726457399103,
+            "val_ood_f1": 0.9553877831159918,
+            "val_ema_macro_f1": 0.9389895319955369,
+            "train_loss": 1.398749109229137,
+            "train_loss_consistency": 0.21097729984542418,
+            "train_loss_consistency_weighted": 0.021097730303279542,
+            "train_pair_cosine": 0.7890227001545758,
+            "train_embedding_std_augmented": 0.07083955204820838,
+            "train_embedding_std_clean": 0.07087085961267867
+          },
+          "history_length": 40,
+          "history_contiguous": true,
+          "trajectory": {
+            "window_epochs": 10,
+            "previous_window": [
+              21,
+              30
+            ],
+            "tail_window": [
+              31,
+              40
+            ],
+            "previous_means": {
+              "val_macro_f1": 0.937548360040774,
+              "val_logit_avg_macro_f1": 0.9356163065638106,
+              "val_ema_macro_f1": 0.9391386162972244,
+              "val_known_acc": 0.9471973094170403,
+              "val_ood_f1": 0.9484603725694696,
+              "train_loss": 1.4356279324483254,
+              "val_loss": 1.2823388885049256
+            },
+            "tail_means": {
+              "val_macro_f1": 0.9383407690451344,
+              "val_logit_avg_macro_f1": 0.9358808015377766,
+              "val_ema_macro_f1": 0.938835531834408,
+              "val_known_acc": 0.9478699551569507,
+              "val_ood_f1": 0.9480503523753383,
+              "train_loss": 1.4077108758276906,
+              "val_loss": 1.2855268417035832
+            },
+            "tail_minus_previous": {
+              "val_macro_f1": 0.0007924090043603949,
+              "val_logit_avg_macro_f1": 0.00026449497396607846,
+              "val_ema_macro_f1": -0.0003030844628163498,
+              "val_known_acc": 0.000672645739910438,
+              "val_ood_f1": -0.00041002019413127755,
+              "train_loss": -0.027917056620634817,
+              "val_loss": 0.0031879531986576115
+            },
+            "slopes_last_20": {
+              "val_macro_f1": 0.00011842692946887149,
+              "val_logit_avg_macro_f1": 4.304893134662667e-05,
+              "val_ema_macro_f1": -7.21853821753326e-06,
+              "val_known_acc": 0.00011463636670147312,
+              "val_ood_f1": 0.00013014541777903388,
+              "train_loss": -0.00247428010572557,
+              "val_loss": 0.00038496163475566336
+            },
+            "best_raw_epoch": 28,
+            "best_raw_macro_f1": 0.941949892413103,
+            "best_raw_known_accuracy": 0.9506726457399103,
+            "best_raw_ood_f1": 0.9516019086571234
+          }
+        },
+        "80": {
+          "path": "/workspace/iaaa-speaker/checkpoints/p4-campp-known446-ood-channelrobust-consistency-c01-long120-oof-f0/campp_milestone_epoch080_raw.pt",
+          "sha256": "e15f071eb9b498ebe27b75fd99a5ed4492047ad5de68f571303e5cb0d93e34f8",
+          "epoch": 80,
+          "metrics": {
+            "val_macro_f1": 0.9377720281994391,
+            "val_logit_avg_macro_f1": 0.935552934397465,
+            "val_known_acc": 0.9473094170403588,
+            "val_ood_f1": 0.9460013670539986,
+            "val_ema_macro_f1": 0.9389463903569741,
+            "train_loss": 1.322890222843351,
+            "train_loss_consistency": 0.2108279106945827,
+            "train_loss_consistency_weighted": 0.021082791439578707,
+            "train_pair_cosine": 0.7891720893054173,
+            "train_embedding_std_augmented": 0.07086556650505497,
+            "train_embedding_std_clean": 0.07089742104490769
+          },
+          "history_length": 80,
+          "history_contiguous": true,
+          "trajectory": {
+            "window_epochs": 10,
+            "previous_window": [
+              61,
+              70
+            ],
+            "tail_window": [
+              71,
+              80
+            ],
+            "previous_means": {
+              "val_macro_f1": 0.9384303212760617,
+              "val_logit_avg_macro_f1": 0.9358306463224576,
+              "val_ema_macro_f1": 0.9383241433439473,
+              "val_known_acc": 0.9473094170403588,
+              "val_ood_f1": 0.949132831178758,
+              "train_loss": 1.3318883972948994,
+              "val_loss": 1.2853158624733196
+            },
+            "tail_means": {
+              "val_macro_f1": 0.9384592201871385,
+              "val_logit_avg_macro_f1": 0.9370082297540152,
+              "val_ema_macro_f1": 0.9387586823682389,
+              "val_known_acc": 0.9473094170403588,
+              "val_ood_f1": 0.9482555506350557,
+              "train_loss": 1.3034484125545311,
+              "val_loss": 1.28861985679935
+            },
+            "tail_minus_previous": {
+              "val_macro_f1": 2.8898911076713496e-05,
+              "val_logit_avg_macro_f1": 0.001177583431557605,
+              "val_ema_macro_f1": 0.0004345390242915803,
+              "val_known_acc": 0.0,
+              "val_ood_f1": -0.0008772805437022857,
+              "train_loss": -0.02843998474036824,
+              "val_loss": 0.003303994326030457
+            },
+            "slopes_last_20": {
+              "val_macro_f1": -2.070912972562863e-05,
+              "val_logit_avg_macro_f1": 4.310123076116441e-05,
+              "val_ema_macro_f1": 3.603949524224437e-05,
+              "val_known_acc": -1.0114973532497913e-05,
+              "val_ood_f1": -0.00015153338565782339,
+              "train_loss": -0.002215956943580527,
+              "val_loss": 0.0004197825469679621
+            },
+            "best_raw_epoch": 28,
+            "best_raw_macro_f1": 0.941949892413103,
+            "best_raw_known_accuracy": 0.9506726457399103,
+            "best_raw_ood_f1": 0.9516019086571234
+          }
+        }
+      },
+      "terminal_curve": {
+        "path": "/workspace/iaaa-speaker/checkpoints/p4-campp-known446-ood-channelrobust-consistency-c01-long120-oof-f0/campp_latest.pt",
+        "sha256": "2dfaaeeba0abaa29efafcbf56a89afa978419416e855870ed7f3e0d05116c67f",
+        "terminal_epoch": 120,
+        "window_epochs": 10,
+        "previous_window": [
+          101,
+          110
+        ],
+        "tail_window": [
+          111,
+          120
+        ],
+        "previous_means": {
+          "val_macro_f1": 0.9389827695403712,
+          "val_known_acc": 0.9473094170403588,
+          "val_ood_f1": 0.9503773496253507
+        },
+        "tail_means": {
+          "val_macro_f1": 0.9387626076184852,
+          "val_known_acc": 0.947421524663677,
+          "val_ood_f1": 0.9495840181613338
+        },
+        "tail_minus_previous": {
+          "val_macro_f1": -0.00022016192188600847,
+          "val_known_acc": 0.0001121076233182583,
+          "val_ood_f1": -0.0007933314640169442
+        },
+        "macro_slope_last_20": -2.4645629447295127e-05,
+        "best_raw_epoch": 28,
+        "best_raw_macro_f1": 0.941949892413103
+      }
+    }
+  },
+  "external_control": {
+    "macro_f1": 0.9611456662702521,
+    "accuracy": 0.9705882352941176,
+    "known_accuracy": 0.9585201793721974,
+    "ood_f1": 0.9765572672471534,
+    "ood_precision": 0.9681274900398407,
+    "ood_recall": 0.9851351351351352,
+    "known_to_unknown": 24,
+    "known_to_wrong_known": 13,
+    "unknown_to_known": 11
+  },
+  "matched_control": {
+    "macro_f1": 0.9573485327890526,
+    "accuracy": 0.9675245098039216,
+    "known_accuracy": 0.952914798206278,
+    "ood_f1": 0.9681274900398406,
+    "ood_precision": 0.9516971279373369,
+    "ood_recall": 0.9851351351351352,
+    "known_to_unknown": 37,
+    "known_to_wrong_known": 5,
+    "unknown_to_known": 11
+  },
+  "treatment": {
+    "metrics": {
+      "macro_f1": 0.9583301434327741,
+      "accuracy": 0.96875,
+      "known_accuracy": 0.9540358744394619,
+      "ood_f1": 0.9688122096881221,
+      "ood_precision": 0.9517601043024772,
+      "ood_recall": 0.9864864864864865,
+      "known_to_unknown": 37,
+      "known_to_wrong_known": 4,
+      "unknown_to_known": 10
+    },
+    "delta_vs_matched": {
+      "macro_f1": 0.0009816106437214867,
+      "accuracy": 0.001225490196078427,
+      "known_accuracy": 0.0011210762331839152,
+      "ood_f1": 0.0006847196482815399
+    },
+    "delta_vs_external_control": {
+      "macro_f1": -0.0028155228374779906,
+      "accuracy": -0.0018382352941176405,
+      "known_accuracy": -0.004484304932735439,
+      "ood_f1": -0.007745057559031321
+    },
+    "error_changes_vs_external_control": {
+      "baseline_errors": 48,
+      "rescued_errors": 5,
+      "introduced_errors": 8,
+      "changed_predictions": 24,
+      "rescue_rate": 0.10416666666666667
+    }
+  },
+  "fixed_fusion": {
+    "metrics": {
+      "macro_f1": 0.9587790098793069,
+      "accuracy": 0.96875,
+      "known_accuracy": 0.9540358744394619,
+      "ood_f1": 0.9694555112881806,
+      "ood_precision": 0.9530026109660574,
+      "ood_recall": 0.9864864864864865,
+      "known_to_unknown": 36,
+      "known_to_wrong_known": 5,
+      "unknown_to_known": 10
+    },
+    "delta_vs_external_control": {
+      "macro_f1": -0.002366656390945243,
+      "accuracy": -0.0018382352941176405,
+      "known_accuracy": -0.004484304932735439,
+      "ood_f1": -0.0071017559589727774
+    },
+    "error_changes_vs_external_control": {
+      "baseline_errors": 48,
+      "rescued_errors": 4,
+      "introduced_errors": 7,
+      "changed_predictions": 19,
+      "rescue_rate": 0.08333333333333333
+    }
+  },
+  "paired_randomization_diagnostics": {
+    "treatment_vs_matched_control": {
+      "method": "paired Monte Carlo prediction-swap randomization",
+      "primary_metric": "447-class Macro-F1",
+      "observed_delta": 0.0009816106437214867,
+      "replicates": 20000,
+      "seed": 20260830,
+      "one_sided_improvement_p_value": 0.18354082295885205,
+      "two_sided_p_value": 0.3733813309334533,
+      "null_delta_quantiles": {
+        "q025": -0.0023027737529814907,
+        "q500": -7.775247692476395e-05,
+        "q975": 0.0023027737529814907
+      },
+      "prediction_disagreements": 7,
+      "candidate_only_correct": 3,
+      "baseline_only_correct": 1,
+      "decision_role": "descriptive_only_cannot_override_locked_gate"
+    },
+    "fixed_fusion_vs_external_control": {
+      "method": "paired Monte Carlo prediction-swap randomization",
+      "primary_metric": "447-class Macro-F1",
+      "observed_delta": -0.002366656390945243,
+      "replicates": 20000,
+      "seed": 20260830,
+      "one_sided_improvement_p_value": 0.9664016799160042,
+      "two_sided_p_value": 0.07054647267636618,
+      "null_delta_quantiles": {
+        "q025": -0.002499986784201491,
+        "q500": 2.8489960570032835e-05,
+        "q975": 0.0025462513387772834
+      },
+      "prediction_disagreements": 19,
+      "candidate_only_correct": 4,
+      "baseline_only_correct": 7,
+      "decision_role": "descriptive_only_cannot_override_locked_gate"
+    }
+  },
+  "collapse_guard": {
+    "statistic": "mean coordinate std of deterministic train embeddings",
+    "matched_control": 0.07189351961723005,
+    "treatment": 0.07188366328480726,
+    "treatment_over_matched": 0.9998629037432684
+  },
+  "acceptance_gate": {
+    "passed": false,
+    "checks": {
+      "matched_lme20_macro_gain": false,
+      "fixed_fusion_macro_gain": false,
+      "fixed_fusion_known_guardrail": false,
+      "fixed_fusion_ood_guardrail": false,
+      "external_control_rescue_rate": false,
+      "embedding_spread_ratio": true
+    },
+    "thresholds": {
+      "minimum_matched_lme20_macro_gain": 0.002,
+      "minimum_fixed_fusion_macro_gain": 0.002,
+      "maximum_known_accuracy_drop": 0.001,
+      "maximum_ood_f1_drop": 0.001,
+      "minimum_external_control_rescue_rate": 0.2,
+      "minimum_embedding_spread_ratio": 0.95
+    }
+  },
+  "matched_extension_diagnostic": {
+    "eligible_for_separate_matched_extension": false,
+    "checks": {
+      "treatment_tail_mean_gain": false,
+      "treatment_tail_positive_slope": false,
+      "treatment_best_in_final_window": false,
+      "relative_gap_is_still_improving": false,
+      "tail_known_guardrail": true,
+      "tail_ood_guardrail": true,
+      "embedding_spread_guardrail": true
+    },
+    "matched_tail_mean_gain": -0.0002251150993103357,
+    "treatment_tail_mean_gain": -0.00022016192188600847,
+    "relative_gap_gain": 4.953177424327215e-06,
+    "thresholds": {
+      "tail_window_epochs": 10,
+      "minimum_treatment_tail_mean_gain": 0.0005,
+      "minimum_relative_gap_gain": 0.0005,
+      "maximum_tail_known_or_ood_drop": 0.002,
+      "minimum_embedding_spread_ratio": 0.95
+    },
+    "effect": "preregister a new matched extension; never continue treatment alone"
+  },
+  "decision": "reject"
+}
