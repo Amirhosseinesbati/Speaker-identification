@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "eligible": false,
+  "termination": "patience",
+  "termination_eligible": true,
+  "provenance_ok": true,
+  "safety_ok": true,
+  "final_epoch": 101,
+  "selected_raw_epoch": 81,
+  "selected_raw_f1": 0.9398682067905463,
+  "best_raw_by_epoch_60": 0.9338324913327573,
+  "raw_0_93_by_epoch_60": true,
+  "trend_tests": {
+    "selected_raw_within_final_8": false,
+    "ema_final10_slope_at_least_0_0002": false,
+    "loss_adaptation_guardrail": false
+  },
+  "trend_tests_passed": 0,
+  "trend_tests_required": 2,
+  "ema_final10_ols_slope": -3.2484963972567056e-05,
+  "train_loss_previous5_minus_final5": 0.03687609685906046,
+  "val_loss_final5_minus_previous5": 0.007803800176171771,
+  "contract": {
+    "allowed_terminations": [
+      "patience",
+      "timeout"
+    ],
+    "selected_checkpoint_final_window": 8,
+    "ema_window": 10,
+    "min_ema_slope": 0.0002,
+    "loss_window": 5,
+    "min_train_loss_drop": 0.05,
+    "max_val_loss_rise": 0.03,
+    "min_raw_by_epoch": 60,
+    "min_raw_f1": 0.93
+  },
+  "history_path": "/workspace/iaaa-speaker/checkpoints/p3-campp-known446-ood-channelrobust-oof-f0/campp_latest.pt",
+  "history_sha256": "09f5ba9d61d660e690e0da0b58e1ee3d26b329b34c68a8699d82d7671908c6b6",
+  "selected_raw_checkpoint": "/workspace/iaaa-speaker/checkpoints/p3-campp-known446-ood-channelrobust-oof-f0/campp_best_raw.pt",
+  "selected_raw_checkpoint_sha256": "a46715e603173201a35bf20d9b43f6ad27f0352561b4c834ce7a2b3a3ae67a06"
+}
