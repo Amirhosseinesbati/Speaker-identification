@@ -1,6 +1,7 @@
 from scripts.analyze_lme20_diffuse_unknown_rescue_crossfit import (
     LOCKED_TAU,
     PARAMETER_GRID,
+    crossfit_gate,
     diffuse_unknown_rescue,
 )
 
@@ -61,3 +62,54 @@ def test_rescue_requires_diffuse_unknown_and_head_margin() -> None:
 def test_parameter_grid_is_small_and_preregistered() -> None:
     assert len(PARAMETER_GRID) == 9
     assert len(set(PARAMETER_GRID)) == len(PARAMETER_GRID)
+
+
+def test_gate_rejects_held_out_luck_without_source_fold_feasibility() -> None:
+    selections = [
+        {
+            "calibration": {"calibration_feasible": feasible},
+            "held_out": {
+                "delta": {
+                    "macro_f1": 0.002,
+                    "known_accuracy": 0.0,
+                    "ood_f1": 0.0,
+                }
+            },
+        }
+        for feasible in (True, False, True)
+    ]
+    aggregate = {
+        "delta": {
+            "macro_f1": 0.002,
+            "known_accuracy": 0.0,
+            "ood_f1": 0.0,
+        }
+    }
+    gate = crossfit_gate(selections, aggregate)
+    assert gate["calibration_feasible"] == [True, False, True]
+    assert gate["per_fold_pass"] == [True, True, True]
+    assert gate["passed"] is False
+
+
+def test_gate_accepts_only_complete_crossfit_support() -> None:
+    selections = [
+        {
+            "calibration": {"calibration_feasible": True},
+            "held_out": {
+                "delta": {
+                    "macro_f1": 0.002,
+                    "known_accuracy": -0.0005,
+                    "ood_f1": -0.0005,
+                }
+            },
+        }
+        for _ in range(3)
+    ]
+    aggregate = {
+        "delta": {
+            "macro_f1": 0.001,
+            "known_accuracy": -0.001,
+            "ood_f1": -0.001,
+        }
+    }
+    assert crossfit_gate(selections, aggregate)["passed"] is True

@@ -210,6 +210,37 @@ def aggregate_evaluation(
     }
 
 
+def crossfit_gate(selections: list[dict], aggregate: dict) -> dict:
+    """Apply the preregistered source-fold and held-out acceptance gates."""
+
+    calibration_feasible = [
+        bool(row["calibration"]["calibration_feasible"])
+        for row in selections
+    ]
+    per_fold_pass = [
+        row["held_out"]["delta"]["macro_f1"] > 0.0
+        and row["held_out"]["delta"]["known_accuracy"] >= -0.001
+        and row["held_out"]["delta"]["ood_f1"] >= -0.001
+        for row in selections
+    ]
+    return {
+        "minimum_aggregate_macro_gain": 0.001,
+        "maximum_known_accuracy_drop": 0.001,
+        "maximum_ood_f1_drop": 0.001,
+        "requires_all_calibration_pairs_feasible": True,
+        "requires_all_held_out_folds_positive_with_guardrails": True,
+        "calibration_feasible": calibration_feasible,
+        "per_fold_pass": per_fold_pass,
+        "passed": bool(
+            all(calibration_feasible)
+            and all(per_fold_pass)
+            and aggregate["delta"]["macro_f1"] >= 0.001
+            and aggregate["delta"]["known_accuracy"] >= -0.001
+            and aggregate["delta"]["ood_f1"] >= -0.001
+        ),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -264,25 +295,7 @@ def main() -> int:
     aggregate = aggregate_evaluation(folds, predictions)
     if abs(aggregate["baseline"]["macro_f1"] - 0.9633564052154656) > 1e-12:
         raise RuntimeError("Locked LME-20 baseline mismatch")
-    per_fold_pass = [
-        row["held_out"]["delta"]["macro_f1"] > 0.0
-        and row["held_out"]["delta"]["known_accuracy"] >= -0.001
-        and row["held_out"]["delta"]["ood_f1"] >= -0.001
-        for row in selections
-    ]
-    gate = {
-        "minimum_aggregate_macro_gain": 0.001,
-        "maximum_known_accuracy_drop": 0.001,
-        "maximum_ood_f1_drop": 0.001,
-        "requires_all_held_out_folds_positive_with_guardrails": True,
-        "per_fold_pass": per_fold_pass,
-        "passed": bool(
-            all(per_fold_pass)
-            and aggregate["delta"]["macro_f1"] >= 0.001
-            and aggregate["delta"]["known_accuracy"] >= -0.001
-            and aggregate["delta"]["ood_f1"] >= -0.001
-        ),
-    }
+    gate = crossfit_gate(selections, aggregate)
 
     fixed_diagnostics = []
     for parameters in PARAMETER_GRID:
