@@ -81,6 +81,13 @@ Fold-0 baseline at least +0.002; Known and OOD-F1 drops each no worse than
 ratio at least 0.95. Passing authorises analysis only, never automatic later
 folds or leaderboard tuning.
 
+The terminal audit additionally runs two fixed-seed paired Monte Carlo
+prediction-swap tests (20,000 replicates; seed `20260830`) for the primary
+447-class Macro-F1 delta: treatment versus matched control, and fixed fusion
+versus external Control.  Their one- and two-sided p-values, null quantiles and
+paired win/loss counts are uncertainty diagnostics only.  They cannot replace
+the locked minimum effect size, rescue, Known/OOD or collapse guardrails.
+
 The terminal report must also expose the fixed error topology for the external
 Control, matched Control, treatment, and fixed fusion: `known_to_unknown`,
 `known_to_wrong_known`, and `unknown_to_known`.  These counts are descriptive

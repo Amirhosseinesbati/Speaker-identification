@@ -20,6 +20,7 @@ from scripts.audit_campp_paired_consistency_lme20 import (
     embedding_spread,
     matched_extension_diagnostic,
     milestone_diagnostic,
+    paired_randomization_diagnostic,
     sha256_file,
     terminal_curve_diagnostic,
 )
@@ -79,6 +80,35 @@ def test_embedding_spread_is_finite_and_detects_collapse() -> None:
 
     with pytest.raises(RuntimeError, match="collapsed"):
         embedding_spread({"train_embeddings": np.ones((3, 2), np.float32)})
+
+
+def test_paired_randomization_is_deterministic_and_tracks_primary_delta() -> None:
+    labels = np.tile(np.arange(7, dtype=np.int64), 8)
+    baseline = (labels + 1) % 7
+    candidate = labels.copy()
+    first = paired_randomization_diagnostic(
+        labels, baseline, candidate, replicates=512, seed=123
+    )
+    second = paired_randomization_diagnostic(
+        labels, baseline, candidate, replicates=512, seed=123
+    )
+
+    assert first == second
+    assert first["observed_delta"] == pytest.approx(7 / 447)
+    assert first["candidate_only_correct"] == len(labels)
+    assert first["baseline_only_correct"] == 0
+    assert first["one_sided_improvement_p_value"] < 0.01
+    assert first["decision_role"] == "descriptive_only_cannot_override_locked_gate"
+
+
+def test_paired_randomization_rejects_unaligned_inputs() -> None:
+    with pytest.raises(ValueError, match="aligned"):
+        paired_randomization_diagnostic(
+            np.asarray([0, 1]),
+            np.asarray([0]),
+            np.asarray([0, 1]),
+            replicates=10,
+        )
 
 
 def test_acceptance_gate_requires_every_preregistered_guardrail() -> None:

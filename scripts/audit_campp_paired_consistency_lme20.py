@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.analyze_control_oof_centroid_crossfit import (  # noqa: E402
+    NUM_CLASSES,
     build_or_load_train_artifact,
     load_oof,
     metric_bundle,
@@ -103,6 +104,8 @@ TAIL_WINDOW_EPOCHS = 10
 MINIMUM_TAIL_MEAN_GAIN = 0.0005
 MINIMUM_RELATIVE_GAP_GAIN = 0.0005
 MAXIMUM_TAIL_GUARDRAIL_DROP = 0.002
+RANDOMIZATION_REPLICATES = 20_000
+RANDOMIZATION_SEED = 20_260_830
 
 
 def _normalise_identity(config: dict) -> dict:
@@ -184,6 +187,103 @@ def embedding_spread(artifact: dict[str, np.ndarray]) -> float:
     if not np.isfinite(spread) or spread <= 0.0:
         raise RuntimeError(f"Non-finite or collapsed embedding spread: {spread}")
     return spread
+
+
+def _fast_macro_f1(labels: np.ndarray, predictions: np.ndarray) -> float:
+    """Competition Macro-F1 without repeated sklearn allocation.
+
+    The fixed full label set is retained, including zero-valued F1 for absent
+    classes, so this is numerically equivalent to the canonical metric helper.
+    """
+    labels = np.asarray(labels, dtype=np.int64)
+    predictions = np.asarray(predictions, dtype=np.int64)
+    if labels.ndim != 1 or predictions.shape != labels.shape:
+        raise ValueError("labels and predictions must be aligned 1-D arrays")
+    if not (
+        np.all((0 <= labels) & (labels < NUM_CLASSES))
+        and np.all((0 <= predictions) & (predictions < NUM_CLASSES))
+    ):
+        raise ValueError("labels and predictions must use competition class ids")
+    true_count = np.bincount(labels, minlength=NUM_CLASSES).astype(np.float64)
+    pred_count = np.bincount(predictions, minlength=NUM_CLASSES).astype(np.float64)
+    true_positive = np.bincount(
+        labels[labels == predictions], minlength=NUM_CLASSES
+    ).astype(np.float64)
+    denominator = true_count + pred_count
+    per_class = np.divide(
+        2.0 * true_positive,
+        denominator,
+        out=np.zeros(NUM_CLASSES, dtype=np.float64),
+        where=denominator > 0.0,
+    )
+    return float(per_class.mean())
+
+
+def paired_randomization_diagnostic(
+    labels: np.ndarray,
+    baseline_predictions: np.ndarray,
+    candidate_predictions: np.ndarray,
+    *,
+    replicates: int = RANDOMIZATION_REPLICATES,
+    seed: int = RANDOMIZATION_SEED,
+) -> dict:
+    """Fixed-seed paired prediction-swap test for the primary Macro-F1 delta.
+
+    This quantifies how unusual the observed paired delta is under prediction
+    exchangeability.  It is deliberately descriptive: it cannot override the
+    preregistered effect-size and Known/OOD guardrails.
+    """
+    labels = np.asarray(labels, dtype=np.int64)
+    baseline = np.asarray(baseline_predictions, dtype=np.int64)
+    candidate = np.asarray(candidate_predictions, dtype=np.int64)
+    if (
+        labels.ndim != 1
+        or baseline.shape != labels.shape
+        or candidate.shape != labels.shape
+    ):
+        raise ValueError("paired randomization inputs must be aligned 1-D arrays")
+    if int(replicates) <= 0:
+        raise ValueError("replicates must be positive")
+
+    observed = _fast_macro_f1(labels, candidate) - _fast_macro_f1(labels, baseline)
+    rng = np.random.default_rng(int(seed))
+    null_deltas = np.empty(int(replicates), dtype=np.float64)
+    for index in range(int(replicates)):
+        swap = rng.integers(0, 2, size=len(labels), dtype=np.int8).astype(bool)
+        permuted_candidate = np.where(swap, baseline, candidate)
+        permuted_baseline = np.where(swap, candidate, baseline)
+        null_deltas[index] = (
+            _fast_macro_f1(labels, permuted_candidate)
+            - _fast_macro_f1(labels, permuted_baseline)
+        )
+
+    tolerance = 1e-15
+    one_sided = (
+        1.0 + float(np.sum(null_deltas >= observed - tolerance))
+    ) / (float(replicates) + 1.0)
+    two_sided = (
+        1.0 + float(np.sum(np.abs(null_deltas) >= abs(observed) - tolerance))
+    ) / (float(replicates) + 1.0)
+    baseline_correct = baseline == labels
+    candidate_correct = candidate == labels
+    return {
+        "method": "paired Monte Carlo prediction-swap randomization",
+        "primary_metric": "447-class Macro-F1",
+        "observed_delta": float(observed),
+        "replicates": int(replicates),
+        "seed": int(seed),
+        "one_sided_improvement_p_value": float(one_sided),
+        "two_sided_p_value": float(two_sided),
+        "null_delta_quantiles": {
+            "q025": float(np.quantile(null_deltas, 0.025)),
+            "q500": float(np.quantile(null_deltas, 0.500)),
+            "q975": float(np.quantile(null_deltas, 0.975)),
+        },
+        "prediction_disagreements": int(np.sum(baseline != candidate)),
+        "candidate_only_correct": int(np.sum(candidate_correct & ~baseline_correct)),
+        "baseline_only_correct": int(np.sum(baseline_correct & ~candidate_correct)),
+        "decision_role": "descriptive_only_cannot_override_locked_gate",
+    }
 
 
 def milestone_diagnostic(
@@ -579,6 +679,14 @@ def main() -> int:
         labels, external_predictions, treatment_predictions
     )
     fusion_changes = error_changes(labels, external_predictions, fusion_predictions)
+    randomization_diagnostics = {
+        "treatment_vs_matched_control": paired_randomization_diagnostic(
+            labels, matched_predictions, treatment_predictions
+        ),
+        "fixed_fusion_vs_external_control": paired_randomization_diagnostic(
+            labels, external_predictions, fusion_predictions
+        ),
+    }
     matched_spread = embedding_spread(matched["artifact"])
     treatment_spread = embedding_spread(treatment["artifact"])
     spread_ratio = float(treatment_spread / matched_spread)
@@ -648,6 +756,7 @@ def main() -> int:
             "delta_vs_external_control": fusion_delta,
             "error_changes_vs_external_control": fusion_changes,
         },
+        "paired_randomization_diagnostics": randomization_diagnostics,
         "collapse_guard": {
             "statistic": "mean coordinate std of deterministic train embeddings",
             "matched_control": matched_spread,
@@ -669,6 +778,7 @@ def main() -> int:
         "matched_control": matched_metrics,
         "treatment": report["treatment"],
         "fixed_fusion": report["fixed_fusion"],
+        "paired_randomization_diagnostics": randomization_diagnostics,
         "collapse_guard": report["collapse_guard"],
         "gate": gate,
         "matched_extension_diagnostic": extension_diagnostic,
