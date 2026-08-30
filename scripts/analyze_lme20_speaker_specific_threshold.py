@@ -29,15 +29,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.analyze_control_oof_centroid_crossfit import (  # noqa: E402
-    HISTORICAL_PARAMS,
     NUM_FOLDS,
     NUM_KNOWN,
     aggregate_predictions,
-    evaluate_policy,
     l2norm_rows,
     metric_bundle,
     metric_delta,
-    predict,
+)
+from scripts.analyze_lme20_asnorm_crossfit import (  # noqa: E402
+    LOCKED_RAW_KAPPA,
+    decision_predictions,
 )
 from scripts.analyze_prototype_aggregation_crossfit import (  # noqa: E402
     group_indices,
@@ -138,6 +139,21 @@ def lme20_scores(
     return scores, known_max
 
 
+def locked_lme20_predictions(
+    head_probabilities: np.ndarray,
+    scores: np.ndarray,
+) -> np.ndarray:
+    """Apply the externally validated LME-20 decision policy exactly."""
+
+    scores = np.asarray(scores, dtype=np.float64)
+    return decision_predictions(
+        head=np.asarray(head_probabilities, dtype=np.float64),
+        scores=scores,
+        probability_kappa=LOCKED_RAW_KAPPA,
+        raw_max_scores=scores.max(axis=1),
+    )
+
+
 def evaluate_against_reference(
     folds: list,
     reference_predictions: list[np.ndarray],
@@ -221,7 +237,7 @@ def main() -> int:
             oof["embeddings"], artifact["train_embeddings"], groups
         )
         evidence = score_matrix_to_evidence(fold=fold, oof=oof, scores=scores)
-        baseline = predict(evidence, HISTORICAL_PARAMS)
+        baseline = locked_lme20_predictions(oof["competition_probs"], scores)
         thresholds = speaker_specific_thresholds(
             artifact["train_embeddings"], groups[:NUM_KNOWN]
         )
@@ -253,11 +269,17 @@ def main() -> int:
             }
         )
 
-    baseline_evaluation = evaluate_policy(folds, baseline_predictions)
     candidate_evaluation = evaluate_against_reference(
         folds, baseline_predictions, candidate_predictions
     )
-    reproduced = baseline_evaluation["aggregate"]["candidate"]["macro_f1"]
+    baseline_evaluation = {
+        "folds": [
+            {"fold": row["fold"], "metrics": row["baseline"]}
+            for row in candidate_evaluation["folds"]
+        ],
+        "aggregate": candidate_evaluation["aggregate"]["baseline"],
+    }
+    reproduced = baseline_evaluation["aggregate"]["macro_f1"]
     if abs(reproduced - EXPECTED_LOCKED_LME20_MACRO_F1) > 5e-10:
         raise RuntimeError(
             "Locked LME-20 baseline mismatch: "

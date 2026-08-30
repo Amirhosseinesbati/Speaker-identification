@@ -8,7 +8,12 @@ import pytest
 from scripts.analyze_lme20_speaker_specific_threshold import (
     apply_speaker_specific_rejection,
     evaluate_against_reference,
+    locked_lme20_predictions,
     speaker_specific_thresholds,
+)
+from scripts.analyze_lme20_asnorm_crossfit import (
+    LOCKED_RAW_KAPPA,
+    decision_predictions,
 )
 
 
@@ -61,3 +66,19 @@ def test_evaluation_uses_explicit_lme_reference_not_raw_head() -> None:
     assert result["aggregate"]["candidate"]["accuracy"] == 0.5
     assert result["aggregate"]["delta"]["accuracy"] == -0.5
     assert result["aggregate"]["introduced_errors"] == 1
+
+
+def test_locked_predictions_use_the_validated_lme20_policy() -> None:
+    rng = np.random.default_rng(42)
+    head = rng.random((4, 447))
+    head /= head.sum(axis=1, keepdims=True)
+    scores = rng.normal(size=(4, 1000))
+    expected = decision_predictions(
+        head=head,
+        scores=scores,
+        probability_kappa=LOCKED_RAW_KAPPA,
+        raw_max_scores=scores.max(axis=1),
+    )
+    np.testing.assert_array_equal(
+        locked_lme20_predictions(head, scores), expected
+    )
