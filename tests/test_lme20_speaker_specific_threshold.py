@@ -1,0 +1,44 @@
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from scripts.analyze_lme20_speaker_specific_threshold import (
+    apply_speaker_specific_rejection,
+    speaker_specific_thresholds,
+)
+
+
+def _unit(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float32)
+    return values / np.linalg.norm(values, axis=1, keepdims=True)
+
+
+def test_thresholds_are_maximum_cross_speaker_enrollment_cosines() -> None:
+    embeddings = _unit(
+        np.array([[1.0, 0.0], [0.9, 0.1], [0.0, 1.0], [0.1, 0.9]])
+    )
+    thresholds = speaker_specific_thresholds(
+        embeddings, [np.array([0, 1]), np.array([2, 3])]
+    )
+    expected = float(embeddings[1] @ embeddings[3])
+    np.testing.assert_allclose(thresholds, [expected, expected], atol=1e-7)
+
+
+def test_rejection_uses_predicted_speaker_and_strict_boundary() -> None:
+    predictions = np.array([1, 2, 0, 1], dtype=np.int64)
+    scores = np.array(
+        [[0.8, 0.2], [0.3, 0.4], [0.1, 0.1], [0.5, 0.2]], dtype=np.float64
+    )
+    output, rejected = apply_speaker_specific_rejection(
+        predictions, scores, np.array([0.5, 0.5])
+    )
+    assert output.tolist() == [1, 0, 0, 0]
+    assert rejected.tolist() == [False, True, False, True]
+
+
+def test_threshold_builder_rejects_overlapping_groups() -> None:
+    with pytest.raises(ValueError, match="overlap"):
+        speaker_specific_thresholds(
+            np.eye(3, dtype=np.float32), [np.array([0, 1]), np.array([1, 2])]
+        )
