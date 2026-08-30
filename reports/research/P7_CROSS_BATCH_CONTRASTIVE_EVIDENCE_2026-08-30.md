@@ -353,3 +353,40 @@ observing P5.  P6 remains the already locked, single-variable low-weight
 inter-class test, activated only by its existing rule and budget gate.
 
 Primary source: <https://arxiv.org/abs/2210.16622>
+
+## Primary full-text check of AAMSupCon batch dependence
+
+A further SciSpace search on 2026-08-30 identified *Speaker Representation
+Learning via Contrastive Loss with Maximal Speaker Separability* and the
+primary arXiv text (`2210.16636`) was checked in full.  The method forms one
+augmented view per utterance, projects the original and augmented embeddings
+onto a unit hypersphere, and applies an additive-angular-margin supervised
+contrastive objective with multiple same-speaker positives.  The reported
+recipe uses margin `0.2`, temperature `0.07`, and a main mini-batch size of
+`3072` on 2,793 CN-Celeb speakers.
+
+The paper's batch-size ablation is directly relevant to this campaign:
+
+| Batch | EER | minDCF |
+|---:|---:|---:|
+| 128 | 13.64% | 0.71 |
+| 512 | 11.03% | 0.66 |
+| 1024 | 10.27% | 0.65 |
+
+In the loss ablation, the same ECAPA-TDNN improves from `8.79%` EER with
+AAM-Softmax to `8.49%` with AAMSupCon.  This supports the mechanism, but also
+shows that its incremental benefit over a strong angular classifier is modest
+and was obtained in a negative-rich regime.  The paper therefore does **not**
+justify a naive in-batch SupCon experiment at this campaign's batch `48`, nor
+does it transfer its margin, temperature, or expected gain to the 447-way
+Known/OOD objective.
+
+This strengthens, rather than relaxes, the existing P7 safeguards: any future
+P7 treatment must first make the effective negative set explicit through one
+predeclared cross-batch queue or equivalent memory mechanism, mask every
+invalid aggregate-unknown positive, and demonstrate that its queue/proxy
+provenance is fold-safe.  If the remaining budget cannot fund a matched
+control/treatment pair with that mechanism, P7 is not run.  P5 and the already
+preregistered P6 remain unchanged and ahead of P7 in the decision order.
+
+Primary source: <https://arxiv.org/abs/2210.16636>
