@@ -169,3 +169,48 @@ for the current record-setting package.
    schedule with breakpoints chosen from literature rather than Fold 0.
 6. Condition-aware prototype banks and domain-adversarial training remain later
    options only after these cheaper, more isolated hypotheses are resolved.
+
+## SciSpace retrieval update (2026-08-30)
+
+A semantic SciSpace review was run specifically for cross-recording
+same-speaker objectives, channel/session mismatch, hard sampling, and the
+question of whether an auxiliary contrastive objective should remain active
+through long fine-tuning.  The retrieval produced three useful boundaries for
+the active paired experiment:
+
+- SSPS (Interspeech 2025, DOI `10.21437/Interspeech.2025-183`) is direct
+  evidence that a positive from the same speaker but a different recording
+  condition can reduce intra-speaker variance; the paper reports benefit in
+  both SimCLR and DINO.  This supports the *identity of the positive pair* in
+  the preregistered treatment, not its fixed weight or duration.
+- Asymmetric clean-segment guidance (ICASSP 2024, DOI
+  `10.1109/ICASSP48485.2024.10446161`) reports a relative improvement from
+  explicitly pairing clean and augmented segments.  It also stresses that
+  augmentation must preserve speaker information.  This supports the matched
+  clean/aug construction and the embedding-spread guardrail; it does not make
+  augmentation severity or loss weight transferable to this competition.
+- Session-embedding compensation (ICASSP 2024, DOI
+  `10.1109/ICASSP48485.2024.10445987`) shows that session information can be
+  modeled as a separate compensating score while the speaker extractor stays
+  fixed.  It is therefore a credible later condition-modeling branch if the
+  current invariance treatment fails, but it should not be bundled into the
+  active single-variable test.
+
+SciSpace also retrieved work that keeps a self-supervised EMA-target loss
+through fine-tuning (ICASSP 2024, DOI `10.1109/ICASSP48485.2024.10446468`) and
+work using two-stage or joint supervised/contrastive training.  The available
+abstract-level evidence does not provide a speaker-specific controlled
+comparison of a constant auxiliary loss against a scheduled-off version at a
+long horizon.  The earlier MeMo evidence remains the more relevant warning
+that embedding-side benefits can concentrate early.  Consequently, the active
+control/treatment contract is unchanged: finish both matched 120-epoch arms,
+inspect late-tail gain and collapse guardrails, and permit a matched extension
+only if every preregistered tail condition passes.  There is no literature
+basis for extending only the treatment or changing its weight mid-run.
+
+At the time of this update the active control had 20 complete epochs and 20/20
+contiguous MLflow points for 33 metrics.  Its best observed Raw probability-
+average Macro-F1 remained approximately `0.9411` (epochs 13--14); epoch 20 was
+`0.9356094`, with EMA `0.9386031`, Known Accuracy `0.9495516`, and OOD-F1
+`0.9394773`.  These are non-terminal monitoring observations and do not select
+a checkpoint or alter the paired gate.
