@@ -22,7 +22,18 @@ import subprocess
 import sys
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+try:
+    from scripts.build_submission import (
+        SENSITIVE_SUBMISSION_DIR_NAMES,
+        SENSITIVE_SUBMISSION_FILE_NAMES,
+    )
+except ModuleNotFoundError:  # direct ``python scripts/verify_submission.py``
+    from build_submission import (  # type: ignore[no-redef]
+        SENSITIVE_SUBMISSION_DIR_NAMES,
+        SENSITIVE_SUBMISSION_FILE_NAMES,
+    )
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ZIP = ROOT / "submission_leaderboard.zip"
@@ -42,6 +53,23 @@ def submission_zip_size_ok(
     zip_path: Path, maximum_bytes: int = MAX_SUBMISSION_ZIP_BYTES
 ) -> bool:
     return zip_path.stat().st_size <= maximum_bytes
+
+
+def sensitive_zip_entry_names(zip_path: Path) -> list[str]:
+    """Return credential/cache paths without reading their contents."""
+    with zipfile.ZipFile(zip_path) as archive:
+        offenders = []
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            relative = PurePosixPath(info.filename)
+            lowered_parts = {part.lower() for part in relative.parts[:-1]}
+            if (
+                lowered_parts & SENSITIVE_SUBMISSION_DIR_NAMES
+                or relative.name.lower() in SENSITIVE_SUBMISSION_FILE_NAMES
+            ):
+                offenders.append(relative.as_posix())
+    return sorted(offenders)
 
 
 def main() -> int:
@@ -74,6 +102,13 @@ def main() -> int:
         print(
             "  ZIP exceeds the 1 GB limit: "
             f"{zip_path.stat().st_size} bytes > {MAX_SUBMISSION_ZIP_BYTES} bytes"
+        )
+        return 1
+    sensitive_entries = sensitive_zip_entry_names(zip_path)
+    if sensitive_entries:
+        print(
+            "  ZIP contains sensitive credential/cache paths: "
+            + ", ".join(sensitive_entries)
         )
         return 1
     if not python_path.exists():

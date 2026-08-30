@@ -48,6 +48,20 @@ SRC_DIRS = ["src"]
 ALL_WEIGHT_DIRS = ["ecapa", "campp", "eres2net", "titanet", "wavlm_large"]
 ENTRYPOINT_FILES = ["submission.py", "inference.py", "__init__.py"]
 MAX_SUBMISSION_ZIP_BYTES = 1_000_000_000
+SENSITIVE_SUBMISSION_DIR_NAMES = {
+    ".lock",
+    "credential",
+    "credentials",
+    "secret",
+    "secrets",
+}
+SENSITIVE_SUBMISSION_FILE_NAMES = {
+    "access_token",
+    "auth_token",
+    "refresh_token",
+    "session",
+    "token",
+}
 
 
 def assert_submission_zip_size(
@@ -63,6 +77,38 @@ def assert_submission_zip_size(
     return size
 
 
+def sensitive_submission_paths(root: Path) -> list[Path]:
+    """Return cache/auth files that must never enter a leaderboard archive.
+
+    Model hubs may create authentication state inside their model cache (for
+    example ``weights/campp/credentials/session``).  The pretrained model
+    files are portable without that state, so packaging it is both unnecessary
+    and a credential-leak risk.
+    """
+    offenders: list[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root)
+        lowered_parts = {part.lower() for part in relative.parts[:-1]}
+        if (
+            lowered_parts & SENSITIVE_SUBMISSION_DIR_NAMES
+            or relative.name.lower() in SENSITIVE_SUBMISSION_FILE_NAMES
+        ):
+            offenders.append(relative)
+    return sorted(offenders)
+
+
+def assert_no_sensitive_submission_paths(root: Path) -> None:
+    """Fail closed if a submission tree contains auth/cache state."""
+    offenders = sensitive_submission_paths(root)
+    if offenders:
+        rendered = ", ".join(path.as_posix() for path in offenders)
+        raise RuntimeError(
+            "Submission contains sensitive credential/cache paths: " + rendered
+        )
+
+
 def _rm_artifacts(dst: Path) -> None:
     """Remove non-portable artifacts (pycache, deploy UI, logs, stale demos)."""
     for p in dst.rglob("__pycache__"):
@@ -70,6 +116,18 @@ def _rm_artifacts(dst: Path) -> None:
     # Stale demo outputs from earlier iterations — never ship these.
     for stale in ("sample_predictions.csv", "sample_predictions.class_map.json"):
         (dst / stale).unlink(missing_ok=True)
+    # ModelScope and similar model hubs may persist auth/session state under the
+    # model cache.  Pretrained weights do not need it at inference time.
+    for directory in sorted(
+        (p for p in dst.rglob("*") if p.is_dir()),
+        key=lambda p: len(p.parts),
+        reverse=True,
+    ):
+        if directory.name.lower() in SENSITIVE_SUBMISSION_DIR_NAMES:
+            shutil.rmtree(directory, ignore_errors=True)
+    for path in list(dst.rglob("*")):
+        if path.is_file() and path.name.lower() in SENSITIVE_SUBMISSION_FILE_NAMES:
+            path.unlink(missing_ok=True)
 
 
 def _encoder_from_checkpoint_name(name: str) -> str:
@@ -160,6 +218,7 @@ def _fusion_model_specs(fusion: dict, ckpt_src: Path) -> list[dict]:
 
 def _write_zip(zip_path: Path) -> None:
     """Zip SUB contents at archive root (submission.py must not be nested)."""
+    assert_no_sensitive_submission_paths(SUB)
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     zip_path.unlink(missing_ok=True)
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED,
@@ -443,6 +502,7 @@ def build(skip_weights: bool, fusion_config: Path | None = None,
 
     # ── cleanup + summary ──
     _rm_artifacts(SUB)
+    assert_no_sensitive_submission_paths(SUB)
     print("\n✅ Submission package ready.")
     total = sum(f.stat().st_size for f in SUB.rglob("*") if f.is_file())
     print(f"   Total size: {total/1e6:.0f} MB")
