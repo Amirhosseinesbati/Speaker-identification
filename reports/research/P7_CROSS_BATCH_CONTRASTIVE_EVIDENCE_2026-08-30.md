@@ -297,3 +297,36 @@ result would not prove that supervised contrastive learning is ineffective.
 The literature-supported missing ingredient is a sufficiently rich and
 correctly labelled negative set. That candidate is retained as a conditional
 future direction, not silently promoted ahead of the locked P5/P6 sequence.
+
+## Open-set and hard-negative safeguard cross-check
+
+A second targeted SciSpace search on 2026-08-30 examined whether supervised
+contrastive attraction or angular separation can preserve unknown rejection.
+The search surfaced three mechanism-level results relevant to the existing
+P5/P6 order:
+
+- Contrastive Open Set Recognition (AAAI 2023, DOI
+  `10.1609/aaai.v37i9.26253`) reports that supervised contrastive features can
+  improve both known classification and outlier detection when the contrastive
+  targets are designed for open-set recognition.  This supports measuring both
+  Known Accuracy and OOD-F1, not accepting a Macro-F1 gain alone.
+- Discriminative Speaker Representation via Contrastive Learning with
+  Class-Aware Attention in Angular Space (ICASSP 2023, DOI
+  `10.1109/ICASSP49357.2023.10096230`) identifies overly influential hard
+  negatives as a failure mode and balances classification and contrastive
+  objectives with multi-objective optimisation.  P5 has no explicit negatives,
+  while P6 adds only the preregistered low-weight inter-class angular term; this
+  evidence argues against retrospectively increasing either weight after
+  observing Fold 0.
+- Additive-margin contrastive speaker-verification work (Interspeech 2023, DOI
+  `10.21437/INTERSPEECH.2023-1479`) reports fewer false positives and false
+  negatives after adding angular separation.  It is verification evidence, not
+  a transferable 447-class gain, and therefore supports P6's hypothesis only
+  conditionally.
+
+These records were reviewed at abstract/method-summary level through SciSpace;
+they are not treated as full-text-verified performance claims for this
+competition.  The operational conclusion remains fixed: complete and audit P5
+first, retain the P6 preregistration unchanged, and require the existing
+Known/OOD, embedding-spread, provenance, and one-Fold rejection gates before
+any continuation.
