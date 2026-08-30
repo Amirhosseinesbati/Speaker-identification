@@ -28,21 +28,27 @@ OOF and provenance gates.
 | Raw/EMA snapshot fusion and known rerank | No aggregate gain; snapshots too correlated. | Closed. |
 | Temporal multiview replacement / hierarchical aggregation / known rerank | Aggregate regressions or exactly neutral decisions. | Closed. |
 | Short-audio repeat and native-duration replacement | Inconsistent Fold direction and OOD regressions. | Closed. |
+| Same-crop paired consistency Long-120 (P4) | Treatment/control LME20 delta only `+0.0009816106`, fixed-fusion delta `-0.0023666564`, rescue `5/48`; spread remained healthy and every extension check failed. | Closed as neutral; activated cross-file P5. |
+| Speaker-specific enrollment threshold | Exact LME20 baseline reproduced, but aggregate Macro-F1 changed by `-0.0325577308`; every Fold was negative and Known/OOD guardrails failed. | Closed. |
 | Post-hoc prototype/threshold/blend sweeps | Would tune rejected evidence. | Forbidden. |
 
 ## Active decision experiment
 
-The active experiment is the matched Fold-0 long-120 pair:
+The active experiment is the matched Fold-0 cross-file Long-120 pair:
 
-1. `p4-campp-known446-ood-channelrobust-paired-control-long120-oof-f0`;
-2. `p4-campp-known446-ood-channelrobust-consistency-c01-long120-oof-f0`.
+1. `p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0`, raw config
+   SHA256 `ceae8376e4bf6963063295e2e7d0a44a64aa492988fde9caa091989ea464726e`;
+2. `p5-campp-known446-ood-crossfile-consistency-c01-long120-oof-f0`, raw config
+   SHA256 `5243b42eebf82d5f2fb75588ec0040072137a44ee9d811ee50cacff6ac98d5ec`.
 
-Both branches start from the same P3 Raw checkpoint and have identical split,
-seed, model, augmentation, optimiser, learning rates, cosine schedule, windows,
-batch size and fixed 120-epoch horizon.  The only scientific difference is the
-fixed `0.1` clean/aug cosine-consistency term.  Metric early stopping is off;
-epochs 40 and 80 are diagnostics only.  The treatment must not start until the
-control is terminal and fully audited.
+Both branches start from the immutable P3 Raw checkpoint and have identical
+split, seed, model, augmentation, optimiser, learning rates, cosine schedule,
+windows, batch composition, speaker-balanced two-file sampler and fixed
+120-epoch horizon.  Every batch contains 24 OOD rows plus 12 distinct known
+speaker pairs.  The only scientific difference is whether the fixed `0.1`
+cross-file cosine-consistency term is active.  Metric early stopping is off;
+epochs 40 and 80 are diagnostics only.  The matched control launched first;
+the treatment may start only after the control is terminal and fully audited.
 
 The primary gate remains treatment LME20 gain over matched control at least
 `+0.002`, fixed `50/50` fusion gain over the external Control Fold-0 evidence at
@@ -51,18 +57,19 @@ rescue at least `20%`, and treatment/control embedding-spread ratio at least
 `0.95`.  Paired randomisation tests describe uncertainty but cannot override
 these effect-size and safety gates.
 
-## Locked decision tree after the pair
+## Historical activation record for P4 (completed)
 
-Before launching any new GPU training, run the preregistered CPU-only
-enrollment test in
-`CAMPP_LME20_SPEAKER_SPECIFIC_THRESHOLD_PREREG_2026-08-30.md`.  This is not a
-reopening of global threshold or AS-Norm: each target Fold's threshold for a
-known identity is computed only from maximum cross-speaker enrollment cosine,
-with no OOF-selected scalar.  The source paper (arXiv `2306.00952`) tested
-watchlists of 5 and 10 speakers, so the 446-speaker maximum may over-reject and
-the branch is expected to fail closed unless every Fold is non-negative,
-aggregate Macro-F1 gains at least `0.001`, and Known/OOD guardrails both hold.
-No quantile, offset or leaderboard result may be used to repair a rejection.
+The P4-specific branches below are retained as an audit trail.  Their decision
+has already been made: same-crop consistency was neutral without collapse,
+the extension gate failed, and that evidence activated P5.  They are not the
+current launch policy.
+
+Before P5 activation, the preregistered CPU-only enrollment test in
+`CAMPP_LME20_SPEAKER_SPECIFIC_THRESHOLD_PREREG_2026-08-30.md` was run.  It
+reproduced the exact locked baseline, then failed every Fold and both safety
+guardrails as recorded in the closed-branches table.  This completed the
+historical prerequisite; the diagnostic must not be repeated or repaired with
+a quantile, offset or leaderboard result.
 
 ### A. Treatment passes every gate
 
@@ -152,6 +159,43 @@ Test one literature-fixed augmentation-frequency curriculum against a
 compute-matched fixed-hard control.  Breakpoints and probabilities must be
 chosen before Fold-0 results.  Do not combine curriculum, a new sampler and a
 new loss in one Run.
+
+## Locked decision tree after the active P5 pair
+
+### A. P5 treatment passes every gate
+
+Write a separate Fold-1/Fold-2 preregistration with the exact same sampler,
+coefficient, horizon, scheduler and decision policy.  Only consistent
+multi-Fold OOF direction with the same Known/OOD, rescue, spread and provenance
+guardrails may authorise a local package.  Fold 0 alone never authorises a
+submission.
+
+### B. P5 is neutral or harmful while spread remains healthy
+
+Reject positive-only cross-file consistency and do not tune its coefficient or
+schedule.  The next eligible GPU hypothesis is one matched Fold-0 ablation that
+adds explicit inter-speaker angular separation to the P5 treatment.  Its loss,
+coefficient, budget and gate must be fixed before outcome observation.  This is
+supported by APSIPA 2022 supervised angular contrastive evidence (DOI
+`10.23919/APSIPAASC55919.2022.9980014`) and the exclusive inter-class angular
+regulariser evidence already recorded in the research ledger.  Class-aware
+hard-negative weighting and automatic multi-objective balancing change more
+than one variable and remain later hypotheses.
+
+### C. P5 loses embedding spread or violates the Known guardrail
+
+Retire positive-pair invariance.  Select exactly one alternative from terminal
+error topology: angular-margin centroid training if inter-speaker separation
+collapsed, known-hard exposure if Known-to-Unknown errors dominate, or one
+fixed bandwidth transform if codec/bandwidth sensitivity dominates.  The
+previous post-hoc centroid decision rule and AuxMetric result are not reopened;
+any centroid branch must be a new training objective with a matched control.
+
+### D. Either branch is incomplete or fails provenance
+
+Repair only with idempotent project recovery.  Do not infer a scientific result
+from a partial history, incomplete OOF, missing receipt or mismatched MLflow
+run, and do not launch a successor until the pair is terminal and auditable.
 
 ## Research-only later directions
 
