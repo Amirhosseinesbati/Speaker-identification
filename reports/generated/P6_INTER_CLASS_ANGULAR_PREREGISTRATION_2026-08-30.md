@@ -39,6 +39,25 @@ evidence, but it is not direct evidence for this competition's 446-known plus
 binary-OOD Macro-F1 objective. P6 therefore treats `0.01` as one fixed transfer
 hypothesis, not as a promised gain and not as a tunable grid.
 
+A second targeted SciSpace query asked specifically for validation of the same
+coefficient and class-count normalization across speaker datasets. It returned
+related angular/centroid and adaptive-loss work but no peer-reviewed cross-dataset
+ablation establishing that `0.01` is invariant to the number of speaker classes.
+This negative evidence strengthens the restriction: P6 is exactly one falsifiable
+transfer point. A failure may not trigger a coefficient or class-count rescaling
+search on Fold 0.
+
+The primary paper's actual scale further limits transfer: it trained 5,994
+VoxCeleb-II speakers with 512-dimensional embeddings, a ResNet18 backbone, SGD,
+and no activity detection or augmentation. Our candidate has 446 known classes,
+192-dimensional ArcFace weights, CAM++, AdamW, strong channel augmentation and a
+coupled binary-OOD objective. The paper itself lists multi-dataset robustness as
+future work. Its mechanism table reduced hyperspherical energy from `39.3` to
+`22.8` for A-Softmax plus inter-class regularization (ratio about `0.58`). Our
+fixed mechanism gate of `0.95` asks only for a reproducible 5% reduction, so it is
+conservative relative to the source while still requiring measurable geometric
+movement.
+
 Our `ArcFaceHead.weight` stores classes by row, so the mathematically equivalent
 implementation uses `W_n W_n^T`. Negative inter-class cosine values remain
 unpenalized exactly as in the source. The computation is float32 even under AMP.
