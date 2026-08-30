@@ -84,6 +84,20 @@ after the control is terminal, with the $2.60 treatment and $20 campaign cost
 guards still satisfied.  A timeout is incomplete evidence, never a scientific
 rejection of consistency.
 
+The 20% rule is executable rather than judgement-based.  After the control is
+terminal, run the existing real forward/backward batch-48 probe once for the
+matched control and once for the treatment, on the same worker and checkout.
+Then run `scripts/project_paired_training_runtime.py` with the terminal control
+log, both probe JSON files, the authoritative control wall time, 120 treatment
+epochs, the effective supervisor timeout, current hourly price and the $2.60
+incremental cap.  The verifier parses every complete Train/Raw-Val/EMA-Val
+timing sequence from the control log, charges validation/checkpoint overhead at
+no less than the observed control rate, and scales only the training component
+by the measured treatment/control throughput ratio.  Launch is forbidden
+unless both `time_gate_pass` and `cost_gate_pass` are true.  Its JSON receipt is
+part of treatment provenance; a failed projection is an operational no-launch,
+not evidence against the scientific hypothesis.
+
 ## Evidence and gate
 
 Epoch-40 and epoch-80 checkpoints are diagnostics only. The decision uses the
