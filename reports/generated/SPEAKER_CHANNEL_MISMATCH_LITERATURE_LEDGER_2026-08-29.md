@@ -437,3 +437,25 @@ support/query episode with declared guest/OOD negatives is the most distinct
 literature-supported later hypothesis.  It must be compared against the failed
 global EMA-centroid AuxMetric and keep PCM/LME20 fixed; post-hoc cohort or PLDA
 score normalisation remains closed.
+
+## Cross-file objective-specific search (2026-08-30)
+
+SciSpace was asked for controlled speaker-recognition studies that combine a
+cross-utterance, same-speaker positive-only cosine/Siamese regulariser with a
+supervised softmax or ArcFace classifier, including the exact coefficient,
+stop-gradient choice and open-set false-accept safeguards.  The retrieval did
+not identify a direct match to that complete contract.  The closest results
+instead change the classification objective (Angular Margin Centroid Loss,
+Jeffreys divergence or newer alpha-divergence margins), add hard negatives and
+cross-attention, or study verification rather than joint known/unknown
+identification.  Those are useful future hypotheses but would each confound the
+recording-pair variable in the next ablation.
+
+This negative evidence tightens the existing plan.  If activated after the
+terminal same-crop audit, both cross-file branches must use the identical
+speaker-balanced two-file sampler, source checkpoint, primary ArcFace/OOD
+losses, augmentations, seed and fixed horizon.  The control has zero pair loss;
+the treatment changes only the already declared cosine coefficient from zero
+to `0.1`, with a detached target and the existing spread/Known/OOD guardrails.
+No centroid loss, hard-negative objective, adaptive margin, extra teacher or
+paper-derived threshold may be bundled into that comparison.
