@@ -129,6 +129,41 @@ reported architecture, coefficient, epoch count, or reciprocal-point count.
 
 Primary source: <https://arxiv.org/pdf/2409.15742>
 
+## SciSpace follow-up triage (abstract-level evidence)
+
+A second natural-language SciSpace search asked specifically for
+cross-session/cross-channel and open-set speaker-recognition methods that remain
+plausible with small batches.  The search independently surfaced Masked Proxy
+Loss and Angular Margin Centroid Loss, which strengthens the *mechanism-level*
+case for proxy/centroid negatives and explicit angular separation.  It does not
+provide a transferable coefficient, and therefore does not change the locked
+P5/P6 order.
+
+The same search surfaced two alternatives that are not currently actionable:
+
+- channel-adversarial training assumes a usable channel/domain target.  This
+  campaign has duration/RMS/window proxies but no validated direct
+  session/channel labels, so inventing a domain target would make the ablation
+  uninterpretable;
+- limited-data evidence for a self-supervised wav2vec2 frontend is relevant to
+  representation quality, but it changes architecture, pretraining and package
+  cost simultaneously.  It is therefore not a lower-cost follow-up to the
+  current paired CAM++ question.
+
+SciSpace sources surfaced in this follow-up:
+
+- Angular Margin Centroid Loss, Interspeech 2020,
+  DOI `10.21437/INTERSPEECH.2020-2538`;
+- Masked Proxy Loss, arXiv `2011.04491`;
+- Channel Adversarial Training, ICASSP 2019,
+  DOI `10.1109/ICASSP.2019.8682327`;
+- Training Speaker Recognition Systems with Limited Data, Interspeech 2022,
+  DOI `10.21437/Interspeech.2022-135`.
+
+This triage is recorded as search evidence, not full-text verification.  Any
+future activation still requires primary-method inspection and a
+competition-specific preregistration.
+
 ## Competition-specific label hazard
 
 The competition label `unknown` aggregates 554 different OOD speakers. A
