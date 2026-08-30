@@ -61,6 +61,42 @@ does not supply a universal queue size for this campaign.
 
 Primary source: <https://arxiv.org/pdf/1912.06798v3>
 
+### Masked Proxy / Multinomial Masked Proxy
+
+Lian et al. combine entity-to-centroid comparisons for speakers represented
+inside the mini-batch with entity-to-proxy comparisons for every speaker not
+represented in that batch. This is relevant because it supplies inter-class
+negatives without requiring every training identity to occur in one batch.
+Their balanced variant uses two samples per represented speaker, which is
+structurally close to the cross-file sampler already being tested in P5.
+
+The transfer evidence is nevertheless weak for this competition. The paper
+trains Thin-ResNet34 on 5994 VoxCeleb2 identities with expected batch sizes of
+400 or 800, evaluates speaker-verification EER, and reports the best values
+after exploring loss weights and other hyperparameters. It does not validate
+a coefficient for CAM++ with a 447-way Macro-F1 objective or a heterogeneous
+aggregated OOD class. MP/MMP is therefore a batch-efficient research option,
+not a licensed P7 recipe.
+
+Primary source: <https://arxiv.org/pdf/2011.04491>
+
+### Reciprocal points with real unknown negatives
+
+Chen et al. propose SRPL+ for open-set speaker identification. Their negative
+samples are not collapsed into a same-speaker positive class: 1000 or more
+real or synthesised unknown-speaker samples are pushed toward high entropy
+relative to learnable reciprocal points. This semantic treatment is better
+aligned with the competition's 554 heterogeneous OOD identities than naive
+447-label supervised contrastive learning.
+
+Direct transfer is still unjustified. Their experiments use a WavLM frontend,
+a three-layer few-shot adapter, ten target speakers, text-dependent datasets,
+100 training epochs, and AUC/OSCR rather than 447-class Macro-F1. The useful
+hypothesis is the *role* of real OOD identities as diverse negatives, not the
+reported architecture, coefficient, epoch count, or reciprocal-point count.
+
+Primary source: <https://arxiv.org/pdf/2409.15742>
+
 ## Competition-specific label hazard
 
 The competition label `unknown` aggregates 554 different OOD speakers. A
@@ -92,8 +128,11 @@ metric.
    decisions and only if the remaining campaign budget can cover a complete
    matched control and treatment.
 4. Before preregistering P7, measure embedding drift on train-only batches,
-   establish a queue-memory feasibility bound, and choose exactly one queue
-   policy and one coefficient without using the target Fold or leaderboard.
+   establish a queue/proxy-memory feasibility bound, and choose exactly one
+   negative mechanism (cross-batch queue, masked proxies, or reciprocal-point
+   entropy) and one coefficient without using the target Fold or leaderboard.
+   The choice must be made from source-Fold evidence and engineering bounds;
+   the target Fold cannot select among the three mechanisms.
 5. P7 must retain the authoritative Raw probability-average argmax path and
    the existing Known Accuracy/OOD-F1 guardrails. It is rejected after one
    Fold if Macro-F1 gain is below `+0.002`, either guardrail drops by more than
