@@ -80,6 +80,23 @@ Do not import SSPS clustering, memory queues and a new loss together.  This
 choice follows SSPS evidence that same-utterance positives retain channel cues
 ([Interspeech 2025](https://doi.org/10.21437/Interspeech.2025-183)).
 
+A focused SciSpace pass adds an implementation boundary.  Supervised
+speaker-contrastive learning with labels has evidence for same-speaker
+positives, different-speaker negatives and an angular margin (APSIPA 2022,
+DOI `10.23919/APSIPAASC55919.2022.9980014`), while simple Siamese speaker
+regularisation reports gains using positive pairs alone (ICASSP 2022, DOI
+`10.1109/ICASSP43922.2022.9747526`).  Because CAM++ already has a supervised
+ArcFace separation loss, adding a second contrastive negative/margin system
+would confound pair identity with a new classifier objective.  Therefore the
+cleanest conditional test is positive-only cosine alignment between two
+different files of the same known speaker, using the same declared coefficient
+as the current consistency test.  Its control must use the identical
+speaker-balanced two-file sampler, primary losses and two forward passes but
+zero cross-file alignment weight.  Unknown examples retain the existing OOD
+path and never receive a fabricated cross-file positive.  This design is only
+a conditional backlog item; no config or Run is authorised before the active
+same-crop pair is terminal.
+
 ### D. Consistency causes spread loss or late degradation
 
 Retire invariance-pressure variants.  Prefer one isolated training-side factor:
