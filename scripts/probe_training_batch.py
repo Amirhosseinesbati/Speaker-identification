@@ -174,6 +174,7 @@ def main() -> int:
         optimizer = None
         batch = None
         scaler = None
+        last_train_metrics: dict[str, float] | None = None
         try:
             train_loader, _, _ = get_dataloaders(config)
             batch = next(iter(train_loader))
@@ -208,7 +209,7 @@ def main() -> int:
             torch.cuda.reset_peak_memory_stats()
             started = time.perf_counter()
             for _ in range(max(1, args.timed_steps)):
-                train_epoch(
+                last_train_metrics = train_epoch(
                     model, one_batch_loader, optimizer, criterion, scaler, device,
                     config["training"]["max_grad_norm"],
                     ood_grad_norm=config["training"].get("ood_grad_norm", 1.0),
@@ -230,7 +231,45 @@ def main() -> int:
                 "windows_per_second": files * num_windows / elapsed,
                 "peak_vram_gib": torch.cuda.max_memory_allocated() / 2**30,
                 "reserved_vram_gib": torch.cuda.max_memory_reserved() / 2**30,
+                "consistency_weight": consistency_weight,
+                "consistency_pairing": consistency_pairing,
+                "train_loss_consistency": float(
+                    (last_train_metrics or {}).get("loss_consistency", 0.0)
+                ),
+                "train_loss_consistency_weighted": float(
+                    (last_train_metrics or {}).get(
+                        "loss_consistency_weighted", 0.0
+                    )
+                ),
+                "train_pair_cosine": float(
+                    (last_train_metrics or {}).get("pair_cosine", 0.0)
+                ),
+                "train_embedding_std_student": float(
+                    (last_train_metrics or {}).get(
+                        "embedding_std_augmented", 0.0
+                    )
+                ),
+                "train_embedding_std_target": float(
+                    (last_train_metrics or {}).get("embedding_std_clean", 0.0)
+                ),
             })
+            if consistency_weight > 0:
+                values = [
+                    row["train_loss_consistency"],
+                    row["train_loss_consistency_weighted"],
+                    row["train_pair_cosine"],
+                    row["train_embedding_std_student"],
+                    row["train_embedding_std_target"],
+                ]
+                if not all(torch.isfinite(torch.tensor(values))):
+                    raise RuntimeError(
+                        "Non-finite consistency diagnostics in batch probe"
+                    )
+                if row["train_loss_consistency_weighted"] <= 0:
+                    raise RuntimeError(
+                        "Enabled consistency objective produced no positive "
+                        "weighted loss in batch probe"
+                    )
         except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
             is_oom = isinstance(exc, torch.cuda.OutOfMemoryError) or "out of memory" in str(exc).lower()
             if not is_oom:
