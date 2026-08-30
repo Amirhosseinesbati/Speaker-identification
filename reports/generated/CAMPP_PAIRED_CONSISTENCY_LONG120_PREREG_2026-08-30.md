@@ -87,3 +87,27 @@ Control, matched Control, treatment, and fixed fusion: `known_to_unknown`,
 diagnostics, not new gates.  In particular, they may explain whether the
 representation changes the dominant Known-to-Unknown residual, but they may
 not authorise a post-hoc threshold, blend weight, or alternate checkpoint.
+
+## Conditional longer-horizon path
+
+Epoch 120 is a minimum complete comparison, not an unconditional claim that
+the harder consistency objective has converged.  A later experiment may use a
+longer horizon only when the already-implemented matched-extension diagnostic
+passes every one of the following locked checks:
+
+- the treatment mean Raw Macro-F1 over epochs 111--120 exceeds its mean over
+  epochs 101--110 by at least `0.0005`;
+- the treatment Raw Macro-F1 slope over epochs 101--120 is positive;
+- the treatment's best Raw epoch lies in epochs 111--120;
+- the treatment's tail improvement exceeds the matched control's tail
+  improvement by at least `0.0005`;
+- treatment tail Known Accuracy and OOD-F1 each decline by no more than
+  `0.002` relative to the preceding ten-epoch window; and
+- treatment-to-control embedding-spread ratio remains at least `0.95`.
+
+Passing these checks authorises preregistration of a **new matched extension**
+only.  It never authorises continuing the treatment alone, changing the
+consistency weight from Fold-0 feedback, or interpreting extra epochs as an
+acceptance-gate pass.  The extension must preserve equal horizons and all
+scientific settings for both branches; its scheduler/resume contract and cost
+ceiling must be fixed before either extension branch starts.
