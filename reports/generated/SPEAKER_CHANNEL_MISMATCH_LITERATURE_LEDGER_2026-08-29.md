@@ -214,3 +214,22 @@ average Macro-F1 remained approximately `0.9411` (epochs 13--14); epoch 20 was
 `0.9356094`, with EMA `0.9386031`, Known Accuracy `0.9495516`, and OOD-F1
 `0.9394773`.  These are non-terminal monitoring observations and do not select
 a checkpoint or alter the paired gate.
+
+A second SciSpace pass examined condition compensation that leaves the speaker
+extractor fixed.  The session-embedding paper above explicitly reports a
+separate session score that compensates the speaker score without retraining
+the extractor, making it a plausible *later* lightweight branch.  The
+abstract-level record does not establish that the method needs no session
+supervision, however, and the competition data expose no direct session or
+channel labels.  It therefore remains research-only until its supervision and
+cross-fit contract can be verified; it is not a reason to alter the active A/B
+pair.
+
+The same retrieval found Self-Distillation Prototypes Network (arXiv
+`2406.11169`), where aligning augmented views without negative pairs is
+reported to risk model collapse and an embedding-diversity regularizer is added
+to prevent it.  Although that system is self-supervised and its score is not
+directly transferable here, it independently supports the preregistered
+embedding-spread ratio as a mandatory safety gate.  A Macro-F1 gain with spread
+below `0.95` must still reject the current treatment rather than invite a tuned
+consistency weight.
