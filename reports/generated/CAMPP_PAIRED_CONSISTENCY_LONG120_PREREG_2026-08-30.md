@@ -80,3 +80,10 @@ Fold-0 baseline at least +0.002; Known and OOD-F1 drops each no worse than
 -0.001; CAM++ baseline-error rescue rate at least 20%; and embedding-spread
 ratio at least 0.95. Passing authorises analysis only, never automatic later
 folds or leaderboard tuning.
+
+The terminal report must also expose the fixed error topology for the external
+Control, matched Control, treatment, and fixed fusion: `known_to_unknown`,
+`known_to_wrong_known`, and `unknown_to_known`.  These counts are descriptive
+diagnostics, not new gates.  In particular, they may explain whether the
+representation changes the dominant Known-to-Unknown residual, but they may
+not authorise a post-hoc threshold, blend weight, or alternate checkpoint.
