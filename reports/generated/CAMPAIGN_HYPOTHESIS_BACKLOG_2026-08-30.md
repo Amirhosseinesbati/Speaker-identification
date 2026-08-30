@@ -221,6 +221,25 @@ run, and do not launch a successor until the pair is terminal and auditable.
   support/query objective is scientifically distinct only if prototypes are
   constructed inside speaker-balanced episodes rather than kept as global EMA
   centroids; it remains research-only behind the preregistered cross-file pair.
+- A 2026-08-31 SciSpace query specifically tested whether a cleaner
+  ArcFace-compatible alternative should displace P6.  SciSpace returned no
+  methodology rows for the four selected papers, so the primary paper/code
+  sources were checked instead.  Angular Margin Centroid Loss replaces class
+  proxy optimisation with batch speaker-centroid optimisation and an angular
+  margin; it is not an isolated additive inter-class term and overlaps the
+  already rejected centroid/AuxMetric family
+  ([Interspeech 2020](https://doi.org/10.21437/Interspeech.2020-2538)).
+  AdaSpeaker jointly introduces an intra/inter hardness coefficient and
+  gradient-aware adaptive scaling, while its reference implementation changes
+  the ArcFace contract to margin `0.2` and scale `32`; it is therefore a
+  multi-mechanism replacement rather than the required one-factor ablation
+  ([ACM MM 2025](https://doi.org/10.1145/3746027.3755682),
+  [reference code](https://github.com/LiuJinghan2001/Adaspeaker)).  OpenFEAT
+  adds a set-to-set Transformer and was evaluated on simulated households with
+  only two to seven enrolled speakers, which is too far from the IAAA 446-way
+  known-first contract.  These results do not activate a new branch and leave
+  the preregistered exclusive inter-class angular P6 pair as the cleaner
+  single-variable contingency after terminal P5 evidence.
 - A second SciSpace pass found OpenFEAT and cross-channel meta-learning as
   superficially close to the dominant LME20 residual (`87` known-to-unknown
   errors), but a targeted follow-up did not find a controlled study that
