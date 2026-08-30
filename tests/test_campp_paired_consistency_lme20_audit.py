@@ -1,4 +1,5 @@
 from copy import deepcopy
+import json
 
 import numpy as np
 import pytest
@@ -24,6 +25,7 @@ from scripts.audit_campp_paired_consistency_lme20 import (
     sha256_file,
     terminal_curve_diagnostic,
 )
+from scripts.audit_campp_milestone import main as milestone_main
 from src.experiment_config import load_profile
 
 
@@ -209,6 +211,39 @@ def test_milestone_diagnostic_rejects_history_gap(tmp_path) -> None:
     }, path)
     with pytest.raises(RuntimeError, match="not contiguous"):
         milestone_diagnostic(path, TREATMENT_PROFILE)
+
+
+def test_milestone_cli_writes_diagnostic_only_receipt(tmp_path) -> None:
+    checkpoint = tmp_path / "campp_milestone_epoch040_raw.pt"
+    history = _terminal_history(treatment=False)[:40]
+    for row in history:
+        row.update({
+            "val_logit_avg_macro_f1": row["val_macro_f1"] - 0.001,
+            "val_ema_macro_f1": row["val_macro_f1"] - 0.002,
+            "train_loss": 1.0,
+            "val_loss": 1.1,
+            "train_loss_consistency": 0.0,
+            "train_loss_consistency_weighted": 0.0,
+            "train_pair_cosine": 0.0,
+            "train_embedding_std_augmented": 0.0,
+            "train_embedding_std_clean": 0.0,
+        })
+    torch.save({
+        "epoch": 40,
+        "config": {"logging": {"checkpoint_dir": f"checkpoints/{TREATMENT_PROFILE}"}},
+        "training_history": history,
+    }, checkpoint)
+    output = tmp_path / "milestone_receipt.json"
+    assert milestone_main([
+        "--checkpoint", str(checkpoint),
+        "--profile", TREATMENT_PROFILE,
+        "--epoch", "40",
+        "--output", str(output),
+    ]) == 0
+    receipt = json.loads(output.read_text(encoding="utf-8"))
+    assert receipt["decision_role"].startswith("diagnostic_only")
+    assert receipt["diagnostic"]["history_length"] == 40
+    assert receipt["diagnostic"]["sha256"]
 
 
 def _terminal_history(*, treatment: bool) -> list[dict]:
