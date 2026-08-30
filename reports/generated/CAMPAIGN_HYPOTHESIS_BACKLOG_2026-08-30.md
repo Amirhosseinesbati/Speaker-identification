@@ -185,6 +185,16 @@ new loss in one Run.
   it requires a new preregistration and cannot be invented from the active
   treatment curve
   ([Interspeech 2024](https://doi.org/10.21437/Interspeech.2024-360)).
+- SciSpace also retrieved a speaker-verification weight-space ensemble study
+  reporting gains under cross-channel shift by interpolating a base model and
+  its fine-tuned descendant (IEEE/ACM TASLP, DOI
+  `10.1109/TASLP.2022.3233231`).  The active treatment is architecturally
+  compatible with that idea, but its epoch curve was already visible when the
+  paper was retrieved.  Therefore no interpolation coefficient may be fitted
+  to this Fold-0 curve.  Keep this research-only unless a future multi-Fold
+  contract fixes the coefficient (for example `0.5`) before outcomes and
+  compares it against both endpoints with the same Known/OOD and rescue
+  guardrails.
 - A speaker-specific SciSpace search found support for channel/recording and
   clean/noisy invariance, but no controlled evidence that delaying the
   consistency coefficient is better than applying it from the start.  Keep
