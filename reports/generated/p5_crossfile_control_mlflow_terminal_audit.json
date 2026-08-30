@@ -1,0 +1,474 @@
+{
+  "run_id": "9e2f8c30bc134a0181cf99bc096dd6f9",
+  "status": "FINISHED",
+  "run_name": "p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0-campp",
+  "start_time": 1788099275126,
+  "end_time": 1788120034892,
+  "parameter_count": 45,
+  "parameter_keys": [
+    "DAGSHUB_REPO_NAME",
+    "base_model",
+    "batch_size",
+    "best_final_ood_acc",
+    "best_final_speaker_acc",
+    "best_final_val_loss",
+    "cli",
+    "deterministic_algorithms",
+    "early_stopping_patience",
+    "encoder_lr",
+    "encoder_type",
+    "epochs",
+    "freeze_encoder",
+    "freeze_epochs",
+    "learning_rate",
+    "metric_num_classes",
+    "metric_unknown_clusters",
+    "min_lr_ratio",
+    "num_classes",
+    "num_known",
+    "ood_head",
+    "output_unknown_clusters",
+    "pipeline_stage",
+    "pooling_type",
+    "resume_checkpoint_sha256",
+    "run_stage",
+    "schedule",
+    "selected_weight_variant",
+    "selection_mode",
+    "speaker_head_classes",
+    "speaker_head_type",
+    "speaker_target_scope",
+    "stateful_resume",
+    "total_params",
+    "train_known",
+    "train_samples",
+    "train_unknown",
+    "training_seed",
+    "val_samples",
+    "validation_overlap",
+    "warm_start_enabled",
+    "warm_start_sha256",
+    "warmup_ratio",
+    "wav_files_converted",
+    "weight_decay"
+  ],
+  "metric_key_count": 52,
+  "metric_series": {
+    "best_ema_val_macro_f1": {
+      "points": 1,
+      "finite_points": 1,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.940317
+    },
+    "best_raw_val_macro_f1": {
+      "points": 1,
+      "finite_points": 1,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.940989
+    },
+    "best_val_macro_f1": {
+      "points": 1,
+      "finite_points": 1,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.940989
+    },
+    "encoder_lr": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 2.5000000000000004e-07
+    },
+    "final_val_loss": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 1.276767
+    },
+    "final_val_ood_acc": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.9479
+    },
+    "final_val_speaker_acc": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.9608
+    },
+    "head_lr": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 5e-06
+    },
+    "known_acc": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.93722
+    },
+    "learning_rate": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 5e-06
+    },
+    "macro_f1": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.938005
+    },
+    "macro_f1_at_ood_threshold": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.932034
+    },
+    "num_val_batches": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 34.0
+    },
+    "ood_f1": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.949967
+    },
+    "ood_threshold": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.45000000000000007
+    },
+    "ood_threshold_f1": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.9425133689839572
+    },
+    "overall_acc": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.948529
+    },
+    "probability_avg_known_acc": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.93722
+    },
+    "probability_avg_macro_f1": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.940989
+    },
+    "probability_avg_ood_f1": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.955541
+    },
+    "probability_avg_overall_acc": {
+      "points": 2,
+      "finite_points": 2,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 0.953431
+    },
+    "total_epochs_run": {
+      "points": 1,
+      "finite_points": 1,
+      "min_step": 0,
+      "max_step": 0,
+      "last_value": 120.0
+    },
+    "train_embedding_std_augmented": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.0
+    },
+    "train_embedding_std_clean": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.0
+    },
+    "train_loss": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 1.261565511596614
+    },
+    "train_loss_consistency": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.0
+    },
+    "train_loss_consistency_weighted": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.0
+    },
+    "train_loss_ood": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.18232865438892923
+    },
+    "train_loss_primary": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 1.261565511596614
+    },
+    "train_loss_primary_normalized": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 1.261565511596614
+    },
+    "train_loss_proto": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.0
+    },
+    "train_loss_proto_weighted": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.0
+    },
+    "train_loss_speaker": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 1.45201903376086
+    },
+    "train_ood_acc": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.9253771551724139
+    },
+    "train_pair_cosine": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.0
+    },
+    "train_speaker_acc": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.8643139367816087
+    },
+    "val_ema_known_acc": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.9349775784753364
+    },
+    "val_ema_logit_avg_macro_f1": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.9368816448279536
+    },
+    "val_ema_macro_f1": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.9394190359077688
+    },
+    "val_ema_ood_f1": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.9536423841059603
+    },
+    "val_ema_overall_acc": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.9522058823529411
+    },
+    "val_known_acc": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.9360986547085202
+    },
+    "val_logit_avg_macro_f1": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.9367950076533615
+    },
+    "val_loss": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 1.2782401004258324
+    },
+    "val_loss_ood": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.13676425540710196
+    },
+    "val_loss_primary_normalized": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 1.2782401004258324
+    },
+    "val_loss_speaker": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 1.4796769724172705
+    },
+    "val_macro_f1": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.9401631968072252
+    },
+    "val_ood_acc": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.9454656862745099
+    },
+    "val_ood_f1": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.9529489728296885
+    },
+    "val_overall_acc": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.9522058823529411
+    },
+    "val_speaker_acc": {
+      "points": 120,
+      "finite_points": 120,
+      "min_step": 1,
+      "max_step": 120,
+      "last_value": 0.960811655223524
+    }
+  },
+  "artifact_count": 31,
+  "artifact_bytes_known": 214087141,
+  "artifact_paths": [
+    "code/tmpf8001hnx.zip",
+    "configs/base_default_config.yaml",
+    "configs/profile_p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0.yaml",
+    "configs/run_p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0.yaml",
+    "deployment_envelope.json",
+    "models/bundle/MODEL_CARD.md",
+    "models/bundle/class_map.json",
+    "models/bundle/manifest.json",
+    "models/bundle/metadata.json",
+    "models/bundle/oof_predictions.npz",
+    "models/bundle/resolved_config.yaml",
+    "models/bundle/training_history.json",
+    "models/bundle/unknown_clusters.json",
+    "models/campp_best.pt",
+    "models/variants/campp_best_ema.pt",
+    "models/variants/campp_best_ema_bundle/MODEL_CARD.md",
+    "models/variants/campp_best_ema_bundle/class_map.json",
+    "models/variants/campp_best_ema_bundle/manifest.json",
+    "models/variants/campp_best_ema_bundle/metadata.json",
+    "models/variants/campp_best_ema_bundle/resolved_config.yaml",
+    "models/variants/campp_best_ema_bundle/training_history.json",
+    "models/variants/campp_best_ema_bundle/unknown_clusters.json",
+    "models/variants/campp_best_raw.pt",
+    "models/variants/campp_best_raw_bundle/MODEL_CARD.md",
+    "models/variants/campp_best_raw_bundle/class_map.json",
+    "models/variants/campp_best_raw_bundle/manifest.json",
+    "models/variants/campp_best_raw_bundle/metadata.json",
+    "models/variants/campp_best_raw_bundle/resolved_config.yaml",
+    "models/variants/campp_best_raw_bundle/training_history.json",
+    "models/variants/campp_best_raw_bundle/unknown_clusters.json",
+    "training_summary.json"
+  ],
+  "model_artifacts": [
+    "models/campp_best.pt",
+    "models/variants/campp_best_ema.pt",
+    "models/variants/campp_best_raw.pt"
+  ],
+  "provenance_artifacts": [
+    "configs/base_default_config.yaml",
+    "models/bundle/MODEL_CARD.md",
+    "models/bundle/resolved_config.yaml",
+    "models/bundle/training_history.json",
+    "models/variants/campp_best_ema_bundle/MODEL_CARD.md",
+    "models/variants/campp_best_ema_bundle/resolved_config.yaml",
+    "models/variants/campp_best_ema_bundle/training_history.json",
+    "models/variants/campp_best_raw_bundle/MODEL_CARD.md",
+    "models/variants/campp_best_raw_bundle/resolved_config.yaml",
+    "models/variants/campp_best_raw_bundle/training_history.json"
+  ]
+}

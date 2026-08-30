@@ -1,0 +1,208 @@
+{
+  "profile": "p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0",
+  "git_commit": "db82ec95866c3623f7d0e0844467557dc84a8c4a",
+  "config_sha256": "ceae8376e4bf6963063295e2e7d0a44a64aa492988fde9caa091989ea464726e",
+  "started_at_utc": "2026-08-30T14:14:28.548083+00:00",
+  "finished_at_utc": "2026-08-30T20:00:39.315124+00:00",
+  "exit_code": 0,
+  "receipt_artifacts": [
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/best_model.pt",
+      "size_bytes": 69229815,
+      "sha256": "c9da339ca8a15ef2fdc4e85e9b44d2a19ef48c2562e03d0d2025a05bab1edd64"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best.pt",
+      "size_bytes": 69229943,
+      "sha256": "73dd0ce51c09d30ae22be038730ee99661a337513dae5cb5bef5c6d47b915828"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_bundle/MODEL_CARD.md",
+      "size_bytes": 600,
+      "sha256": "22556d947a25b7d7af00246509ae6fb5be0ea6884bd4fede64faa9e70386a8dd"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_bundle/class_map.json",
+      "size_bytes": 33615,
+      "sha256": "de9f082ebdbcfc9857cf93df44f186defefe31b44dffeada1a800a85affda32d"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_bundle/manifest.json",
+      "size_bytes": 596,
+      "sha256": "01e97189492787307dff8b13a5ea1896ca125d349f122180547ba0c38dfd4224"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_bundle/metadata.json",
+      "size_bytes": 2865,
+      "sha256": "56bb525698744051c4853ed04bb1d82f2debcea8911466537b4bf631d3350732"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_bundle/oof_predictions.npz",
+      "size_bytes": 5188924,
+      "sha256": "059ecd3e21ff577972849ccf59587e187bdff06cb940b1fa685f7835e5295b91"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_bundle/resolved_config.yaml",
+      "size_bytes": 6917,
+      "sha256": "88759888790c1514de59d7e29ef10dd9f1935c5405e8ba2872a996b1f59ac83c"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_bundle/training_history.json",
+      "size_bytes": 192744,
+      "sha256": "8a5586b4734e646f31b8683680a7b3747d7c9ff53971314b53fb886814ed4e9a"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_bundle/unknown_clusters.json",
+      "size_bytes": 72198,
+      "sha256": "321dd54d57c27e7ac8ac7beea8211aca1b3f236dfe7dfba35d49f97e562ab5f9"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_ema.pt",
+      "size_bytes": 69238571,
+      "sha256": "9c5a69ad297a2c208c7bb66623735d04fb5e61864f02d9b415372c83d704eef8"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_ema_bundle/MODEL_CARD.md",
+      "size_bytes": 604,
+      "sha256": "fc359d78d18cb71e2964b59d8702c3b31e26786014264e8db9f4f64dab78c6b3"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_ema_bundle/class_map.json",
+      "size_bytes": 33615,
+      "sha256": "de9f082ebdbcfc9857cf93df44f186defefe31b44dffeada1a800a85affda32d"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_ema_bundle/manifest.json",
+      "size_bytes": 456,
+      "sha256": "ca1717644715cbfe30f6a57e051be2e5d02e586de50322b975ef3c14675de045"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_ema_bundle/metadata.json",
+      "size_bytes": 2823,
+      "sha256": "c7a5d87cdfa2d4e25389681b61818609fe6c64160bbbf6fa0c9cf55dca071c79"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_ema_bundle/resolved_config.yaml",
+      "size_bytes": 6917,
+      "sha256": "88759888790c1514de59d7e29ef10dd9f1935c5405e8ba2872a996b1f59ac83c"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_ema_bundle/training_history.json",
+      "size_bytes": 192744,
+      "sha256": "8a5586b4734e646f31b8683680a7b3747d7c9ff53971314b53fb886814ed4e9a"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_ema_bundle/unknown_clusters.json",
+      "size_bytes": 72198,
+      "sha256": "321dd54d57c27e7ac8ac7beea8211aca1b3f236dfe7dfba35d49f97e562ab5f9"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_raw.pt",
+      "size_bytes": 69238571,
+      "sha256": "70bf4c69eb957ea36c52546622bef3b5203dd59c2df858a089e34a353f362772"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_raw_bundle/MODEL_CARD.md",
+      "size_bytes": 604,
+      "sha256": "fc39bec68130428f576010bfa64d824659d7e239664d7962fb334654d2a668e3"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_raw_bundle/class_map.json",
+      "size_bytes": 33615,
+      "sha256": "de9f082ebdbcfc9857cf93df44f186defefe31b44dffeada1a800a85affda32d"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_raw_bundle/manifest.json",
+      "size_bytes": 456,
+      "sha256": "36bfc67bb1ad669a15c24e904943d34f549ca557871ee9af08cee2083e588fa5"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_raw_bundle/metadata.json",
+      "size_bytes": 2823,
+      "sha256": "50925f494f1e8d0168d8907c48d1d2e7fe7052afea0d6350b53777fe7eab586f"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_raw_bundle/resolved_config.yaml",
+      "size_bytes": 6917,
+      "sha256": "88759888790c1514de59d7e29ef10dd9f1935c5405e8ba2872a996b1f59ac83c"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_raw_bundle/training_history.json",
+      "size_bytes": 192744,
+      "sha256": "8a5586b4734e646f31b8683680a7b3747d7c9ff53971314b53fb886814ed4e9a"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_raw_bundle/unknown_clusters.json",
+      "size_bytes": 72198,
+      "sha256": "321dd54d57c27e7ac8ac7beea8211aca1b3f236dfe7dfba35d49f97e562ab5f9"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_latest.pt",
+      "size_bytes": 69259153,
+      "sha256": "3bccf29a40abdf4cb32ee87acca93d95f3553d473f1a24c1f8f65df60da33ef3"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_milestone_epoch040_raw.pt",
+      "size_bytes": 69185505,
+      "sha256": "be7f98e5b92d9aa8d18bd2ab2593be38cffb520cda4dc1c17860cc0572ee09fe"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_milestone_epoch080_raw.pt",
+      "size_bytes": 69239905,
+      "sha256": "33117067aa7d35856c13b850b8033f02a595af11b1d4b0b98a212319f3d6fdcd"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/init_model.pt",
+      "size_bytes": 30758789,
+      "sha256": "3026de7fe3fff283a1d6d7935b9f6e3a5c8f3e6f0a74bb04bf9acf3e83ababbf"
+    },
+    {
+      "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/latest_model.pt",
+      "size_bytes": 69259153,
+      "sha256": "8cc215c11bcd2e1d709d47e0bb3b9381575f0f6de04f9631a1d8f06b18890652"
+    },
+    {
+      "path": "configs/experiments/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0.yaml",
+      "size_bytes": 3304,
+      "sha256": "ceae8376e4bf6963063295e2e7d0a44a64aa492988fde9caa091989ea464726e"
+    },
+    {
+      "path": "data/experiments/campaign_logs/20260830T141428Z_p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0.log",
+      "size_bytes": 3155843,
+      "sha256": "538a546bade0b3933a98281fa8b66b2017dbb921d7bf90cd8c4b8d21c28c49e4"
+    }
+  ],
+  "readable_checkpoints": 9,
+  "canonical_checkpoint": {
+    "path": "/workspace/iaaa-speaker/checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best.pt",
+    "sha256": "73dd0ce51c09d30ae22be038730ee99661a337513dae5cb5bef5c6d47b915828",
+    "configured_epochs": 120,
+    "history_points": 120,
+    "selected_epoch": 87,
+    "weight_variant": "raw",
+    "class_map_size": 1001,
+    "competition_num_known": 446,
+    "competition_class_count": 447,
+    "split": {
+      "fold": 0,
+      "folds": 3,
+      "scheme": "kfold",
+      "seed": 42
+    }
+  },
+  "oof": {
+    "sha256": "059ecd3e21ff577972849ccf59587e187bdff06cb940b1fa685f7835e5295b91",
+    "path": "/workspace/iaaa-speaker/checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_best_bundle/oof_predictions.npz",
+    "rows": 1632,
+    "unique_files": 1632,
+    "competition_classes": 447,
+    "embedding_dim": 192,
+    "split": {
+      "scheme": "kfold",
+      "folds": 3,
+      "fold": 0,
+      "seed": 42
+    }
+  },
+  "passed": true
+}
