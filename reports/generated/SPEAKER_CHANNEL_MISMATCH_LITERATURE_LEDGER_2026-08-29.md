@@ -348,3 +348,43 @@ cross-file positive-pair ablation remains the first isolated test.  Only if
 that test shows improved invariance but repeats the Known-accuracy penalty
 should one separately preregister either an angular/prototypical preservation
 term or a redundancy/variance regulariser, never both in the same first Run.
+
+## Few-shot prototype/open-set objective search (2026-08-30)
+
+A SciSpace semantic search then targeted the actual competition bottleneck:
+only a few enrolment examples per known speaker, a prototype/centroid decision
+backend, and simultaneous known-speaker discrimination and unknown rejection.
+Conclusion extraction succeeded for seven of seven selected records.  Angular
+Margin Centroid Loss (Interspeech 2020, DOI
+`10.21437/Interspeech.2020-2538`) is the closest architectural match: it
+optimises embedding-to-speaker-centroid cosine distances instead of only the
+classifier weights and explicitly imposes an angular margin between speaker
+centroids.  Few-shot prototypical ECAPA training (PeerJ CS 2023, DOI
+`10.7717/peerj-cs.1276`) and improved relation-network episodic training
+(arXiv `2203.17218`) independently support support/query episodes and joint
+encoder/backend optimisation when enrolment is scarce.  A 2025 prototype-space
+optimisation study (DOI `10.1109/LSP.2025.3648641`) reports a `41.7%` relative
+EER reduction over its self-supervised baselines in a low-resource setting,
+although its semi-supervised data assumptions do not transfer directly here.
+
+The only retrieved paper that directly targets open-set speaker identification
+is SRPL+ with negative-sample learning (arXiv `2409.15742`).  It supports the
+general value of modelling reciprocal/open space and real negative speakers,
+but it jointly changes a WavLM frontend, rapid-tuning backend and negative-data
+construction; importing it wholesale would be a confounded experiment.
+Likewise, additive-margin contrastive learning (Interspeech 2023, DOI
+`10.21437/Interspeech.2023-1479`) supports margin-based separation but is
+self-supervised verification evidence rather than a calibrated open-set
+identification result.
+
+The actionable inference is therefore narrow.  The fixed PCM/LME20 backend has
+already rescued `120/237` OOF errors and improved Macro-F1 by `0.0194678`, so a
+future representation experiment should train embeddings toward the same
+speaker-centroid geometry instead of replacing that backend.  If the current
+consistency pair and the preregistered cross-file positive-pair ablation do not
+produce a safe gain, the next single-variable candidate should be a
+centroid-angular or episodic prototypical auxiliary objective on CAM++, with
+the existing OOD head and PCM/LME20 decision policy held fixed.  Its acceptance
+must still be cross-fit and require simultaneous Known-accuracy and OOD-F1
+guardrails; none of these papers licenses leaderboard-tuned margins or open-set
+thresholds.
