@@ -127,3 +127,7 @@ selection against the leaderboard, or automatic full-data training.
 - The P6 control also resolves to the historical P5 treatment configuration
   after normalizing profile identity fields.
 - Both raw P6 config hashes are locked in regression tests.
+- `scripts/audit_inter_class_angular_energy.py` hashes both selected Raw
+  checkpoints, requires one shape-matched 2-D `head_speaker.weight` tensor per
+  model, computes the exact energy ratio, and applies the fixed `0.95` mechanism
+  gate without fitting any parameter. Its pass/fail and error paths are tested.
