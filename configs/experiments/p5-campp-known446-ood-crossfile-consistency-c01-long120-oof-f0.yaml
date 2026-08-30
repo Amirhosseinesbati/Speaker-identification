@@ -36,6 +36,7 @@ model:
     campp: {freeze_encoder: false, unfreeze_last_n_blocks: 2}
 audio:
   num_train_windows: 8
+  ood_batch_ratio: 0.5
   speech_aware_crop_probability: 0.75
   eval_speech_aware: true
   short_audio_mode: pad

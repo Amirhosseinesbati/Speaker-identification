@@ -79,10 +79,10 @@ Both branches will be created only after activation and will use:
 
 - matched profile
   `p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0`, raw config
-  SHA256 `c4e22f5c57d35fd8dabfa5f5ada39c93f5815c2d352aa0050d3a09c9eeb6822a`;
+  SHA256 `ceae8376e4bf6963063295e2e7d0a44a64aa492988fde9caa091989ea464726e`;
 - treatment profile
   `p5-campp-known446-ood-crossfile-consistency-c01-long120-oof-f0`, raw config
-  SHA256 `f31cc022448fbf40147ec0254a28502bdd95a55271266552937870dedd44f4a1`;
+  SHA256 `5243b42eebf82d5f2fb75588ec0040072137a44ee9d811ee50cacff6ac98d5ec`;
 - CAM++ warm-started from the immutable selected P3 Raw checkpoint
   `checkpoints/p3-campp-known446-ood-channelrobust-oof-f0/campp_best_raw.pt`,
   SHA256 `a46715e603173201a35bf20d9b43f6ad27f0352561b4c834ce7a2b3a3ae67a06`;
@@ -112,6 +112,13 @@ as the student and the second as a detached target.  The deterministic sampler
 must be tested to rotate every known file through both roles across the fixed
 horizon.  Raw config hashes and a structural single-difference test are
 mandatory before either launch.
+
+The first GPU preflight failed before constructing a batch because the derived
+profiles had accidentally inherited the P3 default `ood_batch_ratio=0.35`,
+which yields 31 (an odd number of) known rows in batch 48.  No model outcome or
+gradient was observed.  Both profiles were corrected to the already locked
+`ood_batch_ratio=0.5` contract above, producing 24 OOD rows and 12 complete
+known-speaker pairs; the superseded raw hashes were retired before any Run.
 
 ## Immediate stop rules and budget
 

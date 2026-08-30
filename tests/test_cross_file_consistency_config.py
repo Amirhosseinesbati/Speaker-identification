@@ -12,8 +12,8 @@ SAME_CROP_CONTROL = (
     "p4-campp-known446-ood-channelrobust-paired-control-long120-oof-f0"
 )
 RAW_SHA256 = {
-    CONTROL: "c4e22f5c57d35fd8dabfa5f5ada39c93f5815c2d352aa0050d3a09c9eeb6822a",
-    TREATMENT: "f31cc022448fbf40147ec0254a28502bdd95a55271266552937870dedd44f4a1",
+    CONTROL: "ceae8376e4bf6963063295e2e7d0a44a64aa492988fde9caa091989ea464726e",
+    TREATMENT: "5243b42eebf82d5f2fb75588ec0040072137a44ee9d811ee50cacff6ac98d5ec",
 }
 
 
@@ -34,6 +34,7 @@ def test_cross_file_pair_differs_only_by_consistency_enabled() -> None:
 
     for config in (control, treatment):
         assert config["data"]["known_sampling"] == {"pair_files": True}
+        assert config["audio"]["ood_batch_ratio"] == 0.5
         assert config["training"]["epochs"] == 120
         assert config["training"]["milestone_epochs"] == [40, 80]
         assert config["training"]["early_stopping_patience"] == 0
@@ -63,6 +64,8 @@ def test_cross_file_control_changes_only_sampler_from_same_crop_control() -> Non
 
     assert cross_file["data"].pop("known_sampling") == {"pair_files": True}
     assert "known_sampling" not in same_crop["data"]
+    assert cross_file["audio"].pop("ood_batch_ratio") == 0.5
+    assert same_crop["audio"].pop("ood_batch_ratio") == 0.35
     assert cross_file["training"]["loss"]["consistency"].pop("pairing") == (
         "cross_file_batch"
     )
