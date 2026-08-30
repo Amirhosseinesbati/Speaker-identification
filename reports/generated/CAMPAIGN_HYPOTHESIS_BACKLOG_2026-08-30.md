@@ -140,6 +140,14 @@ new loss in one Run.
 
 ## Research-only later directions
 
+- A focused SciSpace search found angular-margin centroid and episodic
+  prototypical evidence for few-shot speaker recognition.  The former is not a
+  new branch here: the rejected Fold-0 AuxMetric already used an EMA
+  data-centroid AM-softmax loss and lost on Macro-F1, Known accuracy, OOD-F1,
+  fixed blends and the oracle-gain gate.  Do not reopen it.  A future episodic
+  support/query objective is scientifically distinct only if prototypes are
+  constructed inside speaker-balanced episodes rather than kept as global EMA
+  centroids; it remains research-only behind the preregistered cross-file pair.
 - Duration-aware embedding objectives such as DAME are relevant to the hard
   short-utterance tail, but are a larger representation change and remain
   research-only until cheaper paired hypotheses fail
