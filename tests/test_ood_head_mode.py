@@ -368,6 +368,31 @@ def test_cross_file_pair_sampler_is_deterministic_and_emits_distinct_pairs():
     assert list(sampler) != first
 
 
+def test_cross_file_pair_sampler_covers_speakers_before_oversampling():
+    labels = np.asarray(
+        [0] * 64 + [label for label in range(1, 11) for _ in range(3)],
+        dtype=np.int64,
+    )
+    sampler = make_balanced_batch_sampler(
+        labels,
+        batch_size=8,
+        ood_ratio=0.5,
+        seed=43,
+        pair_known_files=True,
+        train_file_ids=np.asarray([f"row-{index}" for index in range(len(labels))]),
+    )
+
+    speaker_exposures = []
+    for batch_indices in sampler:
+        batch_labels = labels[np.asarray(batch_indices)]
+        speaker_exposures.extend(np.unique(batch_labels[batch_labels > 0]).tolist())
+
+    unique, counts = np.unique(speaker_exposures, return_counts=True)
+    np.testing.assert_array_equal(unique, np.arange(1, 11))
+    assert counts.min() >= 2
+    assert counts.max() - counts.min() <= 1
+
+
 def test_cross_file_pair_sampler_rejects_unpairable_contracts():
     with pytest.raises(ValueError, match="even number of known"):
         make_balanced_batch_sampler(
