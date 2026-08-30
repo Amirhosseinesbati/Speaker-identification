@@ -164,6 +164,34 @@ This triage is recorded as search evidence, not full-text verification.  Any
 future activation still requires primary-method inspection and a
 competition-specific preregistration.
 
+## Primary open-set architecture cross-check
+
+Wilkinghoff's Odyssey 2020 formulation explicitly decomposes open-set speaker
+identification into closed-set identity classification and outlier detection.
+The tested system combines a closed-set chain with a separately evaluated
+outlier detector and reports both top-S and top-1 error.  This independently
+supports the campaign's known-first identity path plus a distinct OOD decision;
+it argues against making the heterogeneous `unknown` label a same-speaker
+contrastive positive set.  The source uses i-vectors, thousands of blacklist
+speakers and EER, so it does not transfer a score normalizer or threshold to
+this competition.
+
+Primary source: <https://www.isca-archive.org/odyssey_2020/wilkinghoff20_odyssey.pdf>
+
+The VoxBlink2 Open-Set Speaker-Identification benchmark likewise defines a
+gallery match-or-reject problem: a probe is assigned to a gallery identity or
+rejected as unknown using a similarity score and predefined threshold, and is
+evaluated with DIR at controlled FAR.  This supports auditing identity quality
+and rejection quality separately.  It does not justify leaderboard threshold
+tuning here; the existing leave-one-fold-out policy and Known/OOD guardrails
+remain mandatory.
+
+Primary source: <https://www.isca-archive.org/interspeech_2024/lin24j_interspeech.pdf>
+
+The practical decision is therefore unchanged: preserve known-first semantics,
+retain OOD identities as diverse negatives or outlier evidence, and do not add
+a new score-normalization or threshold family ahead of the locked P5/P6 path.
+
 ## Competition-specific label hazard
 
 The competition label `unknown` aggregates 554 different OOD speakers. A
