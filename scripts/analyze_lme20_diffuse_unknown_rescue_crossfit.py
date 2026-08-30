@@ -48,6 +48,8 @@ PARAMETER_GRID = tuple(
     for clusters in EFFECTIVE_CLUSTER_THRESHOLDS
     for margin in HEAD_MARGIN_THRESHOLDS
 )
+BOOTSTRAP_REPLICATES = 2000
+BOOTSTRAP_SEED = 20260830
 
 
 @dataclass
@@ -210,6 +212,68 @@ def aggregate_evaluation(
     }
 
 
+def paired_stratified_bootstrap(
+    labels: np.ndarray,
+    baseline_predictions: np.ndarray,
+    candidate_predictions: np.ndarray,
+    *,
+    replicates: int = BOOTSTRAP_REPLICATES,
+    seed: int = BOOTSTRAP_SEED,
+) -> dict:
+    """Quantify paired metric-delta uncertainty without changing the gate.
+
+    Sampling is performed independently within every ground-truth class, so
+    all competition classes retain their observed OOF counts in every
+    replicate.  The candidate and baseline always use the same sampled rows.
+    """
+
+    if replicates <= 0:
+        raise ValueError("replicates must be positive")
+    if not (
+        labels.shape == baseline_predictions.shape
+        == candidate_predictions.shape
+    ):
+        raise ValueError("labels and predictions must have identical shapes")
+    class_rows = [
+        np.flatnonzero(labels == label) for label in np.unique(labels)
+    ]
+    rng = np.random.default_rng(seed)
+    samples = {
+        "macro_f1": np.empty(replicates, dtype=np.float64),
+        "known_accuracy": np.empty(replicates, dtype=np.float64),
+        "ood_f1": np.empty(replicates, dtype=np.float64),
+    }
+    for replicate in range(replicates):
+        indices = np.concatenate([
+            rng.choice(rows, size=len(rows), replace=True)
+            for rows in class_rows
+        ])
+        baseline = metric_bundle(
+            labels[indices], baseline_predictions[indices]
+        )
+        candidate = metric_bundle(
+            labels[indices], candidate_predictions[indices]
+        )
+        delta = metric_delta(candidate, baseline)
+        for metric in samples:
+            samples[metric][replicate] = delta[metric]
+    return {
+        "role": "non-decisional paired stratified bootstrap diagnostic",
+        "replicates": replicates,
+        "seed": seed,
+        "interval": "percentile 95%",
+        "metrics": {
+            metric: {
+                "lower": float(np.quantile(values, 0.025)),
+                "median": float(np.quantile(values, 0.5)),
+                "upper": float(np.quantile(values, 0.975)),
+                "probability_positive": float(np.mean(values > 0.0)),
+            }
+            for metric, values in samples.items()
+        },
+    }
+
+
 def crossfit_gate(selections: list[dict], aggregate: dict) -> dict:
     """Apply the preregistered source-fold and held-out acceptance gates."""
 
@@ -302,6 +366,16 @@ def main() -> int:
     if abs(aggregate["baseline"]["macro_f1"] - 0.9633564052154656) > 1e-12:
         raise RuntimeError("Locked LME-20 baseline mismatch")
     gate = crossfit_gate(selections, aggregate)
+    aggregate_labels = np.concatenate([fold.labels for fold in folds])
+    aggregate_baseline = np.concatenate([
+        fold.baseline_predictions for fold in folds
+    ])
+    aggregate_candidate = np.concatenate(predictions)
+    uncertainty = paired_stratified_bootstrap(
+        aggregate_labels,
+        aggregate_baseline,
+        aggregate_candidate,
+    )
 
     fixed_diagnostics = []
     for parameters in PARAMETER_GRID:
@@ -342,6 +416,11 @@ def main() -> int:
                 "submission authorization"
             ),
             "leaderboard_used": False,
+            "bootstrap": {
+                "replicates": BOOTSTRAP_REPLICATES,
+                "seed": BOOTSTRAP_SEED,
+                "role": "diagnostic only; does not alter the locked gate",
+            },
         },
         "provenance": {
             "cache_metadata": metadata,
@@ -350,6 +429,7 @@ def main() -> int:
         "crossfit": {
             "selections": selections,
             "aggregate": aggregate,
+            "uncertainty": uncertainty,
             "gate": gate,
         },
         "all_oof_fixed_parameter_diagnostics_non_decisional": (

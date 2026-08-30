@@ -1,8 +1,11 @@
+import numpy as np
+
 from scripts.analyze_lme20_diffuse_unknown_rescue_crossfit import (
     LOCKED_TAU,
     PARAMETER_GRID,
     crossfit_gate,
     diffuse_unknown_rescue,
+    paired_stratified_bootstrap,
 )
 
 
@@ -116,3 +119,33 @@ def test_gate_accepts_only_complete_crossfit_support() -> None:
     assert gate["passed"] is True
     assert gate["submission_authorized"] is False
     assert "independent confirmation" in gate["next_action_if_passed"]
+
+
+def test_paired_bootstrap_is_zero_for_identical_predictions() -> None:
+    labels = np.array([0, 0, 1, 1, 2, 2], dtype=np.int64)
+    predictions = np.array([0, 1, 1, 1, 2, 0], dtype=np.int64)
+    result = paired_stratified_bootstrap(
+        labels, predictions, predictions, replicates=40, seed=7
+    )
+    assert result["role"].startswith("non-decisional")
+    for metric in result["metrics"].values():
+        assert metric == {
+            "lower": 0.0,
+            "median": 0.0,
+            "upper": 0.0,
+            "probability_positive": 0.0,
+        }
+
+
+def test_paired_bootstrap_is_deterministic_and_shape_safe() -> None:
+    labels = np.array([0, 0, 1, 1, 2, 2], dtype=np.int64)
+    baseline = np.array([1, 1, 0, 1, 0, 2], dtype=np.int64)
+    candidate = labels.copy()
+    first = paired_stratified_bootstrap(
+        labels, baseline, candidate, replicates=40, seed=11
+    )
+    second = paired_stratified_bootstrap(
+        labels, baseline, candidate, replicates=40, seed=11
+    )
+    assert first == second
+    assert first["metrics"]["macro_f1"]["lower"] > 0.0
