@@ -124,8 +124,10 @@ P6 is accepted only if every condition below holds on untouched Fold 0 OOF:
 5. It rescues at least `20%` of matched-control errors.
 6. Embedding-spread ratio is at least `0.95`.
 7. The selected Raw checkpoint's exact exclusive class-weight energy is at most
-   `0.95` times the corresponding terminal P5-treatment energy. This is the
-   mechanism gate; a score fluctuation without geometric movement is rejected.
+   `0.95` times the P6 source-matched control energy. The historical terminal
+   P5-treatment energy is reported as secondary replication evidence, but it
+   cannot replace the same-commit P6 control in the mechanism gate. A score
+   fluctuation without geometric movement is rejected.
 8. All receipt hashes, OOF uniqueness, class-map/split provenance, histories,
    and MLflow artifacts are complete and mutually consistent.
 
@@ -150,3 +152,18 @@ selection against the leaderboard, or automatic full-data training.
   checkpoints, requires one shape-matched 2-D `head_speaker.weight` tensor per
   model, computes the exact energy ratio, and applies the fixed `0.95` mechanism
   gate without fitting any parameter. Its pass/fail and error paths are tested.
+- `scripts/audit_campp_inter_class_lme20.py` reproduces the immutable external
+  LME20 reference, the historical P5 pair, and the same-commit P6 pair. It
+  applies all score, non-inferiority, Known/OOD, fixed-fusion, rescue, spread,
+  and energy gates in one atomic report. Fixed fusion must also preserve the
+  external reference's Known Accuracy and OOD-F1 within `0.001`.
+
+## Pre-result clarification amendment
+
+This clarification was committed while the P5 matched control was still
+running and before any P5 treatment or P6 result existed. Item 7 above now says
+explicitly what the source-matched design and audit implementation already
+required: the causal mechanism comparison is P6 treatment versus P6 control
+from the same source commit. The historical P5 treatment remains a replication
+reference. No coefficient, score threshold, activation condition, or candidate
+configuration changed.
