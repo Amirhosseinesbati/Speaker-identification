@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
 from scripts.analyze_lme20_speaker_specific_threshold import (
     apply_speaker_specific_rejection,
+    evaluate_against_reference,
     speaker_specific_thresholds,
 )
 
@@ -42,3 +45,19 @@ def test_threshold_builder_rejects_overlapping_groups() -> None:
         speaker_specific_thresholds(
             np.eye(3, dtype=np.float32), [np.array([0, 1]), np.array([1, 2])]
         )
+
+
+def test_evaluation_uses_explicit_lme_reference_not_raw_head() -> None:
+    folds = [
+        SimpleNamespace(
+            files=np.array(["a", "b"]),
+            labels=np.array([1, 0], dtype=np.int64),
+        )
+    ]
+    reference = [np.array([1, 0], dtype=np.int64)]
+    candidate = [np.array([0, 0], dtype=np.int64)]
+    result = evaluate_against_reference(folds, reference, candidate)
+    assert result["aggregate"]["baseline"]["accuracy"] == 1.0
+    assert result["aggregate"]["candidate"]["accuracy"] == 0.5
+    assert result["aggregate"]["delta"]["accuracy"] == -0.5
+    assert result["aggregate"]["introduced_errors"] == 1

@@ -32,6 +32,7 @@ from scripts.analyze_control_oof_centroid_crossfit import (  # noqa: E402
     HISTORICAL_PARAMS,
     NUM_FOLDS,
     NUM_KNOWN,
+    aggregate_predictions,
     evaluate_policy,
     l2norm_rows,
     metric_bundle,
@@ -137,6 +138,56 @@ def lme20_scores(
     return scores, known_max
 
 
+def evaluate_against_reference(
+    folds: list,
+    reference_predictions: list[np.ndarray],
+    candidate_predictions: list[np.ndarray],
+) -> dict:
+    """Evaluate a candidate against LME-20, never against the Raw head."""
+
+    if len(reference_predictions) != len(folds) or len(candidate_predictions) != len(
+        folds
+    ):
+        raise ValueError("prediction lists must contain exactly one array per Fold")
+    fold_rows = []
+    for fold, (reference, candidate) in enumerate(
+        zip(reference_predictions, candidate_predictions, strict=True)
+    ):
+        labels = folds[fold].labels
+        baseline_metrics = metric_bundle(labels, reference)
+        candidate_metrics = metric_bundle(labels, candidate)
+        fold_rows.append(
+            {
+                "fold": fold,
+                "baseline": baseline_metrics,
+                "candidate": candidate_metrics,
+                "delta": metric_delta(candidate_metrics, baseline_metrics),
+            }
+        )
+
+    _, labels, reference = aggregate_predictions(folds, reference_predictions)
+    _, _, candidate = aggregate_predictions(folds, candidate_predictions)
+    baseline_metrics = metric_bundle(labels, reference)
+    candidate_metrics = metric_bundle(labels, candidate)
+    baseline_correct = reference == labels
+    candidate_correct = candidate == labels
+    return {
+        "folds": fold_rows,
+        "aggregate": {
+            "baseline": baseline_metrics,
+            "candidate": candidate_metrics,
+            "delta": metric_delta(candidate_metrics, baseline_metrics),
+            "rescued_errors": int(np.sum(~baseline_correct & candidate_correct)),
+            "introduced_errors": int(np.sum(baseline_correct & ~candidate_correct)),
+            "baseline_errors": int(np.sum(~baseline_correct)),
+            "rescue_rate": float(
+                np.sum(~baseline_correct & candidate_correct)
+                / max(np.sum(~baseline_correct), 1)
+            ),
+        },
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -203,7 +254,9 @@ def main() -> int:
         )
 
     baseline_evaluation = evaluate_policy(folds, baseline_predictions)
-    candidate_evaluation = evaluate_policy(folds, candidate_predictions)
+    candidate_evaluation = evaluate_against_reference(
+        folds, baseline_predictions, candidate_predictions
+    )
     reproduced = baseline_evaluation["aggregate"]["candidate"]["macro_f1"]
     if abs(reproduced - EXPECTED_LOCKED_LME20_MACRO_F1) > 5e-10:
         raise RuntimeError(
