@@ -192,6 +192,50 @@ The practical decision is therefore unchanged: preserve known-first semantics,
 retain OOD identities as diverse negatives or outlier evidence, and do not add
 a new score-normalization or threshold family ahead of the locked P5/P6 path.
 
+## SciSpace cross-recording positive-sampling cross-check
+
+A targeted SciSpace search on 2026-08-30 asked whether a positive from a
+different recording of the same speaker can reduce channel information and
+intra-speaker variance.  It surfaced SSPS (Lepage and Dehak, Interspeech 2025),
+whose central criticism is directly relevant to P5: two crops or augmentations
+of the same utterance share recording conditions, so a contrastive objective
+can retain channel cues.  SSPS instead retrieves a same-speaker positive from a
+different recording condition and reports a `58%` relative EER reduction for
+its SimCLR variant on VoxCeleb1-O.
+
+Primary source: <https://arxiv.org/pdf/2505.14561>
+
+This is mechanism-level support for P5's distinct-file paired sampler, not a
+transferable performance expectation.  SSPS is self-supervised, discovers
+positives through clustering and a memory queue, and evaluates speaker
+verification EER rather than this competition's 447-class Macro-F1.  Its own
+limitations also matter here: a same-speaker recording that is already far
+away in latent space may not be retrieved as a positive, and the method remains
+dependent on the quality of its latent assignments.  P5 avoids the assignment
+error by using authoritative known-speaker labels, but its positive-only
+consistency term still lacks SSPS's explicit contrastive negative mechanism.
+
+The same SciSpace pass surfaced three adjacent findings:
+
+- nearest-neighbour i-vector normalization reports recovering `46%` of unseen-
+  channel degradation without explicit channel labels, but it is tied to an
+  i-vector/PLDA offset model and does not override the campaign's rejected NAP,
+  AS-Norm, LDA and WCCN evidence;
+- augmentation-adversarial training makes embeddings invariant to simulated
+  acoustic conditions, but would add an adversarial objective and a new
+  augmentation-domain assumption, so it is not a single-variable replacement
+  for the locked P5 pair;
+- joint factor analysis explicitly separates speaker and channel variability,
+  but its classic evaluation reused data from the same corpus and assumes the
+  factor model is accurately estimated.  That limitation reinforces the need
+  for held-out-fold evaluation rather than in-sample channel compensation.
+
+SciSpace returned limitation summaries for SSPS, joint factor analysis and
+instance-mix regularization, but no methodology column for those records.  The
+primary SSPS paper is therefore the only new source promoted above abstract-
+level evidence.  None of this search changes the preregistered P5 gate or
+authorizes a new run while the matched pair is active.
+
 ## Competition-specific label hazard
 
 The competition label `unknown` aggregates 554 different OOD speakers. A
