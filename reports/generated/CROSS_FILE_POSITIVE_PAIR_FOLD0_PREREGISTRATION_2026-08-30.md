@@ -39,6 +39,15 @@ cross-file cosine term and joint 446-known/binary-OOD guardrails.  Therefore no
 clustering, memory queue, contrastive negatives, adaptive margin, centroid loss,
 extra teacher or paper-derived threshold is imported.
 
+A follow-up SciSpace query found speaker evidence for symmetric contrastive
+sampling, angular margins and explicit inter-class separability, but did not
+return a reusable fixed coefficient or training schedule for a positive-only
+cross-utterance term beside an existing ArcFace classifier.  Consequently
+`0.1` below is not claimed as a literature-optimal weight: it is retained only
+to make pair identity the single changed variable relative to the active
+same-crop consistency experiment.  No coefficient or schedule search is
+authorised from Fold-0 outcomes.
+
 ## Exact paired recipes
 
 Both branches will be created only after activation and will use:
