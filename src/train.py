@@ -432,14 +432,17 @@ def exclusive_inter_class_angular_loss(
         )
     if class_weights.shape[0] < 2:
         raise ValueError("at least two class weights are required")
-    normalized = F.normalize(class_weights.float(), p=2, dim=1)
-    gram_positive = torch.relu(normalized @ normalized.transpose(0, 1))
-    identity = torch.eye(
-        normalized.shape[0],
-        dtype=gram_positive.dtype,
-        device=gram_positive.device,
-    )
-    return (gram_positive - identity).square().sum() / normalized.shape[0]
+    # Explicitly disable an enclosing AMP context: CUDA matmul is autocast-
+    # eligible even when its inputs were manually converted to float32.
+    with torch.autocast(device_type=class_weights.device.type, enabled=False):
+        normalized = F.normalize(class_weights.float(), p=2, dim=1)
+        gram_positive = torch.relu(normalized @ normalized.transpose(0, 1))
+        identity = torch.eye(
+            normalized.shape[0],
+            dtype=gram_positive.dtype,
+            device=gram_positive.device,
+        )
+        return (gram_positive - identity).square().sum() / normalized.shape[0]
 
 
 # ─────────────────────────────────────────────────────────

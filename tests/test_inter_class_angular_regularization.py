@@ -68,6 +68,14 @@ def test_exclusive_energy_rejects_subcenter_tensor() -> None:
         exclusive_inter_class_angular_loss(torch.randn(3, 2, 4))
 
 
+def test_exclusive_energy_stays_float32_inside_autocast() -> None:
+    weights = torch.tensor([[1.0, 0.0], [1.0, 1.0]])
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        loss = exclusive_inter_class_angular_loss(weights)
+    assert loss.dtype == torch.float32
+    assert loss.item() == pytest.approx(0.5)
+
+
 def test_two_part_loss_uses_exact_convex_speaker_mixture() -> None:
     criterion = TwoPartLoss(
         use_focal=False,
