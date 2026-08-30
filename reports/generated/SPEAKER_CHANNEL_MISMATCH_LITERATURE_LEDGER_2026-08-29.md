@@ -397,3 +397,42 @@ decision policy remain fixed.  This is a research-only distinction, not an
 authorised next Run.  Any eventual acceptance must be cross-fit and preserve
 both Known accuracy and OOD-F1; none of these papers licenses leaderboard-tuned
 margins or open-set thresholds.
+
+## Sparse-enrolment false-rejection search (2026-08-30)
+
+SciSpace was next asked specifically about reducing false rejection of enrolled
+speakers under channel/session mismatch without sacrificing rejection of
+unknown speakers.  Conclusion extraction succeeded for seven of seven selected
+records.  Two results define a genuinely different representation direction.
+OpenFEAT (ICASSP 2022, DOI `10.1109/ICASSP43922.2022.9747613`) adapts universal
+embeddings to the few enrolled speakers while including guest utterances in an
+open-set loss; it reports a `23%`--`31%` relative reduction in identification
+EER for hard household speaker sets.  Meta-Learning for Cross-Channel Speaker
+Verification (ICASSP 2021, DOI `10.1109/ICASSP39728.2021.9413978`) explicitly
+optimises support/query embedding differences and reports reduced mismatch on
+unseen channels.  Both are consistent with the competition's dominant residual
+topology (`87` known-to-unknown versus `25` unknown-to-known errors after
+LME20), because they target enrolment-conditioned representation robustness
+rather than another scalar threshold.
+
+The remaining retrieved approaches mostly map to branches already tested or
+to incompatible assumptions.  P-SLPP with PLDA (Interspeech 2018, DOI
+`10.21437/Interspeech.2018-41`), multi-session PLDA (Interspeech 2013, DOI
+`10.21437/Interspeech.2013-684`), sparse-enrolment cohort normalisation (IEEE
+TASL 2007, DOI `10.1109/TASL.2007.902058`) and condition-adjusted T-Norm
+(Interspeech 2009, DOI `10.21437/Interspeech.2009-395`) strengthen the
+historical case for backend compensation.  They do not reopen it here: the
+leakage-free NAP, shrinkage-LDA, WCCN and adaptive AS-Norm audits were neutral
+or harmful, including OOD guardrail failures.  Few-shot foundation-model tuning
+with synthetic style-rich speech (Interspeech 2025, DOI
+`10.21437/Interspeech.2025-42`) jointly changes the encoder, enrolment-time
+adaptation and generated data, so it is not an isolated next ablation.
+
+The scientific implication is an ordering constraint, not a new immediate
+Run.  Finish the locked same-crop consistency pair and, if applicable, its
+sampler-matched cross-file positive-pair successor first.  If those preserve
+spread but fail to reduce known false rejection, an enrolment-conditioned
+support/query episode with declared guest/OOD negatives is the most distinct
+literature-supported later hypothesis.  It must be compared against the failed
+global EMA-centroid AuxMetric and keep PCM/LME20 fixed; post-hoc cohort or PLDA
+score normalisation remains closed.

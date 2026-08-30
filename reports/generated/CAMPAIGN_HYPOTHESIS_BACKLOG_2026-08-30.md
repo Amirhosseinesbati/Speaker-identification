@@ -148,6 +148,15 @@ new loss in one Run.
   support/query objective is scientifically distinct only if prototypes are
   constructed inside speaker-balanced episodes rather than kept as global EMA
   centroids; it remains research-only behind the preregistered cross-file pair.
+- A second SciSpace pass found OpenFEAT and cross-channel meta-learning as the
+  closest published matches to the dominant LME20 residual (`87`
+  known-to-unknown errors).  Their common useful factor is
+  enrolment-conditioned support/query adaptation, with guest/unknown examples
+  retained during training.  If the paired consistency and cross-file branches
+  both fail without collapse, this is a more distinct later hypothesis than
+  another global prototype loss.  PLDA/cohort/T-Norm papers from the same
+  search do not reopen score normalisation: our NAP, LDA, WCCN and adaptive
+  AS-Norm cross-fit audits already rejected that family.
 - Duration-aware embedding objectives such as DAME are relevant to the hard
   short-utterance tail, but are a larger representation change and remain
   research-only until cheaper paired hypotheses fail
