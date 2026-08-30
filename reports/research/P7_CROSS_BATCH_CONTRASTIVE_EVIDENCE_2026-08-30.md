@@ -330,3 +330,26 @@ competition.  The operational conclusion remains fixed: complete and audit P5
 first, retain the P6 preregistration unchanged, and require the existing
 Known/OOD, embedding-spread, provenance, and one-Fold rejection gates before
 any continuation.
+
+### Primary full-text check of the angular/class-aware result
+
+The primary arXiv text of Li, Mak and Meng (`2210.16622`) was subsequently
+checked rather than relying on the SciSpace abstract.  Its mechanism uses
+supervised positive and negative pairs, an additive angular margin, a learned
+class-aware attention score that downweights very hard negatives, and
+gradient-based multi-objective optimisation to balance AAM-Softmax and
+contrastive losses.  The authors use margin `0.2`, temperature `0.07`, batch
+sizes from `512` to `4096`, and a three-stage frame schedule.  Their component
+ablation uses batch `512` for `300` epochs.
+
+The controlled VoxCeleb comparison improves EER from `2.96%` for AAM-Softmax
+to `2.85%` for the complete class-aware margin-contrastive objective.  This is
+useful evidence that explicit angular separation plus guarded negative mining
+can add value beyond an angular classifier, but the absolute gain is modest
+and the optimisation regime is far larger than this campaign's batch `48`,
+120-epoch Fold-0 diagnostic.  It does not transfer a coefficient, temperature,
+expected Macro-F1 gain, or permission to add class-aware attention after
+observing P5.  P6 remains the already locked, single-variable low-weight
+inter-class test, activated only by its existing rule and budget gate.
+
+Primary source: <https://arxiv.org/abs/2210.16622>
