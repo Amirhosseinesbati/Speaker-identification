@@ -189,3 +189,43 @@ all 33 MLflow metric series were contiguous at 40/40 points; the Run stayed
 scientific signals neither accept nor reject the control.  Per preregistration,
 training continues unchanged through epoch 120 and epoch 80 remains diagnostic
 only.
+
+## Treatment diagnostic at epoch 80
+
+The second locked milestone completed without intervention.  The treatment
+pipeline remained owned by the single Campaign Supervisor, and the log
+contained zero traceback, CUDA OOM or NaN events.  The exact treatment values
+at MLflow step 80 were Raw probability-average Macro-F1
+`0.9377720281994391`, logit-average `0.935552934397465`, EMA Macro-F1
+`0.9389463903569741`, Known Accuracy `0.9473094170403588`, OOD-F1
+`0.9460013670539986`, training loss `1.322890222843351`, and validation loss
+`1.2939469340969534`.
+
+Against the matched no-consistency control over the identical epochs 1--80,
+the treatment's mean Raw delta was `-0.0003155822557911747` and its epoch-80
+Raw delta was `-0.002507634233375522`.  The corresponding mean/final deltas
+were `-0.0004358956290001229`/`-0.002265239595067303` for logit-average,
+`-0.00045009350048510197`/`+0.0006318864676483349` for EMA,
+`-0.0005605381165919354`/`-0.0011210762331838042` for Known Accuracy, and
+`-0.00015212811631205164`/`-0.0034521848585696846` for OOD-F1.  The best
+treatment Raw point through epoch 80 remained epoch 28 at
+`0.941949892413103`.
+
+This loss is not a representation-collapse artefact.  Treatment pair cosine
+at step 80 was `0.7891720893054173`; augmented and clean embedding standard
+deviations were `0.07086556650505497` and `0.07089742104490769`, respectively,
+for a spread ratio of `0.9995506953654557`.  The complete prefix means were
+similarly stable: pair cosine `0.7887363036163151` and spread ratio
+`0.999528126897407`.  A bounded audit taken immediately after the milestone
+found all 33 MLflow series contiguous at steps 1--81 while training advanced
+normally, with Run ID `ddd9a64a8e8e4c7591f02889d40b3c7c` still `RUNNING`.
+
+The epoch-80 evidence is therefore **neutral-to-harmful without collapse**:
+same-crop cosine consistency has not produced a sustained matched advantage,
+but this diagnostic cannot reject, select a checkpoint, or shorten the locked
+120-epoch horizon.  Training continues unchanged to epoch 120.  The terminal
+gate and locked tail-extension diagnostic remain the only decision points.  A
+fresh SciSpace check again retrieved SSPS as direct evidence that same-utterance
+positives can retain channel information, so a terminal failure would activate
+the already-preregistered sampler-matched cross-file pair rather than a
+post-hoc coefficient or horizon search.
