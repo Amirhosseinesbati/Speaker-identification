@@ -65,6 +65,25 @@ guardrails. Runtime alone is not evidence of quality.
   second OOM
 - The campaign-wide $20 ceiling remains binding and is checked before each run
 
+### Runtime-policy compatibility discovered before treatment launch
+
+The durable campaign state currently caps every supervisor Run at 12 hours,
+while the treatment profile declares a 15-hour maximum.  The supervisor uses
+the smaller value, so passing `--timeout-hours 15` without addressing policy
+would silently impose a 12-hour ceiling.  This does not affect the active
+eight-hour control and no live state is changed while that Run is active.
+
+Before treatment launch, the required batch-48/eight-window GPU preflight must
+project end-to-end completion with at least 20% wall-time headroom inside the
+12-hour campaign ceiling.  If it passes, the stricter 12-hour ceiling remains
+and a normal completion preserves the scientific pair.  If it does not pass,
+the treatment must not be launched under a knowingly truncating ceiling.  An
+atomic, evented and active-Run-forbidden policy-update command is available,
+but raising the ceiling is a separate operational decision and may occur only
+after the control is terminal, with the $2.60 treatment and $20 campaign cost
+guards still satisfied.  A timeout is incomplete evidence, never a scientific
+rejection of consistency.
+
 ## Evidence and gate
 
 Epoch-40 and epoch-80 checkpoints are diagnostics only. The decision uses the
