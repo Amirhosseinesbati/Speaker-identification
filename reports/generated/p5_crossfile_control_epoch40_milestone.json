@@ -1,0 +1,75 @@
+{
+  "created_at_utc": "2026-08-30T16:09:07.504918+00:00",
+  "decision_role": "diagnostic_only_cannot_select_checkpoint_or_authorize_run",
+  "diagnostic": {
+    "path": "checkpoints/p5-campp-known446-ood-crossfile-paired-control-long120-oof-f0/campp_latest.pt",
+    "sha256": "053dc32b69c7cbcea55739506b9afd74e13cd7ce789c338ee9ff89a58e0202d2",
+    "epoch": 40,
+    "metrics": {
+      "val_macro_f1": 0.932634967981724,
+      "val_logit_avg_macro_f1": 0.9303015147929345,
+      "val_known_acc": 0.929372197309417,
+      "val_ood_f1": 0.9497354497354498,
+      "val_ema_macro_f1": 0.9306900412505106,
+      "train_loss": 1.4028215861782944,
+      "train_loss_consistency": 0.0,
+      "train_loss_consistency_weighted": 0.0,
+      "train_pair_cosine": 0.0,
+      "train_embedding_std_augmented": 0.0,
+      "train_embedding_std_clean": 0.0
+    },
+    "history_length": 40,
+    "history_contiguous": true,
+    "trajectory": {
+      "window_epochs": 10,
+      "previous_window": [
+        21,
+        30
+      ],
+      "tail_window": [
+        31,
+        40
+      ],
+      "previous_means": {
+        "val_macro_f1": 0.9326607926185885,
+        "val_logit_avg_macro_f1": 0.9314395807449405,
+        "val_ema_macro_f1": 0.9307083903633131,
+        "val_known_acc": 0.9304932735426009,
+        "val_ood_f1": 0.9482631893979029,
+        "train_loss": 1.4278674543931567,
+        "val_loss": 1.2743313771836897
+      },
+      "tail_means": {
+        "val_macro_f1": 0.9324024016012926,
+        "val_logit_avg_macro_f1": 0.931283224285518,
+        "val_ema_macro_f1": 0.9309417084164371,
+        "val_known_acc": 0.9302690582959642,
+        "val_ood_f1": 0.9491116110159226,
+        "train_loss": 1.4173856252868626,
+        "val_loss": 1.2749137808294857
+      },
+      "tail_minus_previous": {
+        "val_macro_f1": -0.0002583910172958559,
+        "val_logit_avg_macro_f1": -0.00015635645942246867,
+        "val_ema_macro_f1": 0.00023331805312398757,
+        "val_known_acc": -0.00022421524663673864,
+        "val_ood_f1": 0.0008484216180196791,
+        "train_loss": -0.010481829106294027,
+        "val_loss": 0.0005824036457959814
+      },
+      "slopes_last_20": {
+        "val_macro_f1": -7.027685434496082e-06,
+        "val_logit_avg_macro_f1": 6.95380538110673e-06,
+        "val_ema_macro_f1": 9.841521873397334e-06,
+        "val_known_acc": -3.3716578442006513e-06,
+        "val_ood_f1": 9.409423724454523e-05,
+        "train_loss": -0.0007430628993898053,
+        "val_loss": 0.00011088941435746334
+      },
+      "best_raw_epoch": 38,
+      "best_raw_macro_f1": 0.9364301156941749,
+      "best_raw_known_accuracy": 0.9349775784753364,
+      "best_raw_ood_f1": 0.9509283819628647
+    }
+  }
+}
