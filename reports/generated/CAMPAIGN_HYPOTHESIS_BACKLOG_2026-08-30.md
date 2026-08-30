@@ -85,6 +85,10 @@ contract for both branches; never continue treatment alone.
 
 The next representation hypothesis is a known-only, speaker-balanced
 **cross-file positive-pair** treatment, compared with a sampler-matched control.
+Its immutable activation, horizon, budget, stop rules and terminal gate are
+fixed in `CROSS_FILE_POSITIVE_PAIR_FOLD0_PREREGISTRATION_2026-08-30.md` before
+any cross-file outcome exists; implementation feasibility is recorded in
+`CROSS_FILE_PAIRING_READINESS_2026-08-30.md`.
 After the exact Fold-0 split, duration filtering and duplicate cleaning, all
 446 known speakers retain at least two distinct training files (median three,
 maximum five), so different files are a feasible declared recording proxy.
