@@ -188,6 +188,10 @@ It changes only the APSIPA-2019 exclusive inter-class angular term from disabled
 to enabled, uses the paper-fixed convex coefficient `0.01`, and is locked by raw
 config SHA256
 `d30c5631b8fd8499a4f2655f7dc41c5e3d5f6b0194ec4cfdcdf40628a5a2dbdc`.
+To eliminate source-commit drift, activation requires the source-matched control
+`p6-campp-known446-ood-crossfile-consistency-interclass-control-long120-oof-f0`
+(SHA256 `2ea8b7a7c9b63f9efc970df7d410f26317b439cfbbd66b53ffd0a9a1545a33b0`)
+before the treatment; the complete pair cap is `$2.80`.
 Exact activation exclusions, score/guardrail/mechanism gates and transfer caveats
 are in `reports/generated/P6_INTER_CLASS_ANGULAR_PREREGISTRATION_2026-08-30.md`.
 No P6 launch is permitted before the complete terminal P5 pair audit.

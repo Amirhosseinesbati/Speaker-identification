@@ -1,0 +1,102 @@
+_meta:
+  name: p6-campp-known446-ood-crossfile-consistency-interclass-control-long120-oof-f0
+  base: default_config.yaml
+experiment:
+  priority: P6-INTER-CLASS-MATCHED-CONTROL
+  family: campp-known446-ood-crossfile-consistency-interclass-long120-ablation
+  purpose: >-
+    Dormant Fold-0 matched control for P6. It reruns the exact P5 cross-file
+    consistency treatment under the same source commit as the P6 treatment,
+    with exclusive inter-class angular energy explicitly disabled.
+  activation_condition: >-
+    Activate only as the first half of the complete P6 pair after all P6
+    activation conditions pass. A historical P5 checkpoint cannot replace this
+    source-matched control.
+  fixed_horizon: {epochs: 120, metric_early_stopping: false, milestones: [40, 80]}
+  stop_rules:
+    maximum_runtime_hours: 8.0
+    maximum_incremental_cost_usd: 1.40
+    immediate:
+      [nan, provenance_mismatch, artifact_corruption, second_oom, invalid_pair]
+data:
+  clean_duplicates: true
+  split: {scheme: kfold, folds: 3, fold: 0, seed: 42}
+  known_sampling: {pair_files: true}
+model:
+  encoder_type: campp
+  competition_num_known: 446
+  num_unknown_clusters: 554
+  unknown_cluster_path: data/processed/unknown_clusters_oof_f0.json
+  speaker_target_scope: known
+  ood_head: true
+  speaker_head_type: arcface
+  speaker_head_config:
+    arcface: {embedding_dim: 192, margin: 0.4, scale: 30.0}
+  encoder_config:
+    campp: {freeze_encoder: false, unfreeze_last_n_blocks: 2}
+audio:
+  num_train_windows: 8
+  ood_batch_ratio: 0.5
+  speech_aware_crop_probability: 0.75
+  eval_speech_aware: true
+  short_audio_mode: pad
+augmentation:
+  domain:
+    mp3_codec_roundtrip: {max_bitrate: 192, min_bitrate: 64, p: 0.3}
+    musan:
+      music_p: 0.1
+      noise_p: 0.6
+      path: data/augmentation/musan
+      snr_db: [3.0, 20.0]
+    rirs_reverb: {p: 0.6, path: data/augmentation/rirs}
+  spec:
+    time_mask: {max_mask_ratio: 0.1, p: 0.3}
+  waveform:
+    gain: {db: [-6.0, 6.0], p: 0.3}
+    gaussian_noise: {amp: [0.001, 0.008], p: 0.2}
+    pitch_shift: {p: 0.0, semitones: [-1.0, 1.0]}
+    polarity_inversion: {p: 0.5}
+    shift: {frac: 0.1, p: 0.3}
+    time_stretch: {p: 0.1, rate: [0.95, 1.05]}
+hardware:
+  mode: vastai_3090_campp
+  profiles:
+    vastai_3090_campp:
+      batch_size: 48
+      description: Measured RTX 3090 P6 source-matched control
+      device: cuda
+      mixed_precision: true
+      num_workers: 8
+logging:
+  checkpoint_dir: checkpoints/p6-campp-known446-ood-crossfile-consistency-interclass-control-long120-oof-f0
+  log_dir: logs/p6-campp-known446-ood-crossfile-consistency-interclass-control-long120-oof-f0
+training:
+  seed: 42
+  deterministic_algorithms: true
+  warm_start_checkpoint: checkpoints/p3-campp-known446-ood-channelrobust-oof-f0/campp_best_raw.pt
+  selection_variant: raw
+  epochs: 120
+  milestone_epochs: [40, 80]
+  freeze_epochs: 0
+  early_stopping_patience: 0
+  learning_rate: 1.0e-04
+  encoder_lr: 5.0e-06
+  weight_decay: 0.0001
+  schedule: cosine
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.05
+  ema_enabled: true
+  ema_decay: 0.999
+  loss:
+    speaker:
+      type: ce
+      label_smoothing: 0.05
+      weight: 0.85
+      inter_class:
+        enabled: false
+        type: exclusive_angular_energy
+        weight: 0.01
+    ood: {type: bce, pos_weight: 1.0, weight: 0.15}
+    proto: {enabled: false}
+    consistency:
+      {enabled: true, type: cosine, weight: 0.1, pairing: cross_file_batch}

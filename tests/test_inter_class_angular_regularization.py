@@ -24,9 +24,13 @@ P5_TREATMENT = (
 P6_TREATMENT = (
     "p6-campp-known446-ood-crossfile-consistency-interclass-e01-long120-oof-f0"
 )
-P6_RAW_SHA256 = (
-    "d30c5631b8fd8499a4f2655f7dc41c5e3d5f6b0194ec4cfdcdf40628a5a2dbdc"
+P6_CONTROL = (
+    "p6-campp-known446-ood-crossfile-consistency-interclass-control-long120-oof-f0"
 )
+P6_RAW_SHA256 = {
+    P6_CONTROL: "2ea8b7a7c9b63f9efc970df7d410f26317b439cfbbd66b53ffd0a9a1545a33b0",
+    P6_TREATMENT: "d30c5631b8fd8499a4f2655f7dc41c5e3d5f6b0194ec4cfdcdf40628a5a2dbdc",
+}
 
 
 def _normalise_identity(config: dict) -> dict:
@@ -155,29 +159,35 @@ def test_config_parser_keeps_disabled_default_at_zero() -> None:
     assert inter_type == "exclusive_angular_energy"
 
 
-def test_p6_differs_from_p5_treatment_only_by_inter_class_enabled() -> None:
+def test_p6_control_reproduces_p5_treatment_configuration() -> None:
     p5 = _normalise_identity(load_profile(P5_TREATMENT))
-    p6 = _normalise_identity(load_profile(P6_TREATMENT))
+    p6_control = _normalise_identity(load_profile(P6_CONTROL))
 
-    assert p5["training"]["loss"]["speaker"]["inter_class"] == {
+    assert p6_control == p5
+
+
+def test_p6_pair_differs_only_by_inter_class_enabled() -> None:
+    p6_control = _normalise_identity(load_profile(P6_CONTROL))
+    p6_treatment = _normalise_identity(load_profile(P6_TREATMENT))
+
+    assert p6_control["training"]["loss"]["speaker"]["inter_class"] == {
         "enabled": False,
         "type": "exclusive_angular_energy",
         "weight": 0.01,
     }
-    assert p6["training"]["loss"]["speaker"]["inter_class"] == {
+    assert p6_treatment["training"]["loss"]["speaker"]["inter_class"] == {
         "enabled": True,
         "type": "exclusive_angular_energy",
         "weight": 0.01,
     }
-    p6["training"]["loss"]["speaker"]["inter_class"]["enabled"] = False
-    assert p6 == p5
+    p6_treatment["training"]["loss"]["speaker"]["inter_class"][
+        "enabled"
+    ] = False
+    assert p6_treatment == p6_control
 
 
 def test_p6_raw_config_hash_is_preregistered() -> None:
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "configs"
-        / "experiments"
-        / f"{P6_TREATMENT}.yaml"
-    )
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == P6_RAW_SHA256
+    root = Path(__file__).resolve().parents[1]
+    for profile, expected in P6_RAW_SHA256.items():
+        path = root / "configs" / "experiments" / f"{profile}.yaml"
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == expected
