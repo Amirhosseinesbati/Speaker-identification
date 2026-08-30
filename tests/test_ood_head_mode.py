@@ -368,6 +368,49 @@ def test_cross_file_pair_sampler_is_deterministic_and_emits_distinct_pairs():
     assert list(sampler) != first
 
 
+def test_cross_file_pair_sampler_rotates_files_and_gradient_roles():
+    """Every known file must serve as both student and detached target.
+
+    The consistency helper assigns the first occurrence of a speaker after the
+    deterministic batch shuffle to the gradient-bearing student.  This
+    horizon-level test protects the conditional experiment from a subtle fixed
+    file-role bias that a one-epoch distinct-pair check would miss.
+    """
+    labels = np.asarray(
+        [0] * 16 + [label for label in range(1, 9) for _ in range(3)],
+        dtype=np.int64,
+    )
+    sampler = make_balanced_batch_sampler(
+        labels,
+        batch_size=8,
+        ood_ratio=0.5,
+        seed=43,
+        pair_known_files=True,
+        train_file_ids=np.asarray([f"row-{index}" for index in range(len(labels))]),
+    )
+    known_indices = np.flatnonzero(labels > 0)
+    student_counts = {int(index): 0 for index in known_indices}
+    target_counts = {int(index): 0 for index in known_indices}
+    pairs_by_speaker = {label: set() for label in range(1, 9)}
+
+    for epoch in range(64):
+        sampler.set_epoch(epoch)
+        for batch_indices in sampler:
+            indices = np.asarray(batch_indices, dtype=np.int64)
+            batch_labels = labels[indices]
+            for label in np.unique(batch_labels[batch_labels > 0]):
+                pair = indices[batch_labels == label]
+                assert len(pair) == 2
+                student_counts[int(pair[0])] += 1
+                target_counts[int(pair[1])] += 1
+                pairs_by_speaker[int(label)].add(frozenset(map(int, pair)))
+
+    assert min(student_counts.values()) > 0
+    assert min(target_counts.values()) > 0
+    # Three files yield exactly three unordered pairs; all must be exercised.
+    assert all(len(pairs) == 3 for pairs in pairs_by_speaker.values())
+
+
 def test_cross_file_pair_sampler_covers_speakers_before_oversampling():
     labels = np.asarray(
         [0] * 64 + [label for label in range(1, 11) for _ in range(3)],
