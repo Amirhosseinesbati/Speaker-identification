@@ -377,14 +377,23 @@ Likewise, additive-margin contrastive learning (Interspeech 2023, DOI
 self-supervised verification evidence rather than a calibrated open-set
 identification result.
 
-The actionable inference is therefore narrow.  The fixed PCM/LME20 backend has
-already rescued `120/237` OOF errors and improved Macro-F1 by `0.0194678`, so a
-future representation experiment should train embeddings toward the same
-speaker-centroid geometry instead of replacing that backend.  If the current
-consistency pair and the preregistered cross-file positive-pair ablation do not
-produce a safe gain, the next single-variable candidate should be a
-centroid-angular or episodic prototypical auxiliary objective on CAM++, with
-the existing OOD head and PCM/LME20 decision policy held fixed.  Its acceptance
-must still be cross-fit and require simultaneous Known-accuracy and OOD-F1
-guardrails; none of these papers licenses leaderboard-tuned margins or open-set
-thresholds.
+The actionable inference is narrower than the retrieval alone suggests.  This
+repository already implemented an EMA data-centroid AM-softmax
+`PrototypicalLoss` and tested it as the Fold-0 AuxMetric run.  That candidate
+lost `0.0036184` Macro-F1, `0.0044843` Known accuracy and `0.0070188` OOD-F1
+against Control; its fixed blends also lost and its oracle gain was only
+`0.0016846`.  Angular Margin Centroid Loss therefore validates the motivation
+of an experiment already run, not a reason to reopen a closed branch.
+
+The fixed PCM/LME20 backend has nevertheless rescued `120/237` OOF errors and
+improved Macro-F1 by `0.0194678`, so representation/backend alignment remains a
+useful mechanism.  After the active consistency pair, the already
+preregistered sampler-matched cross-file positive-pair ablation remains first.
+Only if later evidence justifies a genuinely different episodic design may a
+support/query prototype objective be considered: it must compute prototypes
+inside declared speaker-balanced episodes and be contrasted explicitly with
+the failed global EMA-centroid AuxMetric, while the OOD head and PCM/LME20
+decision policy remain fixed.  This is a research-only distinction, not an
+authorised next Run.  Any eventual acceptance must be cross-fit and preserve
+both Known accuracy and OOD-F1; none of these papers licenses leaderboard-tuned
+margins or open-set thresholds.
