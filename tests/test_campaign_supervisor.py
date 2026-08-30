@@ -1,7 +1,11 @@
 from pathlib import Path
 
 import scripts.campaign_supervisor as supervisor
-from scripts.campaign_supervisor import _artifact_receipts, _dotenv_value
+from scripts.campaign_supervisor import (
+    _artifact_receipts,
+    _dotenv_value,
+    build_parser,
+)
 
 
 def test_dotenv_value_strips_matching_quotes() -> None:
@@ -46,3 +50,14 @@ def test_artifact_receipts_include_recovery_files_and_terminal_extras(
         "data/experiments/run.log",
     }
     assert all(len(row["sha256"]) == 64 for row in receipts)
+
+
+def test_set_max_run_hours_cli_requires_value_and_reason() -> None:
+    args = build_parser().parse_args([
+        "set-max-run-hours",
+        "--hours", "15",
+        "--reason", "locked treatment runtime contract",
+    ])
+    assert args.hours == 15.0
+    assert args.reason == "locked treatment runtime contract"
+    assert args.func is supervisor.cmd_set_max_run_hours

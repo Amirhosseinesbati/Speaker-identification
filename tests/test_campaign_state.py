@@ -73,3 +73,38 @@ def test_leaderboard_result_requires_waiting_state(tmp_path):
     _initialize(store)
     with pytest.raises(CampaignStateError, match="only while waiting"):
         store.record_leaderboard(0.973)
+
+
+def test_max_run_hours_policy_update_is_atomic_evented_and_idempotent(tmp_path):
+    store = _store(tmp_path)
+    initial = _initialize(store)
+    assert initial["policy"]["max_run_hours"] == 4.0
+
+    updated = store.set_max_run_hours(15.0, "locked treatment requires 15 hours")
+    assert updated["policy"]["max_run_hours"] == 15.0
+    assert updated["revision"] == 1
+    events = [json.loads(line) for line in store.event_path.read_text().splitlines()]
+    assert events[-1]["event_type"] == "POLICY_UPDATED"
+    assert events[-1]["metadata"] == {
+        "field": "max_run_hours",
+        "previous": 4.0,
+        "updated": 15.0,
+    }
+
+    repeated = store.set_max_run_hours(15.0, "safe retry")
+    assert repeated["revision"] == 1
+    assert len(store.event_path.read_text().splitlines()) == len(events)
+
+
+def test_max_run_hours_policy_update_rejects_active_or_invalid_change(tmp_path):
+    store = _store(tmp_path)
+    _initialize(store)
+    with pytest.raises(CampaignStateError, match="positive"):
+        store.set_max_run_hours(0.0, "invalid")
+    with pytest.raises(CampaignStateError, match="reason"):
+        store.set_max_run_hours(5.0, "")
+
+    store.transition("READY", "preflight passed")
+    store.start_run({"profile": "p0", "git_commit": "abc123"})
+    with pytest.raises(CampaignStateError, match="no experiment is active"):
+        store.set_max_run_hours(15.0, "must not mutate an active run")

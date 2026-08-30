@@ -162,6 +162,43 @@ class CampaignStore:
             )
         return snapshot
 
+    def set_max_run_hours(self, hours: float, reason: str) -> dict[str, Any]:
+        """Atomically revise the per-run ceiling while no experiment is active.
+
+        Runtime policy is durable operational state rather than a scientific
+        profile input.  Changes are nevertheless evented because an otherwise
+        identical profile can be truncated at a different horizon when this
+        guard is lower than its requested timeout.
+        """
+        state = self.load()
+        allowed = {
+            "PREFLIGHT", "READY", "ANALYZING", "CAMPAIGN_BLOCKED", "PAUSED",
+        }
+        if state["status"] not in allowed or state.get("current_run"):
+            raise CampaignStateError(
+                "max_run_hours can be changed only while no experiment is active"
+            )
+        value = float(hours)
+        if not value > 0.0:
+            raise CampaignStateError("max_run_hours must be positive")
+        if not str(reason).strip():
+            raise CampaignStateError("policy change reason must be non-empty")
+
+        previous = float(state["policy"]["max_run_hours"])
+        if value == previous:
+            return state
+        state["revision"] = int(state["revision"]) + 1
+        state["updated_at_utc"] = utc_now()
+        state["last_reason"] = str(reason).strip()
+        state["policy"]["max_run_hours"] = value
+        self._persist(state)
+        self._append_event(state, "POLICY_UPDATED", state["last_reason"], {
+            "field": "max_run_hours",
+            "previous": previous,
+            "updated": value,
+        })
+        return state
+
     def transition(
         self,
         target: str,
