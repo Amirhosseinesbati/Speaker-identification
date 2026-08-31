@@ -60,16 +60,16 @@ from scripts.audit_short_audio_repeat import digest_names  # noqa: E402
 
 
 P6_CONTROL_PROFILE = (
-    "p6-campp-known446-ood-crossfile-consistency-interclass-control-long120-oof-f0"
+    "p6-campp-known446-ood-crossfile-consistency-interclass-control-es80p20-oof-f0"
 )
 P6_TREATMENT_PROFILE = (
-    "p6-campp-known446-ood-crossfile-consistency-interclass-e01-long120-oof-f0"
+    "p6-campp-known446-ood-crossfile-consistency-interclass-e01-es80p20-oof-f0"
 )
 P6_CONTROL_CONFIG_SHA256 = (
-    "2ea8b7a7c9b63f9efc970df7d410f26317b439cfbbd66b53ffd0a9a1545a33b0"
+    "1f041abb3035af1f39de1714f389a6b9aadb04fb0a0c34e737c5ca363d92b3ab"
 )
 P6_TREATMENT_CONFIG_SHA256 = (
-    "d30c5631b8fd8499a4f2655f7dc41c5e3d5f6b0194ec4cfdcdf40628a5a2dbdc"
+    "25dd1f1a52e4908c47e66b234de8e58671b82cb78fa528453a3865490f01ba5c"
 )
 PROFILE_HASHES = {
     P5_CROSS_FILE_MATCHED_PROFILE: P5_CROSS_FILE_MATCHED_CONFIG_SHA256,
@@ -82,6 +82,9 @@ MAXIMUM_GUARDRAIL_DROP = 0.001
 MINIMUM_RESCUE_RATE = 0.20
 MINIMUM_EMBEDDING_SPREAD_RATIO = 0.95
 MAXIMUM_ENERGY_RATIO = 0.95
+P6_MAXIMUM_EPOCHS = 120
+P6_EARLY_STOPPING_START_EPOCH = 80
+P6_EARLY_STOPPING_PATIENCE = 20
 
 
 def assert_p6_single_objective_contract(
@@ -93,10 +96,20 @@ def assert_p6_single_objective_contract(
     p5_treatment = _normalise_identity(p5_treatment_config)
     p6_control = _normalise_identity(p6_control_config)
     p6_treatment = _normalise_identity(p6_treatment_config)
-    if p6_control != p5_treatment:
-        raise RuntimeError(
-            "P6 source-matched control does not reproduce P5 treatment"
-        )
+    for name, candidate in (
+        ("control", p6_control), ("treatment", p6_treatment)
+    ):
+        training = candidate["training"]
+        if int(training.get("epochs", -1)) != P6_MAXIMUM_EPOCHS:
+            raise RuntimeError(f"P6 {name} maximum epoch changed")
+        if int(training.get("early_stopping_start_epoch", -1)) != (
+            P6_EARLY_STOPPING_START_EPOCH
+        ):
+            raise RuntimeError(f"P6 {name} delayed start changed")
+        if int(training.get("early_stopping_patience", -1)) != (
+            P6_EARLY_STOPPING_PATIENCE
+        ):
+            raise RuntimeError(f"P6 {name} patience changed")
 
     expected_control = {
         "enabled": False,
@@ -117,6 +130,70 @@ def assert_p6_single_objective_contract(
         raise RuntimeError(
             "P6 branches differ outside inter_class.enabled"
         )
+
+    # The shared delayed-stopping amendment is the sole difference from the
+    # historical P5 recipe.  Normalise it away before asserting scientific
+    # source matching; the strict P6 A/B still differs only in inter-class use.
+    reference_control = p6_control
+    reference_training = reference_control["training"]
+    reference_training.pop("early_stopping_start_epoch", None)
+    reference_training["early_stopping_patience"] = 0
+    if reference_control != p5_treatment:
+        raise RuntimeError(
+            "P6 source-matched control differs from P5 beyond the shared "
+            "delayed-stopping amendment"
+        )
+
+
+def delayed_terminal_curve_diagnostic(path: Path, profile: str) -> dict:
+    """Validate a complete max-120 or policy-compliant early-stop terminal."""
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    terminal_epoch = int(checkpoint.get("epoch", -1))
+    if not 1 <= terminal_epoch <= P6_MAXIMUM_EPOCHS:
+        raise RuntimeError(f"Invalid delayed-stop terminal epoch: {path}")
+    config = checkpoint.get("config", {}) or {}
+    training = config.get("training", {}) or {}
+    if (
+        int(training.get("epochs", -1)) != P6_MAXIMUM_EPOCHS
+        or int(training.get("early_stopping_start_epoch", -1))
+        != P6_EARLY_STOPPING_START_EPOCH
+        or int(training.get("early_stopping_patience", -1))
+        != P6_EARLY_STOPPING_PATIENCE
+    ):
+        raise RuntimeError(f"Delayed-stop policy mismatch: {path}")
+    diagnostic = terminal_curve_diagnostic(
+        path, profile, expected_epoch=terminal_epoch
+    )
+    history = checkpoint.get(
+        "training_history", checkpoint.get("history", [])
+    )
+    best = -float("inf")
+    stale = 0
+    for row in history:
+        epoch = int(row.get("epoch", -1))
+        value = row.get("val_macro_f1")
+        if not isinstance(value, (int, float)):
+            continue
+        if float(value) > best:
+            best = float(value)
+            stale = 0
+        elif epoch >= P6_EARLY_STOPPING_START_EPOCH:
+            stale += 1
+        else:
+            stale = 0
+    if terminal_epoch < P6_MAXIMUM_EPOCHS and (
+        terminal_epoch < P6_EARLY_STOPPING_START_EPOCH
+        or stale < P6_EARLY_STOPPING_PATIENCE
+    ):
+        raise RuntimeError(f"Premature P6 terminal does not satisfy policy: {path}")
+    diagnostic["delayed_early_stopping"] = {
+        "maximum_epochs": P6_MAXIMUM_EPOCHS,
+        "start_epoch": P6_EARLY_STOPPING_START_EPOCH,
+        "patience": P6_EARLY_STOPPING_PATIENCE,
+        "terminal_staleness": stale,
+        "stopped_early": terminal_epoch < P6_MAXIMUM_EPOCHS,
+    }
+    return diagnostic
 
 
 def _guardrail(candidate: dict, reference: dict, key: str) -> bool:
@@ -241,8 +318,8 @@ def _load_profile_bundle(
         "artifact": artifact,
         "artifact_metadata": metadata,
         "checkpoint": checkpoint,
-        "terminal_curve": terminal_curve_diagnostic(
-            latest_path, profile, expected_epoch=120
+        "terminal_curve": delayed_terminal_curve_diagnostic(
+            latest_path, profile
         ),
     }
 
@@ -416,6 +493,11 @@ def main() -> int:
             "fusion": "fixed 50/50 probability-evidence average",
             "inter_class_type": "exclusive_angular_energy",
             "inter_class_weight": 0.01,
+            "adaptive_horizon": {
+                "maximum_epochs": P6_MAXIMUM_EPOCHS,
+                "early_stopping_start_epoch": P6_EARLY_STOPPING_START_EPOCH,
+                "patience": P6_EARLY_STOPPING_PATIENCE,
+            },
         },
         "provenance": {
             "cleaning": cleaning,

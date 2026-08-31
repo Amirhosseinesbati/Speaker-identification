@@ -357,10 +357,38 @@ def _load_warm_start_checkpoint(
 
 _RESUME_TRAINING_EXCLUSIONS = {
     "early_stopping_patience",
+    "early_stopping_start_epoch",
     "resume_checkpoint",
     "resume_history_path",
     "warm_start_checkpoint",
 }
+
+
+def _early_stopping_staleness(
+    history: list[dict], start_epoch: int,
+) -> int:
+    """Return consecutive non-improving epochs after a delayed start.
+
+    The selected Raw best is tracked from epoch one, but patience is deliberately
+    not consumed before ``start_epoch``. Recomputing this value from history
+    keeps a stateful continuation faithful to the same stopping policy instead
+    of silently granting a fresh patience window after a timeout.
+    """
+    best = -float("inf")
+    stale = 0
+    for row in history:
+        epoch = int(row.get("epoch", -1))
+        value = row.get("val_macro_f1")
+        if not isinstance(value, (int, float)):
+            continue
+        if float(value) > best:
+            best = float(value)
+            stale = 0
+        elif epoch >= start_epoch:
+            stale += 1
+        else:
+            stale = 0
+    return stale
 
 
 def _resume_contract(config: Dict) -> dict:
@@ -984,6 +1012,14 @@ def train_model(
     best_ema_epoch = -1
     patience_counter = 0
     early_stop_patience = int(train_cfg.get("early_stopping_patience", 10))
+    early_stop_start_epoch = int(
+        train_cfg.get("early_stopping_start_epoch", 1)
+    )
+    if not 1 <= early_stop_start_epoch <= int(train_cfg["epochs"]):
+        raise ValueError(
+            "early_stopping_start_epoch must be within the configured epoch "
+            f"range 1..{int(train_cfg['epochs'])}"
+        )
     split_scheme = str((config.get("data", {}).get("split", {}) or {})
                        .get("scheme", "single")).lower().strip()
     selection_mode = str(train_cfg.get(
@@ -996,6 +1032,11 @@ def train_model(
     # <= 0 disables early stopping (two-phase cosine runs its full course)
     if early_stop_patience <= 0:
         print(f"  ⏸ Early stopping DISABLED (early_stopping_patience={early_stop_patience})")
+    else:
+        print(
+            "  ⏱ Early stopping enabled after epoch "
+            f"{early_stop_start_epoch} with patience={early_stop_patience}"
+        )
     history = list(resume_history)
     milestone_epochs = _training_milestone_epochs(train_cfg)
     if resume_receipt is not None:
@@ -1019,6 +1060,9 @@ def train_model(
             )
             best_ema_f1 = float(best_ema_row["val_ema_macro_f1"])
             best_ema_epoch = int(best_ema_row["epoch"])
+        patience_counter = _early_stopping_staleness(
+            history, early_stop_start_epoch
+        )
         print(
             f"  ↪ Continuing at epoch {start_epoch}; historical Raw best "
             f"{best_val_f1:.4f} at epoch {best_epoch}"
@@ -1229,8 +1273,10 @@ def train_model(
             torch.save(best_ckpt, best_path)
             torch.save(best_ckpt, checkpoint_dir / f"{encoder_type}_best_raw.pt")
             torch.save(best_ckpt, checkpoint_dir / "best_model.pt")
-        else:
+        elif epoch >= early_stop_start_epoch:
             patience_counter += 1
+        else:
+            patience_counter = 0
 
         if (ema_val_metrics is not None and
                 ema_val_metrics["macro_f1"] > best_ema_f1):
@@ -1298,7 +1344,11 @@ def train_model(
 
         # Early stopping based on val Macro-F1 (no improvement for N epochs).
         # Disabled when early_stopping_patience <= 0.
-        if early_stop_patience > 0 and patience_counter >= early_stop_patience:
+        if (
+            early_stop_patience > 0
+            and epoch >= early_stop_start_epoch
+            and patience_counter >= early_stop_patience
+        ):
             print(f"\n  ⏹ Early stopping at epoch {epoch} "
                   f"(val_macro_f1 not improved for {early_stop_patience} epochs)")
             break
@@ -1364,6 +1414,9 @@ def train_model(
         "warmup_ratio": train_cfg.get("warmup_ratio", 0.0),
         "min_lr_ratio": train_cfg.get("min_lr_ratio", 0.0),
         "early_stopping_patience": train_cfg.get("early_stopping_patience", 10),
+        "early_stopping_start_epoch": train_cfg.get(
+            "early_stopping_start_epoch", 1
+        ),
         "encoder_type": encoder_type,
         "metric_unknown_clusters": metric_unknown_clusters,
         "output_unknown_clusters": output_unknown_clusters,
