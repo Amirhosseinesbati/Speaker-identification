@@ -354,6 +354,32 @@ def test_long120_terminal_curve_uses_epochs_101_to_120(tmp_path) -> None:
     assert diagnostic["eligible_for_separate_matched_extension"] is True
 
 
+def test_terminal_curve_can_truncate_completed_control_for_early_stop(tmp_path) -> None:
+    path = tmp_path / "control_latest.pt"
+    torch.save({
+        "epoch": 120,
+        "config": {
+            "logging": {
+                "checkpoint_dir": f"checkpoints/{LONG120_MATCHED_CONTROL_PROFILE}",
+            },
+        },
+        "training_history": _terminal_history(treatment=False, horizon=120),
+    }, path)
+
+    diagnostic = terminal_curve_diagnostic(
+        path,
+        LONG120_MATCHED_CONTROL_PROFILE,
+        expected_epoch=104,
+        allow_checkpoint_after_expected_epoch=True,
+    )
+
+    assert diagnostic["checkpoint_epoch"] == 120
+    assert diagnostic["terminal_epoch"] == 104
+    assert diagnostic["history_truncated_to_terminal_epoch"] is True
+    assert diagnostic["previous_window"] == [85, 94]
+    assert diagnostic["tail_window"] == [95, 104]
+
+
 def test_terminal_curve_rejects_incomplete_history(tmp_path) -> None:
     path = tmp_path / "latest.pt"
     torch.save({

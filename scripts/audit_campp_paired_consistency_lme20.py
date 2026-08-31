@@ -457,10 +457,15 @@ def terminal_curve_diagnostic(
     expected_profile: str,
     *,
     expected_epoch: int = 80,
+    allow_checkpoint_after_expected_epoch: bool = False,
 ) -> dict:
     """Validate the terminal checkpoint and summarize its locked tail windows."""
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    if int(checkpoint.get("epoch", -1)) != expected_epoch:
+    checkpoint_epoch = int(checkpoint.get("epoch", -1))
+    checkpoint_epoch_ok = checkpoint_epoch == expected_epoch or (
+        allow_checkpoint_after_expected_epoch and checkpoint_epoch > expected_epoch
+    )
+    if not checkpoint_epoch_ok:
         raise RuntimeError(f"Latest checkpoint is not epoch {expected_epoch}: {path}")
     config = checkpoint.get("config", {}) or {}
     checkpoint_dir = str((config.get("logging", {}) or {}).get("checkpoint_dir", ""))
@@ -469,6 +474,8 @@ def terminal_curve_diagnostic(
     history = checkpoint.get("training_history", checkpoint.get("history", []))
     if not isinstance(history, list) or len(history) < 2 * TAIL_WINDOW_EPOCHS:
         raise RuntimeError(f"Terminal history is too short: {path}")
+    if allow_checkpoint_after_expected_epoch:
+        history = history[:expected_epoch]
     epochs = np.asarray([int(row.get("epoch", -1)) for row in history], dtype=np.int64)
     expected = np.arange(1, expected_epoch + 1, dtype=np.int64)
     if not np.array_equal(epochs, expected):
@@ -496,7 +503,9 @@ def terminal_curve_diagnostic(
     return {
         "path": str(path),
         "sha256": sha256_file(path),
+        "checkpoint_epoch": checkpoint_epoch,
         "terminal_epoch": expected_epoch,
+        "history_truncated_to_terminal_epoch": checkpoint_epoch > expected_epoch,
         "window_epochs": TAIL_WINDOW_EPOCHS,
         "previous_window": [expected_epoch - 2 * TAIL_WINDOW_EPOCHS + 1,
                             expected_epoch - TAIL_WINDOW_EPOCHS],
@@ -643,6 +652,22 @@ def main() -> int:
     )
     parser.add_argument("--horizon", type=int, choices=sorted(HORIZON_SPECS), default=120)
     parser.add_argument(
+        "--terminal-epoch",
+        type=int,
+        help=(
+            "Outcome-independent comparison cutoff within the locked horizon. "
+            "A shorter cutoff requires --early-stop-amendment."
+        ),
+    )
+    parser.add_argument(
+        "--early-stop-amendment",
+        action="store_true",
+        help=(
+            "Record a user-directed early-stop amendment while preserving the "
+            "original locked configs and hashes."
+        ),
+    )
+    parser.add_argument(
         "--pairing-mode",
         choices=sorted(PAIRING_MODE_SPECS),
         default="same_crop",
@@ -659,6 +684,15 @@ def main() -> int:
             f"No {args.horizon}-epoch contract for {args.pairing_mode}"
         )
     spec = mode_specs[args.horizon]
+    terminal_epoch = args.horizon if args.terminal_epoch is None else args.terminal_epoch
+    if terminal_epoch < 2 * TAIL_WINDOW_EPOCHS or terminal_epoch > args.horizon:
+        raise RuntimeError(
+            "terminal epoch must preserve both tail windows and stay within horizon"
+        )
+    if terminal_epoch != args.horizon and not args.early_stop_amendment:
+        raise RuntimeError(
+            "short terminal epoch requires --early-stop-amendment"
+        )
     matched_profile = str(spec["matched_profile"])
     treatment_profile = str(spec["treatment_profile"])
     milestones = tuple(int(value) for value in spec["milestones"])
@@ -677,7 +711,12 @@ def main() -> int:
         )
         args.output = (
             ROOT / "reports" / "generated"
-            / f"{report_stem}_long{args.horizon}_fold0.json"
+            / (
+                f"{report_stem}_long{args.horizon}_fold0.json"
+                if terminal_epoch == args.horizon
+                else f"{report_stem}_long{args.horizon}_earlystop"
+                f"{terminal_epoch}_fold0.json"
+            )
         )
 
     device = (
@@ -734,6 +773,12 @@ def main() -> int:
         checkpoint = torch.load(
             checkpoint_path, map_location="cpu", weights_only=False
         )
+        selected_epoch = int(checkpoint.get("epoch", -1))
+        if selected_epoch < 1 or selected_epoch > terminal_epoch:
+            raise RuntimeError(
+                f"Selected Raw checkpoint for {profile} is outside terminal "
+                f"epoch {terminal_epoch}: epoch {selected_epoch}"
+            )
         milestone_receipts = {
             str(epoch): milestone_diagnostic(
                 checkpoint_dir / f"campp_milestone_epoch{epoch:03d}_raw.pt",
@@ -753,7 +798,12 @@ def main() -> int:
             "checkpoint": checkpoint,
             "milestones": milestone_receipts,
             "terminal_curve": terminal_curve_diagnostic(
-                latest_path, profile, expected_epoch=args.horizon
+                latest_path,
+                profile,
+                expected_epoch=terminal_epoch,
+                allow_checkpoint_after_expected_epoch=(
+                    args.early_stop_amendment and profile == matched_profile
+                ),
             ),
         }
 
@@ -852,6 +902,13 @@ def main() -> int:
                 f"pairing={spec.get('pairing', 'clean_aug')}"
             ),
             "horizon": args.horizon,
+            "terminal_comparison_epoch": terminal_epoch,
+            "early_stop_amendment": bool(args.early_stop_amendment),
+            "amendment_scope": (
+                "user-directed stop after preregistered Raw metric exhausted "
+                "patience; matched Control history truncated to the same epoch"
+                if args.early_stop_amendment else None
+            ),
             "diagnostic_milestones": list(milestones),
             "decision": "selected Raw probability-average LME20 direct argmax",
             "fusion": "fixed 50/50 probability-evidence average",
