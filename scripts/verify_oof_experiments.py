@@ -31,13 +31,13 @@ from src.experiment_config import load_profile  # noqa: E402
 FAMILIES = {
     "no_proto": {
         "profiles": [f"p0-campp-no-proto-repro-oof-f{i}" for i in range(3)],
-        "invariant_sha256": "8d48ecda29e7f3adbe2b0d7fe5859f39187ca57ca592cf6d5ca1a8304e4d1a3b",
+        "invariant_sha256": "e72025a9feadbf884294679e9947e01a242f0cf94ebed910e4d0a7bc7d61f938",
         "baseline": ROOT / "checkpoints" / "campp_best (4).pt",
         "baseline_sha256": "92893c7642901dc2e1bc4eb1d70d9b51c8ed7b03c286b0c89f7340a46475ad40",
     },
     "metric_only": {
         "profiles": [f"p0-campp-metric-only-repro-oof-f{i}" for i in range(3)],
-        "invariant_sha256": "d32c8adfc73b93d04c06eab13b6533789c244bc822de18be73ecfb10bfab7141",
+        "invariant_sha256": "6c6960fce4f727b1ba9783add54a093a1525830f066ad5995d9e7dc26db711e5",
         "baseline": ROOT / "checkpoints" / "campp_best (5).pt",
         "baseline_sha256": "ead5d1b7af290271db356c9ecf5e980513693d1f793a0c989e98094e8f0f37e5",
     },
@@ -66,6 +66,9 @@ BASELINE_ALLOWED_PATTERNS = (
     # Explicit default added by the known-first implementation; ``metric`` is
     # exactly the pre-existing 446+k behavior of both baseline checkpoints.
     "model.speaker_target_scope",
+    # Added later as a disabled-by-default P6 capability.  The explicit checks
+    # below make this allowance fail closed if it is ever enabled here.
+    "training.loss.speaker.inter_class.*",
 )
 
 
@@ -159,6 +162,11 @@ def verify(skip_checkpoints: bool = False) -> dict:
                 "hardware_mode": config["hardware"].get("mode") == "vastai_3060",
                 "batch_size": config["hardware"]["profiles"]["vastai_3060"].get("batch_size") == 16,
                 "checkpoint_isolated": config["logging"].get("checkpoint_dir", "").endswith(name),
+                "inter_class_disabled": (
+                    config["training"]["loss"]["speaker"]
+                    .get("inter_class", {})
+                    .get("enabled") is False
+                ),
             }
             for check, passed in checks.items():
                 if not passed:
