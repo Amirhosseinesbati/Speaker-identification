@@ -88,3 +88,64 @@ def test_recovery_requires_explicit_permission_to_regenerate_oof(
 
     with pytest.raises(RuntimeError, match="--regenerate-oof"):
         main()
+
+
+def test_regenerate_oof_accepts_list_backed_fold_splits(
+    tmp_path: Path, monkeypatch, capsys,
+) -> None:
+    profile = "interrupted"
+    checkpoint_dir = tmp_path / profile
+    checkpoint_dir.mkdir(parents=True)
+    config = {
+        "model": {"competition_num_known": 1, "encoder_type": "campp"},
+        "data": {"split": {"scheme": "kfold", "folds": 3, "fold": 0, "seed": 42}},
+        "training": {"seed": 42, "deterministic_algorithms": True},
+    }
+    checkpoint = {
+        "epoch": 1,
+        "weight_variant": "raw",
+        "val_macro_f1": 0.8,
+        "model_state_dict": {"weight": torch.tensor([1.0])},
+        "config": config,
+        "class_map": {"unknown": 0, "known": 1},
+    }
+    latest = dict(
+        checkpoint,
+        training_history=[{"epoch": 1, "val_macro_f1": 0.8}],
+    )
+    torch.save(checkpoint, checkpoint_dir / "campp_best.pt")
+    torch.save(checkpoint, checkpoint_dir / "campp_best_raw.pt")
+    torch.save(latest, checkpoint_dir / "campp_latest.pt")
+    monkeypatch.setattr(
+        "scripts.recover_interrupted_training_bundle.rebuild_exact_splits",
+        lambda *_: ([(None, "validation")], {}),
+    )
+
+    def fake_evaluate(**kwargs) -> None:
+        assert kwargs["val_df"] == "validation"
+        bundle_dir = checkpoint_dir / "campp_best_bundle"
+        bundle_dir.mkdir()
+        np.savez_compressed(
+            bundle_dir / "oof_predictions.npz", files=np.array(["a.wav"])
+        )
+        from src.model_artifacts import create_training_bundle
+        create_training_bundle(
+            checkpoint_dir / "campp_best.pt",
+            config,
+            checkpoint["class_map"],
+            latest["training_history"],
+            {"selected_weight_variant": "raw"},
+        )
+
+    monkeypatch.setattr(
+        "scripts.recover_interrupted_training_bundle.evaluate_model.entrypoint",
+        fake_evaluate,
+    )
+    monkeypatch.setattr("sys.argv", [
+        "recover_interrupted_training_bundle.py",
+        "--profile", profile,
+        "--checkpoint-root", str(tmp_path),
+        "--regenerate-oof",
+    ])
+    assert main() == 0
+    assert '"status": "recovered_oof_and_bundle"' in capsys.readouterr().out

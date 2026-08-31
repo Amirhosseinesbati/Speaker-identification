@@ -142,7 +142,7 @@ def main() -> int:
         split = (selected["config"].get("data", {}) or {}).get("split", {}) or {}
         fold = int(split.get("fold", -1))
         splits, _ = rebuild_exact_splits(args.labels, args.audio_dir)
-        if fold not in splits:
+        if fold < 0 or fold >= len(splits):
             raise RuntimeError(f"configured validation fold is unavailable: {fold}")
         _, validation_frame = splits[fold]
         evaluate_model.entrypoint(
