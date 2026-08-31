@@ -192,6 +192,9 @@ for MLflow/DagsHub inspection without loading PyTorch.
         "checkpoint_sha256": _sha256(checkpoint_path),
         "files": sorted(p.name for p in bundle.iterdir() if p.is_file()),
     }
+    oof_path = bundle / "oof_predictions.npz"
+    if oof_path.is_file():
+        manifest["oof_predictions_sha256"] = _sha256(oof_path)
     (bundle / "manifest.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return bundle
