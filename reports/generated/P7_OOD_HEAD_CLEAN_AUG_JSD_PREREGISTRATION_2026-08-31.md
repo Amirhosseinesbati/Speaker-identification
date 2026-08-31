@@ -145,6 +145,11 @@ P7 passes Fold 0 only if every condition holds:
 8. Receipt hashes, OOF uniqueness, split/class-map identity, complete histories,
    MLflow series and all selected artifacts are mutually consistent.
 
+The terminal decision must be emitted by `scripts/audit_p7_decision.py`; its
+success value is `accept_for_replication`. It fails closed on missing or
+non-finite evidence and does not authorize a submission or later Fold by
+itself.
+
 Failure of any condition rejects P7 and forbids folds 1/2. Passing authorises
 only a separately preregistered multi-fold replication; it is not automatic
 submission permission and cannot change the leaderboard-independent decision
