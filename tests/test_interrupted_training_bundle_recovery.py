@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from scripts.recover_interrupted_training_bundle import main
@@ -51,3 +52,39 @@ def test_recovery_builds_oof_bound_manifest_and_is_idempotent(
     assert main() == 0
     assert (bundle_dir / "manifest.json").read_bytes() == manifest_bytes
     assert '"status": "already_valid"' in capsys.readouterr().out
+
+
+def test_recovery_requires_explicit_permission_to_regenerate_oof(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    profile = "interrupted"
+    checkpoint_dir = tmp_path / profile
+    checkpoint_dir.mkdir(parents=True)
+    config = {
+        "model": {"competition_num_known": 1, "encoder_type": "campp"},
+        "data": {"split": {"scheme": "kfold", "folds": 3, "fold": 0, "seed": 42}},
+        "training": {"seed": 42, "deterministic_algorithms": True},
+    }
+    checkpoint = {
+        "epoch": 1,
+        "weight_variant": "raw",
+        "val_macro_f1": 0.8,
+        "model_state_dict": {"weight": torch.tensor([1.0])},
+        "config": config,
+        "class_map": {"unknown": 0, "known": 1},
+    }
+    latest = dict(
+        checkpoint,
+        training_history=[{"epoch": 1, "val_macro_f1": 0.8}],
+    )
+    torch.save(checkpoint, checkpoint_dir / "campp_best.pt")
+    torch.save(checkpoint, checkpoint_dir / "campp_best_raw.pt")
+    torch.save(latest, checkpoint_dir / "campp_latest.pt")
+    monkeypatch.setattr("sys.argv", [
+        "recover_interrupted_training_bundle.py",
+        "--profile", profile,
+        "--checkpoint-root", str(tmp_path),
+    ])
+
+    with pytest.raises(RuntimeError, match="--regenerate-oof"):
+        main()

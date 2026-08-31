@@ -24,7 +24,11 @@ from scripts.audit_campp_channelrobust_lme20 import (  # noqa: E402
     sha256_file,
     validate_raw_bundle_binding,
 )
+from scripts.analyze_control_oof_centroid_crossfit import (  # noqa: E402
+    rebuild_exact_splits,
+)
 from src.model_artifacts import create_training_bundle  # noqa: E402
+from src.pipelines.steps import evaluate_model  # noqa: E402
 
 
 def _same_model_state(left: dict, right: dict) -> bool:
@@ -55,6 +59,24 @@ def main() -> int:
     parser.add_argument(
         "--checkpoint-root", type=Path, default=ROOT / "checkpoints"
     )
+    parser.add_argument(
+        "--labels",
+        type=Path,
+        default=ROOT / "data" / "processed" / "audio_wav_labels.csv",
+    )
+    parser.add_argument(
+        "--audio-dir",
+        type=Path,
+        default=ROOT / "data" / "processed" / "audio_wav",
+    )
+    parser.add_argument(
+        "--regenerate-oof",
+        action="store_true",
+        help=(
+            "Run only the canonical evaluation step when OOF predictions are "
+            "missing. No training or parameter search is performed."
+        ),
+    )
     args = parser.parse_args()
 
     checkpoint_dir = args.checkpoint_root / args.profile
@@ -63,13 +85,13 @@ def main() -> int:
     latest_path = checkpoint_dir / "campp_latest.pt"
     bundle_dir = checkpoint_dir / "campp_best_bundle"
     oof_path = bundle_dir / "oof_predictions.npz"
-    required = (selected_path, raw_path, latest_path, oof_path)
+    required = (selected_path, raw_path, latest_path)
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise RuntimeError(f"required interrupted-run artifacts missing: {missing}")
 
     manifest_path = bundle_dir / "manifest.json"
-    if manifest_path.is_file():
+    if manifest_path.is_file() and oof_path.is_file():
         binding = validate_raw_bundle_binding(
             checkpoint_dir, raw_path, oof_path
         )
@@ -110,6 +132,38 @@ def main() -> int:
         raise RuntimeError("latest checkpoint epoch/history mismatch")
     if int(selected.get("epoch", -1)) > len(history):
         raise RuntimeError("selected checkpoint lies after interrupted history")
+
+    if not oof_path.is_file():
+        if not args.regenerate_oof:
+            raise RuntimeError(
+                "OOF predictions are missing; pass --regenerate-oof to run "
+                "the canonical evaluation-only recovery"
+            )
+        split = (selected["config"].get("data", {}) or {}).get("split", {}) or {}
+        fold = int(split.get("fold", -1))
+        splits, _ = rebuild_exact_splits(args.labels, args.audio_dir)
+        if fold not in splits:
+            raise RuntimeError(f"configured validation fold is unavailable: {fold}")
+        _, validation_frame = splits[fold]
+        evaluate_model.entrypoint(
+            config=selected["config"],
+            class_map=selected["class_map"],
+            val_df=validation_frame,
+            best_model_path=str(selected_path),
+        )
+        if not oof_path.is_file() or not manifest_path.is_file():
+            raise RuntimeError("canonical evaluation did not materialise OOF bundle")
+        binding = validate_raw_bundle_binding(
+            checkpoint_dir, raw_path, oof_path
+        )
+        print(json.dumps({
+            "status": "recovered_oof_and_bundle",
+            "profile": args.profile,
+            "history_points": len(history),
+            "manifest_sha256": sha256_file(manifest_path),
+            "binding": binding,
+        }, sort_keys=True))
+        return 0
 
     create_training_bundle(
         selected_path,
