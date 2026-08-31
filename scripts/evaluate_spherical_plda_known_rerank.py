@@ -1,7 +1,8 @@
 """Evaluate a fixed spherical-PLDA known-speaker reranker on one OOF fold.
 
 The two-scalar spherical-PLDA equations follow Sholokhov et al. (ICASSP
-2023) and the authors' MIT-licensed reference implementation.  This phase-one
+2023) and the authors' MIT-licensed reference implementation; see
+``THIRD_PARTY_NOTICES.md``.  This phase-one
 audit deliberately does *not* calibrate an OOD threshold: it preserves every
 raw CAM++ known/unknown decision and only replaces the identity of rows that
 CAM++ already predicts as known.  Consequently any OOD-F1 movement is a hard
