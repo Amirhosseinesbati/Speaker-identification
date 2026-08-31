@@ -26,6 +26,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from scipy.special import logsumexp
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -35,6 +36,7 @@ from scripts.analyze_control_oof_centroid_crossfit import (  # noqa: E402
     NUM_FOLDS,
     build_or_load_train_artifact,
     load_oof,
+    l2norm_rows,
     metric_bundle,
     metric_delta,
     predict,
@@ -42,7 +44,8 @@ from scripts.analyze_control_oof_centroid_crossfit import (  # noqa: E402
     sha256_file,
 )
 from scripts.analyze_prototype_aggregation_crossfit import (  # noqa: E402
-    fold_variants,
+    group_indices,
+    score_matrix_to_evidence,
 )
 
 
@@ -55,17 +58,47 @@ LOCKED_PARAMETERS = {
 }
 
 
+def build_locked_lme20_evidence(
+    *, fold: int, artifact: dict[str, np.ndarray], oof: dict
+):
+    """Build only beta-20 log-mean-exp scores—no alternative variants."""
+
+    beta = 20.0
+    train = l2norm_rows(artifact["train_embeddings"])
+    validation = l2norm_rows(oof["embeddings"])
+    groups = group_indices(artifact)
+    similarities = validation @ train.T
+    scores = np.empty((len(validation), len(groups)), dtype=np.float32)
+    group_sizes = []
+    for group_id, indices in enumerate(groups):
+        values = similarities[:, indices]
+        scores[:, group_id] = (
+            logsumexp(beta * values, axis=1) - np.log(values.shape[1])
+        ) / beta
+        group_sizes.append(int(values.shape[1]))
+    evidence = score_matrix_to_evidence(
+        fold=fold, oof=oof, scores=scores.astype(np.float64)
+    )
+    diagnostics = {
+        "family": "set_score",
+        "logmeanexp_beta": beta,
+        "score_min": float(scores.min()),
+        "score_mean": float(scores.mean()),
+        "score_max": float(scores.max()),
+        "enrollment_group_size_min": int(min(group_sizes)),
+        "enrollment_group_size_max": int(max(group_sizes)),
+    }
+    return evidence, diagnostics
+
+
 def evaluate_locked_lme20(
     *, fold: int, artifact: dict[str, np.ndarray], oof: dict
 ) -> dict:
     """Apply only the immutable LME20 policy and return its full diagnostics."""
 
-    variants, diagnostics = fold_variants(
+    evidence, diagnostics = build_locked_lme20_evidence(
         fold=fold, artifact=artifact, oof=oof
     )
-    if LOCKED_VARIANT not in variants:
-        raise RuntimeError(f"Missing required aggregation {LOCKED_VARIANT!r}")
-    evidence = variants[LOCKED_VARIANT]
     predictions = predict(evidence, dict(LOCKED_PARAMETERS))
     baseline_predictions = evidence.baseline_predictions
     labels = evidence.labels
@@ -91,7 +124,7 @@ def evaluate_locked_lme20(
         ),
         "rescued_files": evidence.files[rescued_mask].astype(str).tolist(),
         "introduced_files": evidence.files[introduced_mask].astype(str).tolist(),
-        "aggregation_diagnostics": diagnostics[LOCKED_VARIANT],
+        "aggregation_diagnostics": diagnostics,
     }
 
 

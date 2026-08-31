@@ -17,6 +17,44 @@ def test_locked_lme20_contract_has_no_search_dimensions() -> None:
     }
 
 
+def test_builder_computes_only_beta20_logmeanexp(monkeypatch) -> None:
+    captured = {}
+
+    monkeypatch.setattr(
+        audit,
+        "group_indices",
+        lambda artifact: [np.array([0, 1]), np.array([2])],
+    )
+
+    def fake_evidence(*, fold, oof, scores):
+        captured["fold"] = fold
+        captured["oof"] = oof
+        captured["scores"] = scores
+        return "evidence"
+
+    monkeypatch.setattr(audit, "score_matrix_to_evidence", fake_evidence)
+    artifact = {
+        "train_embeddings": np.array(
+            [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]], dtype=np.float32
+        )
+    }
+    oof = {"embeddings": np.array([[1.0, 0.0]], dtype=np.float32)}
+
+    evidence, diagnostics = audit.build_locked_lme20_evidence(
+        fold=2, artifact=artifact, oof=oof
+    )
+
+    expected_first = float(np.log((np.exp(20.0) + 1.0) / 2.0) / 20.0)
+    assert evidence == "evidence"
+    assert captured["fold"] == 2
+    np.testing.assert_allclose(
+        captured["scores"], [[expected_first, -1.0]], rtol=0, atol=1e-6
+    )
+    assert diagnostics["logmeanexp_beta"] == 20.0
+    assert diagnostics["enrollment_group_size_min"] == 1
+    assert diagnostics["enrollment_group_size_max"] == 2
+
+
 def test_evaluation_uses_exact_locked_policy(monkeypatch) -> None:
     evidence = SimpleNamespace(
         labels=np.array([1, 2, 0, 0], dtype=np.int64),
@@ -24,20 +62,18 @@ def test_evaluation_uses_exact_locked_policy(monkeypatch) -> None:
         baseline_predictions=np.array([1, 0, 1, 0], dtype=np.int64),
     )
 
-    def fake_variants(*, fold, artifact, oof):
+    def fake_evidence(*, fold, artifact, oof):
         assert fold == 0
         assert artifact == {"artifact": "sentinel"}
         assert oof == {"oof": "sentinel"}
-        return {audit.LOCKED_VARIANT: evidence}, {
-            audit.LOCKED_VARIANT: {"score_mean": 0.1}
-        }
+        return evidence, {"score_mean": 0.1}
 
     def fake_predict(received, parameters):
         assert received is evidence
         assert parameters == audit.LOCKED_PARAMETERS
         return np.array([1, 2, 0, 1], dtype=np.int64)
 
-    monkeypatch.setattr(audit, "fold_variants", fake_variants)
+    monkeypatch.setattr(audit, "build_locked_lme20_evidence", fake_evidence)
     monkeypatch.setattr(audit, "predict", fake_predict)
     result = audit.evaluate_locked_lme20(
         fold=0,
