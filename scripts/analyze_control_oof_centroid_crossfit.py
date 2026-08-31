@@ -50,6 +50,7 @@ from src.data_pipeline import (  # noqa: E402
 )
 from src.metrics import macro_f1_score  # noqa: E402
 from src.model_factory import create_model_from_config  # noqa: E402
+from src.checkpoint_io import load_project_checkpoint_safe  # noqa: E402
 from submission.inference import (  # noqa: E402
     _collapse_centroid_probs,
     centroid_probs_matrix,
@@ -247,7 +248,9 @@ def build_or_load_train_artifact(
                 arrays = {key: data[key].copy() for key in data.files}
             return arrays, metadata
 
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    checkpoint = load_project_checkpoint_safe(
+        checkpoint_path, map_location="cpu"
+    )
     config = checkpoint["config"]
     checkpoint_class_map = checkpoint["class_map"]
     model = create_model_from_config(
