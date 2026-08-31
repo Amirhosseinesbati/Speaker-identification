@@ -58,6 +58,13 @@ failure as rejection; it must not trigger a Fold-0 weight grid.
   `p7-campp-known446-ood-cleanaug-oodjsd-control-lmft-oof-f0`.
 - Treatment profile:
   `p7-campp-known446-ood-cleanaug-oodjsd-w12-lmft-oof-f0`.
+- Locked control config SHA256:
+  `474f1bb252561669fa92587864f095caec979a2e6ee212e64ec5846eea2faed9`.
+- Locked treatment config SHA256:
+  `ca881f67539936545347cd3dd28901fadc5974183f18a5d16e55e895199061ea`.
+- The initial tested implementation is commit
+  `141b1685b8d6c3a619c72f8482525ccf59479c62`; activation additionally requires
+  `scripts/audit_p7_activation.py` to return `activate_p7_control`.
 - Source model: selected Raw CAM++ Fold-0 checkpoint at epoch 112,
   `checkpoints/p0-campp-known446-ood-control-oof-f0/campp_best_raw.pt`.
 - Source SHA256:
