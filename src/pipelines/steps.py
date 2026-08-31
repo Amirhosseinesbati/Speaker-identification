@@ -50,6 +50,7 @@ from src.train import (
     setup_device,
     PrototypicalLoss,
     resolve_inter_class_regularizer,
+    resolve_ood_jsd_consistency,
 )
 from src.training_utils import (
     EMA,
@@ -712,6 +713,10 @@ def train_model(
     consistency_pairing = str(
         consistency_cfg.get("pairing", "clean_aug")
     ).lower().strip()
+    ood_jsd_enabled, ood_jsd_weight, ood_jsd_type = (
+        resolve_ood_jsd_consistency(train_cfg)
+    )
+    ood_head_only = bool(train_cfg.get("ood_head_only", False))
     inter_class_weight, inter_class_type = resolve_inter_class_regularizer(
         train_cfg
     )
@@ -727,6 +732,10 @@ def train_model(
         raise ValueError(
             "training.loss.consistency.pairing must be clean_aug or "
             "cross_file_batch"
+        )
+    if ood_head_only and not ood_jsd_enabled:
+        raise ValueError(
+            "training.ood_head_only requires clean/aug OOD JSD to be enabled"
         )
     reproducibility = seed_everything(
         train_cfg.get("seed", 42),
@@ -806,7 +815,8 @@ def train_model(
         speech_relative_db=audio_cfg.get("speech_relative_db", 35.0),
         short_audio_mode=audio_cfg.get("short_audio_mode", "pad"),
         return_clean_aug_pair=(
-            consistency_enabled and consistency_pairing == "clean_aug"
+            (consistency_enabled and consistency_pairing == "clean_aug")
+            or ood_jsd_enabled
         ),
     )
     val_dataset = SpeakerDataset(
@@ -889,6 +899,20 @@ def train_model(
     checkpoint = torch.load(model_checkpoint_path, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)
+
+    if ood_head_only:
+        if not ood_head_enabled(config):
+            raise ValueError("training.ood_head_only requires the OOD head")
+        if encoder_will_train(config):
+            raise ValueError(
+                "training.ood_head_only requires a fully frozen encoder in "
+                "the resolved model config"
+            )
+        for parameter in model.parameters():
+            parameter.requires_grad = False
+        for parameter in model.head_ood.parameters():
+            parameter.requires_grad = True
+        print("  🎚 OOD-head-only adaptation: encoder and speaker head frozen")
 
     # ── Optimizer, Loss, Scheduler, Scaler ──
     # Progressive unfreezing (two-phase fine-tune): keep the encoder frozen for
@@ -994,6 +1018,12 @@ def train_model(
             f"(pairing={consistency_pairing}, cosine weight="
             f"{consistency_weight:g}, target stop-gradient)"
         )
+    if ood_jsd_enabled:
+        print(
+            "  🧪 Binary OOD clean/aug JSD enabled "
+            f"(type={ood_jsd_type}, multiplier={ood_jsd_weight:g}, "
+            "clean target stop-gradient)"
+        )
     if inter_class_weight > 0.0:
         print(
             "  🧭 Inter-class speaker regularizer enabled "
@@ -1093,6 +1123,9 @@ def train_model(
             ),
             consistency_pairing=consistency_pairing,
             inter_class_weight=inter_class_weight,
+            ood_jsd_enabled=ood_jsd_enabled,
+            ood_jsd_weight=ood_jsd_weight,
+            ood_head_only=ood_head_only,
         )
         # Validate + competition metric (Macro-F1 over all 447 classes)
         val_metrics = validate_epoch(model, val_loader, criterion, device)
@@ -1170,6 +1203,10 @@ def train_model(
             "train_loss_inter_class": train_metrics["loss_inter_class"],
             "train_loss_inter_class_weighted": train_metrics[
                 "loss_inter_class_weighted"
+            ],
+            "train_loss_ood_jsd": train_metrics["loss_ood_jsd"],
+            "train_loss_ood_jsd_weighted": train_metrics[
+                "loss_ood_jsd_weighted"
             ],
             "train_ood_acc": train_metrics["ood_acc"],
             "train_speaker_acc": train_metrics["speaker_acc"],
@@ -1430,6 +1467,14 @@ def train_model(
         "stateful_resume": resume_receipt is not None,
         "resume_checkpoint_sha256": (
             resume_receipt["sha256"] if resume_receipt is not None else ""
+        ),
+        "ood_head_only": ood_head_only,
+        "ood_jsd_enabled": ood_jsd_enabled,
+        "ood_jsd_type": ood_jsd_type,
+        "ood_jsd_weight": ood_jsd_weight,
+        "trainable_parameters": sum(
+            parameter.numel() for parameter in model.parameters()
+            if parameter.requires_grad
         ),
     })
     _mlflow_log_metrics({

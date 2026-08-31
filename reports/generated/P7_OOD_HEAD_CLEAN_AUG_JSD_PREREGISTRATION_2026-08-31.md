@@ -66,9 +66,17 @@ failure as rejection; it must not trigger a Fold-0 weight grid.
 - Decision rule: Raw probability-average, LME20, direct argmax.
 - Encoder and speaker head are frozen and kept in evaluation mode. Only the
   existing binary OOD head is trainable.
+- The OOD head also remains in evaluation mode while its weights receive
+  gradients, disabling its `0.7` dropout for both views. Thus the measured
+  clean/aug discrepancy is caused by the paired audio transformation rather
+  than two unrelated dropout masks; this mode is identical in both arms.
 - Optimizer, scheduler and EMA are reset; the model weights alone are warm
   started. The control and treatment use identical batches, paired crops,
   augmentations, windows, seed, OOD sampling, optimizer and stopping policy.
+- The sole trainable parameter group uses AdamW with learning rate `5e-5`,
+  weight decay `1e-4`, the existing cosine schedule, warmup ratio `0.05` and
+  minimum-LR ratio `0.05`. These values are transferred unchanged from the P2
+  head group and are not selected from P7 results.
 - Both branches compute and log the same clean/aug JSD. The single scientific
   difference is its multiplier: `0` in the control and `12` in the treatment.
 - The existing OOD branch weight `0.15` remains outside the auxiliary term, so
@@ -102,9 +110,10 @@ ordinary augmented-view BCE remains the supervised anchor.
 - Complete pair cap: 6 hours / `$1.04`; activation requires at least `$1.10`
   available to preserve rounding headroom.
 
-The delayed start gives the newly reset OOD head time to adapt while avoiding
-another unjustified 120-epoch tail. Passing early is not allowed to terminate a
-branch; only the locked patience or immediate safety rules may do so.
+The delayed start gives the warm-started OOD head time to adapt under its reset
+optimizer/scheduler while avoiding another unjustified 120-epoch tail. Passing
+early is not allowed to terminate a branch; only the locked patience or
+immediate safety rules may do so.
 
 ## Acceptance and mechanism gates
 
@@ -133,4 +142,3 @@ Failure of any condition rejects P7 and forbids folds 1/2. Passing authorises
 only a separately preregistered multi-fold replication; it is not automatic
 submission permission and cannot change the leaderboard-independent decision
 policy.
-

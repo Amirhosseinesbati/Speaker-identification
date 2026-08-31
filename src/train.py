@@ -412,6 +412,86 @@ def resolve_inter_class_regularizer(train_cfg: dict) -> Tuple[float, str]:
     return (weight if enabled else 0.0), inter_type
 
 
+def resolve_ood_jsd_consistency(train_cfg: dict) -> Tuple[bool, float, str]:
+    """Validate the preregistered clean/aug binary-OOD consistency term.
+
+    The control deliberately enables paired-view computation with a zero
+    multiplier, so ``enabled`` and ``weight`` remain separate.  This keeps the
+    control and treatment data/forward contracts identical while changing only
+    the backpropagated coefficient.
+    """
+    loss_cfg = train_cfg.get("loss", {}) or {}
+    ood_cfg = loss_cfg.get("ood", {}) or {}
+    jsd_cfg = ood_cfg.get("clean_aug_jsd", {}) or {}
+    enabled = bool(jsd_cfg.get("enabled", False))
+    jsd_type = str(
+        jsd_cfg.get("type", "target_clean_aug_bernoulli_jsd")
+    ).lower().strip()
+    weight = float(jsd_cfg.get("weight", 0.0))
+    if jsd_type != "target_clean_aug_bernoulli_jsd":
+        raise ValueError(
+            "Only training.loss.ood.clean_aug_jsd.type="
+            "target_clean_aug_bernoulli_jsd is supported"
+        )
+    if not np.isfinite(weight) or weight < 0.0:
+        raise ValueError(
+            "training.loss.ood.clean_aug_jsd.weight must be finite and "
+            "non-negative"
+        )
+    return enabled, (weight if enabled else 0.0), jsd_type
+
+
+def target_clean_aug_bernoulli_jsd(
+    augmented_ood_logits: torch.Tensor,
+    clean_ood_logits: torch.Tensor,
+    labels: torch.Tensor,
+    competition_known_count: int = 446,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """JSD of target, clean-view and augmented-view binary OOD predictions.
+
+    The clean distribution is a stop-gradient target.  Gradients flow only
+    through the augmented logits, matching the preregistered asymmetric
+    clean-teacher contract while retaining the exact three-distribution JSD
+    structure used by AugMix-style consistency.
+    """
+    if augmented_ood_logits.ndim != 2 or augmented_ood_logits.shape[1] != 1:
+        raise ValueError("augmented_ood_logits must have shape (batch, 1)")
+    if clean_ood_logits.shape != augmented_ood_logits.shape:
+        raise ValueError("clean and augmented OOD logits must have equal shape")
+    if labels.ndim != 1 or labels.shape[0] != augmented_ood_logits.shape[0]:
+        raise ValueError("labels must have shape (batch,)")
+    if not 0.0 < float(eps) < 0.5:
+        raise ValueError("eps must be in (0, 0.5)")
+
+    with torch.autocast(
+        device_type=augmented_ood_logits.device.type, enabled=False,
+    ):
+        augmented_unknown = torch.sigmoid(augmented_ood_logits.float())
+        clean_unknown = torch.sigmoid(clean_ood_logits.float()).detach()
+        target_unknown = (
+            (labels == 0) | (labels > int(competition_known_count))
+        ).float().unsqueeze(1)
+
+        distributions = (
+            torch.cat((1.0 - augmented_unknown, augmented_unknown), dim=1),
+            torch.cat((1.0 - clean_unknown, clean_unknown), dim=1),
+            torch.cat((1.0 - target_unknown, target_unknown), dim=1),
+        )
+        mixture = sum(distributions) / float(len(distributions))
+        log_mixture = mixture.clamp_min(float(eps)).log()
+        divergences = []
+        for distribution in distributions:
+            log_distribution = distribution.clamp_min(float(eps)).log()
+            divergences.append(
+                (distribution * (log_distribution - log_mixture)).sum(dim=1)
+            )
+        jsd = torch.stack(divergences, dim=0).mean()
+    if not torch.isfinite(jsd):
+        raise RuntimeError("binary OOD JSD is NaN/Inf")
+    return jsd
+
+
 def exclusive_inter_class_angular_loss(
     class_weights: torch.Tensor,
 ) -> torch.Tensor:
@@ -781,6 +861,9 @@ def train_epoch(
     consistency_weight: float = 0.0,
     consistency_pairing: str = "clean_aug",
     inter_class_weight: float = 0.0,
+    ood_jsd_enabled: bool = False,
+    ood_jsd_weight: float = 0.0,
+    ood_head_only: bool = False,
 ) -> Dict[str, float]:
     """
     Train for one epoch with AMP.
@@ -804,6 +887,10 @@ def train_epoch(
     """
     if consistency_weight < 0:
         raise ValueError("consistency_weight must be non-negative")
+    if not np.isfinite(ood_jsd_weight) or ood_jsd_weight < 0:
+        raise ValueError("ood_jsd_weight must be finite and non-negative")
+    if ood_jsd_enabled and not criterion.use_ood:
+        raise ValueError("binary OOD JSD requires the OOD head")
     if not 0.0 <= inter_class_weight < 1.0:
         raise ValueError("inter_class_weight must be in [0, 1)")
     if inter_class_weight > 0.0:
@@ -829,6 +916,37 @@ def train_epoch(
             return autocast()
 
     model.train()
+    if ood_head_only:
+        encoder = getattr(model, "encoder", None)
+        speaker_head = getattr(model, "head_speaker", None)
+        ood_head = getattr(model, "head_ood", None)
+        if encoder is None or speaker_head is None or ood_head is None:
+            raise ValueError(
+                "ood_head_only requires encoder, head_speaker and head_ood"
+            )
+        if any(parameter.requires_grad for parameter in encoder.parameters()):
+            raise ValueError("ood_head_only requires a frozen encoder")
+        if any(
+            parameter.requires_grad for parameter in speaker_head.parameters()
+        ):
+            raise ValueError("ood_head_only requires a frozen speaker head")
+        if not any(parameter.requires_grad for parameter in ood_head.parameters()):
+            raise ValueError("ood_head_only requires a trainable OOD head")
+        allowed_parameter_ids = {
+            id(parameter) for parameter in ood_head.parameters()
+        }
+        unexpected_trainable = [
+            name for name, parameter in model.named_parameters()
+            if parameter.requires_grad and id(parameter) not in allowed_parameter_ids
+        ]
+        if unexpected_trainable:
+            raise ValueError(
+                "ood_head_only found trainable parameters outside head_ood: "
+                + ", ".join(unexpected_trainable)
+            )
+        encoder.eval()
+        speaker_head.eval()
+        ood_head.eval()
     total_loss = 0.0
     total_loss_primary = 0.0
     total_loss_proto = 0.0
@@ -845,6 +963,8 @@ def train_epoch(
     total_loss_spk_effective = 0.0
     total_loss_inter_class = 0.0
     total_loss_inter_class_weighted = 0.0
+    total_loss_ood_jsd = 0.0
+    total_loss_ood_jsd_weighted = 0.0
     num_batches = len(dataloader)
 
     progress_bar = tqdm(dataloader, desc="  Train", leave=False)
@@ -863,9 +983,10 @@ def train_epoch(
                 )
             waveforms = batch_views["augmented"]
             clean_waveforms = batch_views["clean"]
-            if consistency_weight <= 0:
+            if consistency_weight <= 0 and not ood_jsd_enabled:
                 raise ValueError(
-                    "Dataset returned paired views but consistency_weight is not positive"
+                    "Dataset returned paired views without an enabled clean/aug "
+                    "objective"
                 )
         else:
             waveforms = batch_views
@@ -909,10 +1030,13 @@ def train_epoch(
         step_loss_spk_effective = 0.0
         step_loss_inter_class = 0.0
         step_loss_inter_class_weighted = 0.0
+        step_loss_ood_jsd = 0.0
+        step_loss_ood_jsd_weighted = 0.0
         for w in range(W):
             wf = waveforms[:, w] if W > 1 else waveforms  # (B, 1, T)
 
             clean_embedding = None
+            clean_ood_logits = None
             if clean_waveforms is not None:
                 clean_wf = (
                     clean_waveforms[:, w] if W > 1 else clean_waveforms
@@ -921,10 +1045,28 @@ def train_epoch(
                 model.eval()
                 try:
                     with torch.no_grad(), autocast_fn():
-                        clean_embedding = model.embed(clean_wf).detach()
+                        if consistency_weight > 0:
+                            (
+                                clean_ood_logits,
+                                _,
+                                clean_embedding,
+                            ) = model(
+                                clean_wf,
+                                labels=None,
+                                return_embedding=True,
+                            )
+                            clean_embedding = clean_embedding.detach()
+                        elif ood_jsd_enabled:
+                            clean_ood_logits, _ = model(
+                                clean_wf, labels=None,
+                            )
                 finally:
                     if was_training:
                         model.train()
+                        if ood_head_only:
+                            model.encoder.eval()
+                            model.head_speaker.eval()
+                            model.head_ood.eval()
 
             with autocast_fn():
                 need_embedding = (
@@ -985,10 +1127,27 @@ def train_epoch(
                 weighted_consistency_loss = (
                     consistency_weight * consistency_loss
                 )
+                ood_jsd_loss = torch.zeros_like(primary_loss)
+                if ood_jsd_enabled:
+                    if clean_ood_logits is None or ood_logits is None:
+                        raise ValueError(
+                            "enabled binary OOD JSD requires clean and "
+                            "augmented OOD logits"
+                        )
+                    ood_jsd_loss = target_clean_aug_bernoulli_jsd(
+                        ood_logits,
+                        clean_ood_logits,
+                        labels,
+                        criterion.competition_known_count,
+                    )
+                weighted_ood_jsd_loss = (
+                    criterion.ood_weight * ood_jsd_weight * ood_jsd_loss
+                )
                 loss = (
                     primary_loss
                     + weighted_proto_loss
                     + weighted_consistency_loss
+                    + weighted_ood_jsd_loss
                 )
 
             # Fail loudly on NaN/Inf instead of silently training a broken model
@@ -1030,6 +1189,10 @@ def train_epoch(
             step_loss_inter_class_weighted += loss_dict[
                 "loss_inter_class_weighted"
             ]
+            step_loss_ood_jsd += float(ood_jsd_loss.detach().item())
+            step_loss_ood_jsd_weighted += float(
+                weighted_ood_jsd_loss.detach().item()
+            )
             step_ood_acc += compute_ood_accuracy(
                 ood_logits, labels, criterion.competition_known_count)
             spk_acc, _ = compute_speaker_accuracy(
@@ -1080,6 +1243,8 @@ def train_epoch(
         total_loss_inter_class_weighted += (
             step_loss_inter_class_weighted / W
         )
+        total_loss_ood_jsd += step_loss_ood_jsd / W
+        total_loss_ood_jsd_weighted += step_loss_ood_jsd_weighted / W
 
         # Update progress bar
         progress_bar.set_postfix({
@@ -1117,6 +1282,10 @@ def train_epoch(
         "loss_inter_class": total_loss_inter_class / num_batches,
         "loss_inter_class_weighted": (
             total_loss_inter_class_weighted / num_batches
+        ),
+        "loss_ood_jsd": total_loss_ood_jsd / num_batches,
+        "loss_ood_jsd_weighted": (
+            total_loss_ood_jsd_weighted / num_batches
         ),
         "ood_acc": total_ood_acc / num_batches,
         "speaker_acc": total_speaker_acc / num_batches,
@@ -1228,6 +1397,10 @@ def train(config_path: str = "configs/default_config.yaml"):
     consistency_pairing = str(
         consistency_cfg.get("pairing", "clean_aug")
     ).lower().strip()
+    ood_jsd_enabled, ood_jsd_weight, ood_jsd_type = (
+        resolve_ood_jsd_consistency(train_cfg)
+    )
+    ood_head_only = bool(train_cfg.get("ood_head_only", False))
     inter_class_weight, inter_class_type = resolve_inter_class_regularizer(
         train_cfg
     )
@@ -1243,6 +1416,10 @@ def train(config_path: str = "configs/default_config.yaml"):
         raise ValueError(
             "training.loss.consistency.pairing must be clean_aug or "
             "cross_file_batch"
+        )
+    if ood_head_only and not ood_jsd_enabled:
+        raise ValueError(
+            "training.ood_head_only requires clean/aug OOD JSD to be enabled"
         )
     encoder_type = str(config.get("model", {}).get("encoder_type", "model"))
     reproducibility = seed_everything(
@@ -1266,6 +1443,12 @@ def train(config_path: str = "configs/default_config.yaml"):
             "  Embedding consistency: "
             f"pairing={consistency_pairing}, cosine weight="
             f"{consistency_weight:g} (target stop-gradient)"
+        )
+    if ood_jsd_enabled:
+        print(
+            "  Binary OOD clean/aug JSD: "
+            f"type={ood_jsd_type}, multiplier={ood_jsd_weight:g} "
+            "(clean target stop-gradient)"
         )
     if inter_class_weight > 0.0:
         print(
@@ -1295,6 +1478,20 @@ def train(config_path: str = "configs/default_config.yaml"):
     output_unknown_clusters = int(model.num_unknown_clusters)
     num_output_classes = int(model.num_output_classes)
     model = model.to(device)
+    if ood_head_only:
+        from src.heads import ood_head_enabled
+        if not ood_head_enabled(config):
+            raise ValueError("training.ood_head_only requires the OOD head")
+        if encoder_will_train(config):
+            raise ValueError(
+                "training.ood_head_only requires a fully frozen encoder in "
+                "the resolved model config"
+            )
+        for parameter in model.parameters():
+            parameter.requires_grad = False
+        for parameter in model.head_ood.parameters():
+            parameter.requires_grad = True
+        print("  OOD-head-only adaptation: encoder and speaker head frozen")
     model.print_summary()
 
     # ── Optimizer, Loss, Scaler ──
@@ -1421,6 +1618,9 @@ def train(config_path: str = "configs/default_config.yaml"):
             ),
             consistency_pairing=consistency_pairing,
             inter_class_weight=inter_class_weight,
+            ood_jsd_enabled=ood_jsd_enabled,
+            ood_jsd_weight=ood_jsd_weight,
+            ood_head_only=ood_head_only,
         )
 
         # Validate

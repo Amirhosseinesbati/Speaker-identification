@@ -1637,6 +1637,15 @@ def get_dataloaders(
     consistency_pairing = str(
         consistency_cfg.get("pairing", "clean_aug")
     ).lower().strip()
+    ood_jsd_cfg = (
+        (((config.get("training", {}).get("loss", {}) or {})
+          .get("ood", {}) or {}).get("clean_aug_jsd", {}) or {})
+    )
+    ood_jsd_enabled = bool(ood_jsd_cfg.get("enabled", False))
+    ood_jsd_weight = float(ood_jsd_cfg.get("weight", 0.0))
+    ood_jsd_type = str(
+        ood_jsd_cfg.get("type", "target_clean_aug_bernoulli_jsd")
+    ).lower().strip()
     if consistency_enabled and consistency_weight <= 0:
         raise ValueError(
             "training.loss.consistency.enabled requires a positive weight"
@@ -1649,6 +1658,16 @@ def get_dataloaders(
         raise ValueError(
             "training.loss.consistency.pairing must be clean_aug or "
             "cross_file_batch"
+        )
+    if ood_jsd_type != "target_clean_aug_bernoulli_jsd":
+        raise ValueError(
+            "Only training.loss.ood.clean_aug_jsd.type="
+            "target_clean_aug_bernoulli_jsd is supported"
+        )
+    if not np.isfinite(ood_jsd_weight) or ood_jsd_weight < 0.0:
+        raise ValueError(
+            "training.loss.ood.clean_aug_jsd.weight must be finite and "
+            "non-negative"
         )
     known_sampling_cfg = data_cfg.get("known_sampling", {}) or {}
     pair_known_files = bool(known_sampling_cfg.get("pair_files", False))
@@ -1739,7 +1758,7 @@ def get_dataloaders(
         short_audio_mode=audio_cfg.get("short_audio_mode", "pad"),
         return_clean_aug_pair=(
             consistency_enabled and consistency_pairing == "clean_aug"
-        ),
+        ) or ood_jsd_enabled,
     )
 
     val_dataset = SpeakerDataset(
