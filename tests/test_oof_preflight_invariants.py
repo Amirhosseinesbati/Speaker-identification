@@ -13,3 +13,10 @@ def test_reproduction_families_are_pinned_and_inter_class_is_disabled():
             is False
             for config in resolved
         )
+        if family is FAMILIES["no_proto"]:
+            assert all(
+                config["training"]["early_stopping_start_epoch"]
+                == config["training"]["freeze_epochs"] + 1
+                == 21
+                for config in resolved
+            )

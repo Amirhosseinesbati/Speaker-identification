@@ -30,8 +30,10 @@ from src.experiment_config import load_profile  # noqa: E402
 
 FAMILIES = {
     "no_proto": {
-        "profiles": [f"p0-campp-no-proto-repro-oof-f{i}" for i in range(3)],
-        "invariant_sha256": "e72025a9feadbf884294679e9947e01a242f0cf94ebed910e4d0a7bc7d61f938",
+        "profiles": [
+            f"p0-campp-no-proto-repro-es21-oof-f{i}" for i in range(3)
+        ],
+        "invariant_sha256": "3220bc14bd729ff199db908c9cf1b65ab9d8457e81be4d0cd278d1bb86ec4b0d",
         "baseline": ROOT / "checkpoints" / "campp_best (4).pt",
         "baseline_sha256": "92893c7642901dc2e1bc4eb1d70d9b51c8ed7b03c286b0c89f7340a46475ad40",
     },
@@ -63,6 +65,9 @@ BASELINE_ALLOWED_PATTERNS = (
     "mlops.tracking.password",
     "training.seed",
     "training.deterministic_algorithms",
+    # Operational safeguard added after the first two engineering-invalid
+    # epochs: patience must not be consumed while the encoder is frozen.
+    "training.early_stopping_start_epoch",
     # Explicit default added by the known-first implementation; ``metric`` is
     # exactly the pre-existing 446+k behavior of both baseline checkpoints.
     "model.speaker_target_scope",
@@ -158,6 +163,11 @@ def verify(skip_checkpoints: bool = False) -> dict:
                 "split_seed": config["data"]["split"].get("seed") == 42,
                 "training_seed": config["training"].get("seed") == 42,
                 "deterministic": config["training"].get("deterministic_algorithms") is True,
+                "early_stopping_after_freeze": (
+                    config["training"].get("freeze_epochs") == 20
+                    and config["training"].get("early_stopping_start_epoch") == 21
+                    and config["training"].get("early_stopping_patience") == 20
+                ),
                 "cluster_path": config["model"].get("unknown_cluster_path") == expected_cluster,
                 "hardware_mode": config["hardware"].get("mode") == "vastai_3060",
                 "batch_size": config["hardware"]["profiles"]["vastai_3060"].get("batch_size") == 16,
