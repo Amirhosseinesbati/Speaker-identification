@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -121,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-name", default="speaker-identification")
     parser.add_argument("--started-after-ms", type=int)
     parser.add_argument("--env-file", type=Path)
+    parser.add_argument("--output", type=Path)
     return parser
 
 
@@ -135,13 +137,17 @@ def main() -> int:
         experiment_name=args.experiment_name,
         started_after_ms=args.started_after_ms,
     )
-    print(
-        json.dumps(
-            audit_run(client, run_id),
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
+    encoded = json.dumps(
+        audit_run(client, run_id),
+        ensure_ascii=False,
+        indent=2,
+    ) + "\n"
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = args.output.with_suffix(args.output.suffix + ".tmp")
+        temporary.write_text(encoded, encoding="utf-8")
+        os.replace(temporary, args.output)
+    print(encoded, end="")
     return 0
 
 

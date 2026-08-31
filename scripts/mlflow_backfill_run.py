@@ -639,6 +639,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Verify only path and byte size; default also downloads and hashes every file.",
     )
+    parser.add_argument(
+        "--summary-output",
+        type=Path,
+        help="Atomically persist the final dry-run or verified recovery summary.",
+    )
     return parser
 
 
@@ -646,7 +651,15 @@ def main() -> int:
     args = build_parser().parse_args()
     load_tracking_environment(args.env_file)
     result = backfill(args)
-    print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+    encoded = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    if args.summary_output:
+        args.summary_output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = args.summary_output.with_suffix(
+            args.summary_output.suffix + ".tmp"
+        )
+        temporary.write_text(encoded, encoding="utf-8")
+        os.replace(temporary, args.summary_output)
+    print(encoded, end="", flush=True)
     return 0
 
 
