@@ -251,6 +251,41 @@ def test_scheduler_no_warmup_per_group_floor():
     assert math.isclose(optimizer.param_groups[1]["lr"], 3e-4 * 0.05, rel_tol=1e-6)
 
 
+def test_exponential_scheduler_reaches_paper_endpoint_for_every_group():
+    optimizer = _two_group_optimizer()
+    cfg = {
+        "schedule": "exponential",
+        "warmup_ratio": 0.0,
+        "min_lr_ratio": 0.25,
+        "epochs": 10,
+    }
+    scheduler = build_scheduler(optimizer, cfg, cfg["epochs"])
+    enc_lrs = []
+    head_lrs = []
+    for _ in range(cfg["epochs"]):
+        optimizer.step()
+        scheduler.step()
+        enc_lrs.append(optimizer.param_groups[0]["lr"])
+        head_lrs.append(optimizer.param_groups[1]["lr"])
+
+    assert all(b < a for a, b in zip(enc_lrs, enc_lrs[1:]))
+    assert all(b < a for a, b in zip(head_lrs, head_lrs[1:]))
+    assert math.isclose(enc_lrs[-1], 1e-5 * 0.25, rel_tol=1e-6)
+    assert math.isclose(head_lrs[-1], 3e-4 * 0.25, rel_tol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        {"schedule": "exponential", "warmup_ratio": 0.1, "min_lr_ratio": 0.25},
+        {"schedule": "exponential", "warmup_ratio": 0.0, "min_lr_ratio": 0.0},
+    ],
+)
+def test_exponential_scheduler_rejects_ambiguous_protocol(cfg: dict) -> None:
+    with pytest.raises(ValueError):
+        build_scheduler(_two_group_optimizer(), cfg, 10)
+
+
 # ── PrototypicalLoss ──
 
 def test_prototypical_loss_functional():

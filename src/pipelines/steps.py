@@ -63,6 +63,7 @@ from src.training_utils import (
     seed_everything,
 )
 from src.heads import ood_head_enabled
+from src.adaptive_margin import build_duration_adaptive_margin
 
 
 # ─────────────────────────────────────────────────────────
@@ -760,6 +761,20 @@ def train_model(
             "data.known_sampling.pair_files=true"
         )
     hw_profile = get_active_profile(config)
+    adaptive_margin = build_duration_adaptive_margin(config)
+    disable_train_augmentation = bool(
+        (train_cfg.get("adaptive_margin", {}) or {}).get(
+            "disable_augmentation", False
+        )
+    ) if adaptive_margin is not None else False
+    if adaptive_margin is not None:
+        print(
+            "  🧭 D-ALMFT active: "
+            f"duration={adaptive_margin.min_duration_seconds:.1f}-"
+            f"{adaptive_margin.max_duration_seconds:.1f}s, "
+            f"margin={adaptive_margin.min_margin:.3f}-"
+            f"{adaptive_margin.max_margin:.3f}, augmentation=off"
+        )
 
     # ── Filter short/corrupted files (min_valid_duration) ──
     min_valid_duration = audio_cfg.get("min_valid_duration", 0.0)
@@ -818,6 +833,8 @@ def train_model(
             (consistency_enabled and consistency_pairing == "clean_aug")
             or ood_jsd_enabled
         ),
+        return_source_duration=adaptive_margin is not None,
+        apply_augmentation=not disable_train_augmentation,
     )
     val_dataset = SpeakerDataset(
         df=val_df,
@@ -1126,6 +1143,9 @@ def train_model(
             ood_jsd_enabled=ood_jsd_enabled,
             ood_jsd_weight=ood_jsd_weight,
             ood_head_only=ood_head_only,
+            adaptive_margin=adaptive_margin,
+            training_seed=int(train_cfg.get("seed", 42)),
+            epoch=epoch,
         )
         # Validate + competition metric (Macro-F1 over all 447 classes)
         val_metrics = validate_epoch(model, val_loader, criterion, device)
@@ -1238,6 +1258,13 @@ def train_model(
             "head_lr": head_lr,
             "encoder_lr": encoder_lr if encoder_lr is not None else 0.0,
         }, step=epoch)
+        if adaptive_margin is not None:
+            _mlflow_log_metrics({
+                "train_adaptive_duration_seconds": train_metrics[
+                    "adaptive_duration_seconds"
+                ],
+                "train_adaptive_margin": train_metrics["adaptive_margin"],
+            }, step=epoch)
 
         # Print progress
         print(f"\n  Epoch {epoch:2d}/{train_cfg['epochs']} — "
@@ -1250,6 +1277,12 @@ def train_model(
             print(f"  EMA (independent) — MacroF1: {ema_val_metrics['macro_f1']:.4f} | "
                   f"Known: {ema_val_metrics['known_acc']:.4f} | "
                   f"OOD-F1: {ema_val_metrics['ood_f1']:.4f}")
+        if adaptive_margin is not None:
+            print(
+                "  D-ALMFT — mean effective duration: "
+                f"{train_metrics['adaptive_duration_seconds']:.3f}s | "
+                f"mean margin: {train_metrics['adaptive_margin']:.4f}"
+            )
 
         # Materialise the complete current-epoch row before checkpointing.  A
         # supervisor timeout can otherwise leave the selected checkpoint with

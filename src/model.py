@@ -88,6 +88,7 @@ class TwoHeadedSpeakerModel(nn.Module):
         waveforms: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
         return_embedding: bool = False,
+        speaker_margins: Optional[torch.Tensor] = None,
     ):
         """
         Args:
@@ -97,6 +98,9 @@ class TwoHeadedSpeakerModel(nn.Module):
             return_embedding: also return the L2-normalised speaker embedding
                        (ArcFace projection, or pooled features for linear head) —
                        used by the prototypical loss.
+            speaker_margins: optional scalar or per-sample ArcFace margins for
+                       adaptive large-margin fine-tuning. Ignored by heads that
+                       do not expose a ``margins`` argument.
 
         Returns:
             ood_logit:      (batch, 1)  — raw logit (sigmoid → P(unknown))
@@ -139,7 +143,10 @@ class TwoHeadedSpeakerModel(nn.Module):
                 remapped = torch.zeros_like(labels)
                 mask_in_head = (labels > 0) & (labels <= self.num_known_speakers)
                 remapped[mask_in_head] = labels[mask_in_head] - 1
-                speaker_logits = self.head_speaker(pooled, labels=remapped)
+                kwargs = {"labels": remapped}
+                if speaker_margins is not None and "margins" in sig.parameters:
+                    kwargs["margins"] = speaker_margins
+                speaker_logits = self.head_speaker(pooled, **kwargs)
             else:
                 speaker_logits = self.head_speaker(pooled)
         else:

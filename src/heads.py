@@ -8,6 +8,7 @@ Classes:
 """
 
 from abc import ABC, abstractmethod
+import math
 from typing import Optional
 
 import torch
@@ -138,7 +139,6 @@ class ArcFaceHead(nn.Module):
         self.s = scale
 
         # Pre-compute constants for cos(theta + m)
-        import math
         self.cos_m = math.cos(margin)
         self.sin_m = math.sin(margin)
         self.th = math.cos(math.pi - margin)
@@ -159,6 +159,7 @@ class ArcFaceHead(nn.Module):
         self,
         embeddings: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
+        margins: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -166,6 +167,9 @@ class ArcFaceHead(nn.Module):
             labels:     (batch,) — speaker labels (0..num_classes-1), REQUIRED for
                         training (ArcFace needs labels to apply margin).
                         If None, returns cosine logits without margin (for inference).
+            margins:    Optional scalar or ``(batch,)`` angular margins. This is
+                        used by duration/similarity-adaptive LMFT. It is ignored
+                        at inference and defaults to the fixed configured margin.
 
         Returns:
             logits: (batch, num_classes) — margin-adjusted logits (training)
@@ -184,16 +188,43 @@ class ArcFaceHead(nn.Module):
             # Inference mode: return cosine logits (will apply softmax externally)
             return cosine * self.s
 
-        # Training mode: apply angular margin
+        # Training mode: apply angular margin. Standard ArcFace uses the fixed
+        # pre-computed constants. ALMFT supplies one margin per sample (or a
+        # scalar batch margin), in which case the same monotonic ArcFace formula
+        # is evaluated dynamically without mutating the head configuration.
+        if margins is None:
+            cos_m = self.cos_m
+            sin_m = self.sin_m
+            th = self.th
+            mm = self.mm
+        else:
+            margin = torch.as_tensor(
+                margins, dtype=cosine.dtype, device=cosine.device
+            )
+            if margin.ndim == 0:
+                margin = margin.expand(cosine.shape[0])
+            if margin.ndim != 1 or margin.shape[0] != cosine.shape[0]:
+                raise ValueError(
+                    "margins must be a scalar or shaped (batch,), got "
+                    f"{tuple(margin.shape)} for batch={cosine.shape[0]}."
+                )
+            if bool(((margin < 0) | (margin >= math.pi / 2)).any().item()):
+                raise ValueError("ArcFace margins must satisfy 0 <= margin < pi/2.")
+            margin = margin.unsqueeze(1)
+            cos_m = torch.cos(margin)
+            sin_m = torch.sin(margin)
+            th = torch.cos(math.pi - margin)
+            mm = torch.sin(math.pi - margin) * margin
+
         # sin(theta) = sqrt(1 - cos^2(theta))
         sine = torch.sqrt((1.0 - cosine.pow(2)).clamp(0, 1))
 
         # cos(theta + m) = cos(theta)*cos(m) - sin(theta)*sin(m)
-        phi = cosine * self.cos_m - sine * self.sin_m
+        phi = cosine * cos_m - sine * sin_m
 
         # Numerical stability: where cos(theta) > cos(pi - m),
         # use cos(theta) - m*sin(pi - m) instead for monotonicity
-        phi = torch.where(cosine > self.th, phi, cosine - self.mm)
+        phi = torch.where(cosine > th, phi, cosine - mm)
 
         # One-hot encode labels
         one_hot = torch.zeros_like(cosine)

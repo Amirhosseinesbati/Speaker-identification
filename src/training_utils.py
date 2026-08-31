@@ -253,6 +253,9 @@ def build_scheduler(
       - ``"cosine"`` (default): linear warmup over ``warmup_ratio`` of epochs,
         then cosine anneal; each param group anneals to its own
         ``base_lr * min_lr_ratio``.
+      - ``"exponential"``: exponentially anneal every parameter group from
+        its own base LR to ``base_lr * min_lr_ratio`` at ``num_epochs``.  This
+        is the schedule used by the published ALMFT fine-tuning protocol.
       - ``"cosine_warm_restarts"``: the legacy 3-epoch warmup + warm-restarts
         (kept for backward compatibility with existing checkpoints).
 
@@ -261,6 +264,19 @@ def build_scheduler(
     schedule = str(train_cfg.get("schedule", "cosine")).lower().strip()
     warmup_ratio = float(train_cfg.get("warmup_ratio", 0.0))
     min_lr_ratio = float(train_cfg.get("min_lr_ratio", 0.0))
+
+    if schedule == "exponential":
+        if warmup_ratio != 0.0:
+            raise ValueError(
+                "The exponential schedule does not use warmup; set "
+                "training.warmup_ratio=0."
+            )
+        if not (0.0 < min_lr_ratio <= 1.0):
+            raise ValueError(
+                "The exponential schedule requires 0 < min_lr_ratio <= 1."
+            )
+        gamma = min_lr_ratio ** (1.0 / max(1, int(num_epochs)))
+        return torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
 
     if schedule == "cosine_warm_restarts":
         warmup_epochs = max(1, int(train_cfg.get("warmup_epochs", 3)))

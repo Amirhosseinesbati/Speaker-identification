@@ -1102,6 +1102,8 @@ class SpeakerDataset(Dataset):
         speech_relative_db: float = 35.0,
         short_audio_mode: str = "pad",
         return_clean_aug_pair: bool = False,
+        return_source_duration: bool = False,
+        apply_augmentation: bool = True,
     ):
         self.df = df.reset_index(drop=True)
         self.audio_dir = Path(audio_dir)
@@ -1119,18 +1121,19 @@ class SpeakerDataset(Dataset):
         self.speech_relative_db = float(speech_relative_db)
         self.short_audio_mode = str(short_audio_mode)
         self.return_clean_aug_pair = bool(return_clean_aug_pair)
+        self.return_source_duration = bool(return_source_duration)
+        self.apply_augmentation = bool(augment and apply_augmentation)
 
-        if self.return_clean_aug_pair and not self.augment:
+        if self.return_clean_aug_pair and not self.apply_augmentation:
             raise ValueError(
-                "return_clean_aug_pair requires augment=True (training only)"
+                "return_clean_aug_pair requires enabled training augmentation"
             )
         if self.return_clean_aug_pair and self.mixup_alpha > 0:
             raise ValueError(
                 "Paired clean/aug views are incompatible with mixup_alpha > 0: "
                 "the clean teacher view must retain one speaker identity"
             )
-
-        if self.augment:
+        if self.apply_augmentation:
             self.augmentor = AudioAugmentation(sample_rate, self.augmentation)
 
     def __len__(self) -> int:
@@ -1143,9 +1146,11 @@ class SpeakerDataset(Dataset):
 
         # Load FULL audio (no crop — windowing happens below)
         waveform = self._load_audio(audio_path)
+        source_duration = float(waveform.size(-1)) / float(self.target_sr)
 
         # MixUp: mix with another random sample (OOD regularization)
-        if self.mixup_alpha > 0 and self.augment and torch.rand(1).item() < 0.5:
+        if (self.mixup_alpha > 0 and self.apply_augmentation
+                and torch.rand(1).item() < 0.5):
             other_idx = torch.randint(0, len(self.df), (1,)).item()
             other_row = self.df.iloc[other_idx]
             other_path = self.audio_dir / other_row["audio_file"]
@@ -1167,6 +1172,8 @@ class SpeakerDataset(Dataset):
         else:
             windows = self._eval_windows(waveform)
 
+        if self.return_source_duration:
+            return windows, label, torch.tensor(source_duration, dtype=torch.float32)
         return windows, label
 
     def _train_windows(self, waveform: torch.Tensor):
@@ -1200,7 +1207,7 @@ class SpeakerDataset(Dataset):
                 from src.audio_windows import fit_short_audio
                 w = fit_short_audio(w, T, mode=self.short_audio_mode)
             clean = w.clone() if self.return_clean_aug_pair else None
-            if self.augment:
+            if self.apply_augmentation:
                 augmentation_source = clean.clone() if clean is not None else w
                 w = self.augmentor(augmentation_source)
                 # TimeStretch / PitchShift can change the window length
@@ -1626,6 +1633,7 @@ def get_dataloaders(
 
     audio_cfg = config["audio"]
     data_cfg = config["data"]
+    train_cfg = config.get("training", {}) or {}
     hw_profile = get_active_profile(config)
     consistency_cfg = (
         ((config.get("training", {}).get("loss", {}) or {})
@@ -1678,6 +1686,16 @@ def get_dataloaders(
             "data.known_sampling.pair_files=true"
         )
 
+    adaptive_cfg = train_cfg.get("adaptive_margin", {}) or {}
+    adaptive_duration_enabled = (
+        bool(adaptive_cfg.get("enabled", False))
+        and str(adaptive_cfg.get("strategy", "duration_linear")).lower().strip()
+        == "duration_linear"
+    )
+    disable_train_augmentation = bool(
+        adaptive_cfg.get("disable_augmentation", False)
+    ) if adaptive_duration_enabled else False
+
     batch_size = hw_profile["batch_size"]
     num_workers = hw_profile["num_workers"]
 
@@ -1688,6 +1706,9 @@ def get_dataloaders(
     print(f"  Batch size: {batch_size} | Workers: {num_workers}")
     print(f"  Sample rate: {audio_cfg['sample_rate']} | "
           f"Duration: {audio_cfg['duration_seconds']}s")
+    if adaptive_duration_enabled:
+        print("  🧭 D-ALMFT: source-duration receipts enabled; "
+              f"augmentation={'off' if disable_train_augmentation else 'on'}")
 
     min_valid_duration = audio_cfg.get("min_valid_duration", 0.0)
 
@@ -1759,6 +1780,8 @@ def get_dataloaders(
         return_clean_aug_pair=(
             consistency_enabled and consistency_pairing == "clean_aug"
         ) or ood_jsd_enabled,
+        return_source_duration=adaptive_duration_enabled,
+        apply_augmentation=not disable_train_augmentation,
     )
 
     val_dataset = SpeakerDataset(

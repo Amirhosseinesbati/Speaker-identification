@@ -1,0 +1,112 @@
+_meta:
+  name: p7-campp-known446-ood-dalmft-paper-oof-f0
+  base: default_config.yaml
+experiment:
+  priority: P7-METHOD-INTEGRITY-GATE
+  family: campp-known446-ood-duration-adaptive-lmft
+  purpose: >-
+    Fold-0 method-integrity test of duration-adaptive large-margin fine-tuning
+    (D-ALMFT, Zhang et al., ICASSP 2023, DOI
+    10.1109/ICASSP49357.2023.10094744). This is a distinct hypothesis from the
+    rejected historical margin-only LMFT run.
+  scientific_scope: >-
+    Reproduce the causal D-ALMFT components: second-stage warm start; random
+    1-6 second chunks; a linear 0.2-0.5 AAM margin; no train augmentation;
+    full-network fine-tuning; and a 10-epoch exponential 1e-4 to 2.5e-5 LR.
+    Retain the competition-specific binary OOD head, loss weighting, AdamW,
+    scale=30 and Raw probability-average decision policy as explicit task
+    adaptations rather than claiming a literal VoxCeleb reproduction.
+  prior_reclassification: >-
+    p2-campp-known446-ood-lmft-m05-fixed30-oof-f0 tested a fixed 8-second,
+    augmentation-on, last-block-only, very-low-LR margin change. Its failure
+    closes that recipe, not the method-faithful D-ALMFT family.
+  expected_decision: >-
+    Reject the family on Fold 0 unless Raw probability-average Macro-F1 gains
+    at least 0.002 while Known Accuracy and OOD-F1 each fall by no more than
+    0.001. Passing authorizes only the same preregistered recipe on Fold 1/2;
+    it never authorizes leaderboard tuning or a submission by itself.
+  preregistered_baseline:
+    profile: p0-campp-known446-ood-control-oof-f0
+    checkpoint: checkpoints/p0-campp-known446-ood-control-oof-f0/campp_best_raw.pt
+    checkpoint_sha256: f50f67f549b913b57111043b43daca1ff8bcbbf49bebe5dccab91ade8b19ae0d
+    epoch: 112
+    raw_probability_macro_f1: 0.9469211906147802
+    known_accuracy: 0.9573991031390134
+    ood_f1: 0.9586206896551724
+  preregistered_gate:
+    min_macro_f1_gain: 0.002
+    max_known_accuracy_drop: 0.001
+    max_ood_f1_drop: 0.001
+    require_raw_probability_average: true
+    duration_diagnostics:
+      bins_seconds: [0.0, 2.0, 6.0, .inf]
+      report_known_to_unknown_errors: true
+      report_unknown_to_known_errors: true
+      tune_on_bins: false
+    expansion_if_passed: same_recipe_folds_1_and_2_only
+    later_folds_automatic: true
+    leaderboard_tuning: false
+data:
+  clean_duplicates: true
+  split: {scheme: kfold, folds: 3, fold: 0, seed: 42}
+model:
+  encoder_type: campp
+  competition_num_known: 446
+  num_unknown_clusters: 554
+  unknown_cluster_path: data/processed/unknown_clusters_oof_f0.json
+  speaker_target_scope: known
+  ood_head: true
+  speaker_head_type: arcface
+  speaker_head_config:
+    arcface: {embedding_dim: 192, margin: 0.2, scale: 30.0}
+  encoder_config:
+    campp: {freeze_encoder: false, unfreeze_last_n_blocks: 0}
+audio:
+  # The paper samples one random training segment per utterance. Validation
+  # remains the locked eight-window competition policy.
+  num_train_windows: 1
+  speech_aware_crop_probability: 0.0
+  eval_speech_aware: true
+  max_eval_windows: 8
+  short_audio_mode: pad
+hardware:
+  mode: vastai_3090_campp
+  profiles:
+    vastai_3090_campp:
+      batch_size: 48
+      description: RTX 3090 D-ALMFT; one variable-duration train chunk
+      device: cuda
+      mixed_precision: true
+      num_workers: 8
+logging:
+  checkpoint_dir: checkpoints/p7-campp-known446-ood-dalmft-paper-oof-f0
+  log_dir: logs/p7-campp-known446-ood-dalmft-paper-oof-f0
+training:
+  seed: 42
+  deterministic_algorithms: true
+  warm_start_checkpoint: checkpoints/p0-campp-known446-ood-control-oof-f0/campp_best_raw.pt
+  epochs: 10
+  freeze_epochs: 0
+  # The cited method defines a complete 10-epoch second stage. The horizon is
+  # short and causal, so metric early stopping would invalidate the protocol.
+  early_stopping_patience: 0
+  learning_rate: 0.0001
+  encoder_lr: 0.0001
+  weight_decay: 0.0001
+  schedule: exponential
+  warmup_ratio: 0.0
+  min_lr_ratio: 0.25
+  ema_enabled: false
+  adaptive_margin:
+    enabled: true
+    strategy: duration_linear
+    disable_augmentation: true
+    min_duration_seconds: 1.0
+    max_duration_seconds: 6.0
+    min_margin: 0.2
+    max_margin: 0.5
+    seed_offset: 73921
+  loss:
+    speaker: {type: ce, label_smoothing: 0.05, weight: 0.85}
+    ood: {type: bce, pos_weight: 1.0, weight: 0.15}
+    proto: {enabled: false}

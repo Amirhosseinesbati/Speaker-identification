@@ -21,6 +21,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
+
+from src.adaptive_margin import (
+    DurationAdaptiveMargin,
+    build_duration_adaptive_margin,
+)
 import yaml
 from tqdm import tqdm
 
@@ -864,6 +869,9 @@ def train_epoch(
     ood_jsd_enabled: bool = False,
     ood_jsd_weight: float = 0.0,
     ood_head_only: bool = False,
+    adaptive_margin: Optional[DurationAdaptiveMargin] = None,
+    training_seed: int = 42,
+    epoch: int = 0,
 ) -> Dict[str, float]:
     """
     Train for one epoch with AMP.
@@ -965,10 +973,18 @@ def train_epoch(
     total_loss_inter_class_weighted = 0.0
     total_loss_ood_jsd = 0.0
     total_loss_ood_jsd_weighted = 0.0
+    total_adaptive_duration = 0.0
+    total_adaptive_margin = 0.0
+    total_adaptive_windows = 0
     num_batches = len(dataloader)
 
     progress_bar = tqdm(dataloader, desc="  Train", leave=False)
-    for step, (batch_views, labels) in enumerate(progress_bar):
+    for step, batch in enumerate(progress_bar):
+        if len(batch) == 3:
+            batch_views, labels, source_durations = batch
+        else:
+            batch_views, labels = batch
+            source_durations = None
         clean_waveforms = None
         if isinstance(batch_views, dict):
             if consistency_pairing != "clean_aug":
@@ -994,7 +1010,6 @@ def train_epoch(
                 raise ValueError(
                     "consistency_weight > 0 requires paired clean/augmented dataset views"
                 )
-
         waveforms = waveforms.to(device, non_blocking=True)
         if clean_waveforms is not None:
             clean_waveforms = clean_waveforms.to(device, non_blocking=True)
@@ -1003,6 +1018,18 @@ def train_epoch(
                     "Clean and augmented view tensors must have identical shapes"
                 )
         labels = labels.to(device, non_blocking=True)
+        if source_durations is not None:
+            source_durations = source_durations.to(device, non_blocking=True)
+        if adaptive_margin is not None and source_durations is None:
+            raise RuntimeError(
+                "D-ALMFT requires source durations from SpeakerDataset; enable "
+                "training.adaptive_margin before constructing the dataloader."
+            )
+        if adaptive_margin is not None and clean_waveforms is not None:
+            raise ValueError(
+                "D-ALMFT disables augmentation and cannot be combined with "
+                "paired clean/augmented views."
+            )
 
         optimizer.zero_grad()
 
@@ -1033,13 +1060,42 @@ def train_epoch(
         step_loss_ood_jsd = 0.0
         step_loss_ood_jsd_weighted = 0.0
         for w in range(W):
-            wf = waveforms[:, w] if W > 1 else waveforms  # (B, 1, T)
+            # SpeakerDataset retains a window axis even for W=1. Always remove
+            # it before the encoder, otherwise the singleton case stays 4-D.
+            wf = waveforms[:, w] if waveforms.dim() == 4 else waveforms
+            speaker_margins = None
+            if adaptive_margin is not None:
+                sampled_duration = adaptive_margin.sample_duration_seconds(
+                    training_seed=training_seed,
+                    epoch=epoch,
+                    step=step,
+                    window_index=w,
+                )
+                wf = adaptive_margin.crop_batch(
+                    wf,
+                    sampled_duration,
+                    training_seed=training_seed,
+                    epoch=epoch,
+                    step=step,
+                    window_index=w,
+                )
+                effective_duration = torch.minimum(
+                    source_durations.float(),
+                    torch.full_like(source_durations.float(), sampled_duration),
+                )
+                speaker_margins = adaptive_margin.margin_for_duration(
+                    effective_duration
+                ).to(device=device)
+                total_adaptive_duration += float(effective_duration.mean().item())
+                total_adaptive_margin += float(speaker_margins.mean().item())
+                total_adaptive_windows += 1
 
             clean_embedding = None
             clean_ood_logits = None
             if clean_waveforms is not None:
                 clean_wf = (
-                    clean_waveforms[:, w] if W > 1 else clean_waveforms
+                    clean_waveforms[:, w]
+                    if clean_waveforms.dim() == 4 else clean_waveforms
                 )
                 was_training = model.training
                 model.eval()
@@ -1076,10 +1132,21 @@ def train_epoch(
                         and consistency_pairing == "cross_file_batch")
                 )
                 if need_embedding:
-                    ood_logits, speaker_logits, emb = model(
-                        wf, labels=labels, return_embedding=True)
+                    if speaker_margins is None:
+                        ood_logits, speaker_logits, emb = model(
+                            wf, labels=labels, return_embedding=True)
+                    else:
+                        ood_logits, speaker_logits, emb = model(
+                            wf, labels=labels, return_embedding=True,
+                            speaker_margins=speaker_margins)
                 else:
-                    ood_logits, speaker_logits = model(wf, labels=labels)
+                    if speaker_margins is None:
+                        ood_logits, speaker_logits = model(
+                            wf, labels=labels)
+                    else:
+                        ood_logits, speaker_logits = model(
+                            wf, labels=labels,
+                            speaker_margins=speaker_margins)
                 inter_class_loss = (
                     exclusive_inter_class_angular_loss(
                         model.head_speaker.weight
@@ -1257,7 +1324,7 @@ def train_epoch(
 
     primary_weight_sum = criterion.ood_weight + criterion.speaker_weight
     mean_primary_loss = total_loss_primary / num_batches
-    return {
+    metrics = {
         "loss": total_loss / num_batches,
         "loss_primary": mean_primary_loss,
         "loss_primary_normalized": (
@@ -1290,6 +1357,14 @@ def train_epoch(
         "ood_acc": total_ood_acc / num_batches,
         "speaker_acc": total_speaker_acc / num_batches,
     }
+    if total_adaptive_windows:
+        metrics.update({
+            "adaptive_duration_seconds": (
+                total_adaptive_duration / total_adaptive_windows
+            ),
+            "adaptive_margin": total_adaptive_margin / total_adaptive_windows,
+        })
+    return metrics
 
 
 # ─────────────────────────────────────────────────────────
@@ -1463,6 +1538,15 @@ def train(config_path: str = "configs/default_config.yaml"):
     # ── DataLoaders ──
     print("\n  [1/4] Preparing DataLoaders...")
     train_loader, val_loader, class_map = get_dataloaders(config)
+    adaptive_margin = build_duration_adaptive_margin(config)
+    if adaptive_margin is not None:
+        print(
+            "  🧭 D-ALMFT active: "
+            f"duration={adaptive_margin.min_duration_seconds:.1f}-"
+            f"{adaptive_margin.max_duration_seconds:.1f}s, "
+            f"margin={adaptive_margin.min_margin:.3f}-"
+            f"{adaptive_margin.max_margin:.3f}"
+        )
     # Metric labels may span 446+k identities while the known-first primary
     # speaker head intentionally spans only the 446 competition identities.
     num_known = len(class_map) - 1
@@ -1621,6 +1705,9 @@ def train(config_path: str = "configs/default_config.yaml"):
             ood_jsd_enabled=ood_jsd_enabled,
             ood_jsd_weight=ood_jsd_weight,
             ood_head_only=ood_head_only,
+            adaptive_margin=adaptive_margin,
+            training_seed=int(train_cfg.get("seed", 42)),
+            epoch=epoch,
         )
 
         # Validate
