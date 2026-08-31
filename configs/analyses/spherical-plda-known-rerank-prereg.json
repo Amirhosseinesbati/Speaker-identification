@@ -1,0 +1,37 @@
+{
+  "analysis_id": "spherical-plda-known-rerank-v1",
+  "status": "preregistered_before_any_iaaa_output",
+  "scientific_question": "Can a method-faithful two-scalar spherical-PLDA multi-enrollment backend correct known-speaker ranking errors while leaving the validated CAM++ known/unknown decision exactly unchanged?",
+  "literature": {
+    "paper": "Sholokhov et al., Probabilistic Back-ends for Online Speaker Recognition and Clustering, ICASSP 2023",
+    "arxiv": "https://arxiv.org/abs/2302.09523",
+    "official_code": "https://github.com/sholokhovalexey/online-speaker-clustering",
+    "method": "center with the target fold training mean, length-normalize, fit spherical PLDA b/w by 10 EM iterations, then perform set-to-vector LLR scoring"
+  },
+  "fixed_phase_one_policy": {
+    "fit_rows": "known-speaker embeddings from the matching training split only",
+    "fit_validation_rows": false,
+    "em_iterations": 10,
+    "learned_parameters": ["between_class_variance_b", "within_class_variance_w"],
+    "speaker_decision": "argmax spherical-PLDA LLR over the 446 known enrollment sets",
+    "ood_decision": "copy the raw probability-average CAM++ argmax decision exactly; rerank only rows already predicted as known",
+    "threshold_search": false,
+    "fusion_search": false,
+    "leaderboard_used_for_selection": false
+  },
+  "phase_one_gate": {
+    "all_checks_required": true,
+    "macro_f1_gain_min": 0.001,
+    "known_accuracy_gain_min": 0.001,
+    "ood_f1_absolute_delta_max": 1e-12,
+    "rescued_errors_must_exceed_introduced_errors": true,
+    "single_fold_submission_authorized": false,
+    "passing_action": "Run the identical fixed reranker across every available seed42 OOF fold and require positive Macro-F1 direction on all three folds before designing a separately preregistered leave-one-fold-out OOD calibration.",
+    "failing_action": "Reject spherical-PLDA known reranking for that representation; do not tune EM iterations, centering, score scale, thresholds, or blends on the failed target fold."
+  },
+  "runtime": {
+    "heavy_compute_location": "Vast.ai instance 48886926",
+    "expected_incremental_cost_usd": 0.05,
+    "may_run_during_training": false
+  }
+}
