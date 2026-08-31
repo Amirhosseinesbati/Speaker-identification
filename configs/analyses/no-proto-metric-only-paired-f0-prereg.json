@@ -1,0 +1,49 @@
+{
+  "analysis_id": "no-proto-metric-only-paired-f0-v1",
+  "status": "preregistered_before_clean_paired_oof",
+  "scientific_question": "Was the historical local 0.9734 result caused by reproducible error complementarity between the no-prototype and metric-only CAM++ recipes rather than by one strong model?",
+  "split": "kfold/folds3/fold0/seed42",
+  "primary_model": {
+    "profile": "p0-campp-no-proto-repro-es21-oof-f0",
+    "selection": "best completed raw probability-average Macro-F1 under the original early-stopping contract",
+    "checkpoint_sha256": "resolved_only_after_the_active_run_finishes"
+  },
+  "secondary_model": {
+    "name": "historical_metric_only_fold0",
+    "checkpoint_sha256": "ead5d1b7af290271db356c9ecf5e980513693d1f793a0c989e98094e8f0f37e5",
+    "checkpoint_epoch": 45,
+    "embedded_val_macro_f1": 0.9372307578530886,
+    "class_map_size": 1001,
+    "ood_head": false,
+    "prototype_loss": "metric_only"
+  },
+  "locked_primary_fusion": {
+    "method": "probability_average",
+    "weights": [0.5, 0.5],
+    "search_dimensions": 0,
+    "checkpoint_or_epoch_search": false
+  },
+  "historical_diagnostic_only": {
+    "method": "probability_average",
+    "weights": [0.6, 0.4],
+    "historical_claimed_fold0_macro_f1": 0.9734066888749531,
+    "selection_contaminated_for_fold0_gate": true,
+    "reason": "The 0.6/0.4 weight was selected on Fold 0 and cannot authorize Fold 1/2 or a submission."
+  },
+  "expansion_gate": {
+    "all_checks_required": true,
+    "equal_fusion_macro_f1_min": 0.96,
+    "macro_f1_gain_vs_better_single_min": 0.002,
+    "known_accuracy_delta_vs_better_single_min": -0.001,
+    "ood_f1_delta_vs_better_single_min": -0.001,
+    "rescue_rate_vs_better_single_min": 0.25,
+    "rescued_errors_must_exceed_introduced_errors": true,
+    "passing_action": "Produce Fold-1/Fold-2 OOF for both recipes and select any final weight only by leave-one-fold-out cross-fit.",
+    "failing_action": "Close this historical pair and advance to method-faithful D-ALMFT Fold 0."
+  },
+  "prohibitions": [
+    "No weight sweep, threshold tuning, checkpoint search, or leaderboard selection.",
+    "The historical 0.6/0.4 result is diagnostic only.",
+    "Fold 0 alone never authorizes a submission."
+  ]
+}
