@@ -1,0 +1,65 @@
+{
+  "analysis_id": "no-proto-es21-f0-locked-lme20-v1",
+  "status": "preregistered_before_lme20_output",
+  "scientific_question": "Does the historical no-prototype representation become a stronger system than the current CAM++ Fold-0 control when evaluated with the already-locked multi-enrollment LME20 backend?",
+  "source_run": {
+    "profile": "p0-campp-no-proto-repro-es21-oof-f0",
+    "fold": 0,
+    "split": "kfold/folds3/fold0/seed42",
+    "git_commit": "17fb617c7a62c950a6bf301d8b1cb78a76ca0d0e",
+    "config_sha256": "61115705cdd83e3bc3bbd913ccb1e79d7d96f379ce6d126beddf3d98cb9ba00b",
+    "checkpoint_selection": "best completed epoch by raw probability-average Macro-F1 under the run's original early-stopping contract",
+    "raw_primary_gate_unchanged": {
+      "macro_f1_min": 0.96,
+      "note": "The LME20 audit cannot retroactively make the source run pass its separate raw-reproduction gate."
+    }
+  },
+  "locked_backend": {
+    "variant": "logmeanexp_b20",
+    "beta": 20.0,
+    "alpha": 0.15,
+    "kappa": 16.0,
+    "tau": 0.0,
+    "lambda_unknown": 0.75,
+    "search_dimensions": 0,
+    "target_fold_used_for_tuning": false,
+    "leaderboard_used_for_selection": false
+  },
+  "reference": {
+    "control_fold0_raw_macro_f1": 0.9469211906147802,
+    "control_fold0_locked_lme20_macro_f1": 0.9611456662702521,
+    "control_fold0_locked_lme20_known_accuracy": 0.9585201793721974,
+    "control_fold0_locked_lme20_ood_f1": 0.9765572672471534,
+    "official_threefold_package_macro_f1": 0.9667174284505605,
+    "official_threefold_package_sha256": "3653d0f4e54433f4096a521d814d5e606c5b9314fefa986b315b7623143a7494"
+  },
+  "expansion_gate": {
+    "all_checks_required": true,
+    "candidate_macro_f1_min": 0.9611456662702521,
+    "macro_f1_gain_vs_own_raw_min": 0.002,
+    "known_accuracy_delta_vs_own_raw_min": -0.001,
+    "ood_f1_delta_vs_own_raw_min": -0.001,
+    "rescue_rate_min": 0.25,
+    "rescued_errors_must_exceed_introduced_errors": true,
+    "single_fold_submission_authorized": false,
+    "passing_action": "Run the identical no-prototype recipe on Fold 1 and Fold 2, one at a time, and require a stable three-fold aggregate before packaging.",
+    "failing_action": "Close the historical no-prototype branch and advance to the preregistered method-faithful D-ALMFT Fold-0 experiment."
+  },
+  "observed_before_backend_audit": {
+    "latest_completed_epoch": 85,
+    "best_raw_probability_macro_f1": 0.9479404639802496,
+    "best_epoch": 85,
+    "locked_lme20_output_seen": false
+  },
+  "runtime": {
+    "heavy_compute_location": "Vast.ai instance 48886926",
+    "max_runtime_hours": 1.0,
+    "max_incremental_cost_usd": 0.18,
+    "second_training_run_allowed_during_audit": false
+  },
+  "prohibitions": [
+    "No beta, alpha, kappa, tau, unknown multiplier, checkpoint, threshold, or blend search.",
+    "No leaderboard result may select a parameter or checkpoint.",
+    "No Fold-1/Fold-2 run and no submission may be authorized by Fold 0 alone unless every expansion-gate check passes."
+  ]
+}
