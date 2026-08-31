@@ -23,6 +23,8 @@ MAXIMUM_KNOWN_OR_OOD_DROP = 0.001
 EXPECTED_P5_EPOCHS = 104
 EXPECTED_P5_METRIC_KEYS = 33
 EXPECTED_MLFLOW_RUN_ID = "481c3e23724546078c64c5be7d884d69"
+EXPECTED_P5_APPEND_ARTIFACT_COUNT = 15
+EXPECTED_P5_APPEND_BYTES = 284_943_767
 REQUIRED_MLFLOW_ARTIFACTS = {
     "models/campp_best.pt",
     "models/campp_best_raw.pt",
@@ -41,6 +43,49 @@ REQUIRED_MLFLOW_ARTIFACTS = {
     "analysis/p5_terminal104_audit.json",
     "provenance/p5_terminal_artifact_manifest.json",
 }
+
+
+def _recovery_summary_verified(summary: dict[str, Any]) -> bool:
+    """Accept either the legacy backfill or immutable-append receipt.
+
+    Both utilities perform remote SHA-256 verification.  The append receipt is
+    additionally pinned to the exact P5 payload and unique manifest path so a
+    verified receipt for an unrelated analysis cannot activate P6.
+    """
+
+    legacy_verified = (
+        summary.get("status") == "verified"
+        and summary.get("remote_run_id") == EXPECTED_MLFLOW_RUN_ID
+        and summary.get("remote_run_status_after") == "FINISHED"
+        and not summary.get("missing_paths")
+        and not summary.get("size_mismatches")
+        and not summary.get("hash_mismatches")
+        and not summary.get("missing_params")
+        and not summary.get("missing_metrics")
+        and summary.get("hash_verification") == "sha256"
+    )
+    if legacy_verified:
+        return True
+
+    direct_artifacts = REQUIRED_MLFLOW_ARTIFACTS - {
+        "provenance/p5_terminal_artifact_manifest.json"
+    }
+    verified_direct_paths = set(summary.get("uploaded", [])) | set(
+        summary.get("already_identical", [])
+    )
+    return (
+        summary.get("status") == "verified"
+        and summary.get("remote_run_id") == EXPECTED_MLFLOW_RUN_ID
+        and summary.get("remote_run_status") == "FINISHED"
+        and int(summary.get("artifact_count", -1))
+        == EXPECTED_P5_APPEND_ARTIFACT_COUNT
+        and int(summary.get("artifact_bytes", -1)) == EXPECTED_P5_APPEND_BYTES
+        and verified_direct_paths == direct_artifacts
+        and summary.get("manifest_remote_path")
+        == "provenance/p5_terminal_artifact_manifest.json"
+        and _sha_present(summary.get("manifest_sha256"))
+        and not summary.get("hash_mismatches")
+    )
 
 
 def _sha_present(value: Any) -> bool:
@@ -97,17 +142,7 @@ def audit_activation(
     )
     artifact_paths = set(mlflow.get("artifact_paths", []))
     missing_artifacts = sorted(REQUIRED_MLFLOW_ARTIFACTS - artifact_paths)
-    backfill_verified = (
-        backfill.get("status") == "verified"
-        and backfill.get("remote_run_id") == EXPECTED_MLFLOW_RUN_ID
-        and backfill.get("remote_run_status_after") == "FINISHED"
-        and not backfill.get("missing_paths")
-        and not backfill.get("size_mismatches")
-        and not backfill.get("hash_mismatches")
-        and not backfill.get("missing_params")
-        and not backfill.get("missing_metrics")
-        and backfill.get("hash_verification") == "sha256"
-    )
+    backfill_verified = _recovery_summary_verified(backfill)
 
     checks = {
         "p5_score_gate_failed": p5.get("decision") == "reject",

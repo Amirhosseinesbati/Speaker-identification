@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from scripts.audit_p6_activation import (
+    EXPECTED_P5_APPEND_ARTIFACT_COUNT,
+    EXPECTED_P5_APPEND_BYTES,
     EXPECTED_MLFLOW_RUN_ID,
     REQUIRED_MLFLOW_ARTIFACTS,
     audit_activation,
@@ -89,3 +91,43 @@ def test_activation_blocks_budget_or_guardrail_failure() -> None:
     assert report["passed"] is False
     assert report["checks"]["known_guardrail"] is False
     assert report["checks"]["pair_budget_available"] is False
+
+
+def test_activation_accepts_exact_immutable_append_receipt() -> None:
+    p5, mlflow, _, campaign, budget = _fixture()
+    manifest = "provenance/p5_terminal_artifact_manifest.json"
+    append = {
+        "status": "verified",
+        "remote_run_id": EXPECTED_MLFLOW_RUN_ID,
+        "remote_run_status": "FINISHED",
+        "artifact_count": EXPECTED_P5_APPEND_ARTIFACT_COUNT,
+        "artifact_bytes": EXPECTED_P5_APPEND_BYTES,
+        "uploaded": sorted(REQUIRED_MLFLOW_ARTIFACTS - {manifest}),
+        "already_identical": [],
+        "manifest_remote_path": manifest,
+        "manifest_sha256": "b" * 64,
+        "hash_mismatches": {},
+    }
+    report = audit_activation(p5, mlflow, append, campaign, budget)
+    assert report["passed"] is True
+    assert report["checks"]["mlflow_backfill_hash_verified"] is True
+
+
+def test_activation_rejects_append_receipt_for_different_payload() -> None:
+    p5, mlflow, _, campaign, budget = _fixture()
+    manifest = "provenance/p5_terminal_artifact_manifest.json"
+    append = {
+        "status": "verified",
+        "remote_run_id": EXPECTED_MLFLOW_RUN_ID,
+        "remote_run_status": "FINISHED",
+        "artifact_count": EXPECTED_P5_APPEND_ARTIFACT_COUNT,
+        "artifact_bytes": EXPECTED_P5_APPEND_BYTES - 1,
+        "uploaded": sorted(REQUIRED_MLFLOW_ARTIFACTS - {manifest}),
+        "already_identical": [],
+        "manifest_remote_path": manifest,
+        "manifest_sha256": "b" * 64,
+        "hash_mismatches": {},
+    }
+    report = audit_activation(p5, mlflow, append, campaign, budget)
+    assert report["passed"] is False
+    assert report["checks"]["mlflow_backfill_hash_verified"] is False
