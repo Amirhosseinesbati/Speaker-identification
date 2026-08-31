@@ -1,0 +1,25 @@
+_meta: {name: p0-campp-no-proto-repro-es21-oof-f2, base: default_config.yaml, baseline_checkpoint_sha256: 92893c7642901dc2e1bc4eb1d70d9b51c8ed7b03c286b0c89f7340a46475ad40}
+experiment: {priority: P0, family: campp-no-proto-repro-es21-oof, purpose: Controlled three-fold reproduction with post-unfreeze early stopping}
+data: {clean_duplicates: true, split: {scheme: kfold, folds: 3, fold: 2, seed: 42}}
+model:
+  encoder_type: campp
+  num_unknown_clusters: 554
+  unknown_cluster_path: data/processed/unknown_clusters_oof_f2.json
+  ood_head: true
+  speaker_head_type: arcface
+  encoder_config: {campp: {freeze_encoder: false, unfreeze_last_n_blocks: 2}}
+audio: {num_train_windows: 8, speech_aware_crop_probability: 0.75, eval_speech_aware: true}
+hardware: {mode: vastai_3060}
+logging: {checkpoint_dir: checkpoints/p0-campp-no-proto-repro-es21-oof-f2, log_dir: logs/p0-campp-no-proto-repro-es21-oof-f2}
+training:
+  seed: 42
+  deterministic_algorithms: true
+  epochs: 200
+  freeze_epochs: 20
+  early_stopping_start_epoch: 21
+  early_stopping_patience: 20
+  encoder_lr: 1.0e-05
+  loss:
+    speaker: {type: ce, label_smoothing: 0.05, weight: 0.85}
+    ood: {type: bce, pos_weight: 1.0, weight: 0.15}
+    proto: {enabled: false}
