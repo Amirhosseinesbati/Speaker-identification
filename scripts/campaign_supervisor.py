@@ -40,6 +40,42 @@ MLFLOW_SECRET_KEYS = {
 }
 
 
+ANALYSIS_SPECS = {
+    "frozen-eres2netv2-lme20-threefold-v1": {
+        "config": Path(
+            "configs/analyses/frozen-eres2netv2-lme20-threefold.json"
+        ),
+        "script": Path("scripts/audit_frozen_frontend_lme20.py"),
+        "output": Path(
+            "reports/generated/frozen_eres2netv2_lme20_threefold.json"
+        ),
+        "receipt_paths": (
+            Path("scripts/audit_frozen_frontend_lme20.py"),
+            Path(
+                "reports/generated/"
+                "FROZEN_ERES2NETV2_LME20_THREEFOLD_PREREGISTRATION_2026-08-31.md"
+            ),
+            Path(
+                "data/experiments/frozen_eres2netv2_lme20/"
+                "frozen_eres2netv2_embeddings.npz"
+            ),
+            Path(
+                "data/experiments/frozen_eres2netv2_lme20/"
+                "frozen_eres2netv2_embeddings.json"
+            ),
+            Path(
+                "data/experiments/frozen_eres2netv2_lme20/"
+                "frozen_eres2netv2_lme20_oof.npz"
+            ),
+            Path(
+                "data/experiments/frozen_eres2netv2_lme20/"
+                "frozen_eres2netv2_lme20_receipt.json"
+            ),
+        ),
+    },
+}
+
+
 def _dotenv_value(raw_value: str) -> str:
     """Decode the common quoted-value subset without evaluating shell syntax."""
     value = raw_value.strip()
@@ -317,6 +353,130 @@ def cmd_run(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def cmd_analyze(args: argparse.Namespace) -> int:
+    """Run one allowlisted preregistered analysis under campaign guards."""
+    store = _store(args)
+    state = store.load()
+    if state["status"] not in {"READY", "ANALYZING"}:
+        raise CampaignStateError(
+            f"cannot start an analysis from state {state['status']}"
+        )
+    spec = ANALYSIS_SPECS.get(args.analysis)
+    if spec is None:
+        raise CampaignStateError(f"unknown preregistered analysis: {args.analysis}")
+    commit = _assert_reproducible_checkout(args.allow_dirty)
+
+    config_path = ROOT / spec["config"]
+    script_path = ROOT / spec["script"]
+    output_path = ROOT / spec["output"]
+    if not config_path.is_file() or not script_path.is_file():
+        raise CampaignStateError(
+            f"analysis inputs are incomplete for {args.analysis}"
+        )
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    if config.get("analysis_id") != args.analysis:
+        raise CampaignStateError("analysis id does not match its locked config")
+    timeout_hours = float(config["runtime"]["timeout_hours"])
+    maximum_cost = float(config["runtime"]["maximum_incremental_cost_usd"])
+    if timeout_hours <= 0.0 or maximum_cost <= 0.0:
+        raise CampaignStateError("analysis runtime guard must be positive")
+    projected_cost = timeout_hours * float(state["policy"]["hourly_rate_usd"])
+    if projected_cost > maximum_cost + 1e-12:
+        raise CampaignStateError(
+            "analysis preregistration cost guard rejected the operation: "
+            f"projected=${projected_cost:.3f}, locked=${maximum_cost:.3f}"
+        )
+    reserve_hours = min(timeout_hours, state["policy"]["max_run_hours"])
+    store.assert_budget(reserve_hours=reserve_hours)
+
+    config_sha = _sha256(config_path)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    log_path = LOG_DIR / f"{stamp}_{args.analysis}.log"
+    command = [
+        sys.executable, "-X", "utf8", str(script_path),
+        "--analysis-config", str(config_path),
+        "--output", str(output_path),
+    ]
+    run_record = {
+        "profile": args.analysis,
+        "stage": "analysis",
+        "git_commit": commit,
+        "config_sha256": config_sha,
+        "log_path": str(log_path.relative_to(ROOT)),
+        "command": command,
+    }
+    store.start_run(run_record)
+    _notify(
+        "🔬 تحلیل ازپیش‌ثبت‌شده آغاز شد\n\n"
+        f"شناسه: {args.analysis}\n"
+        f"نسخهٔ کد: {commit[:8]}\n"
+        f"سقف زمان: {timeout_hours:g} ساعت\n"
+        f"سقف هزینهٔ افزوده: ${maximum_cost:.2f}\n\n"
+        "هیچ پارامتر یا variant بر اساس نتیجه انتخاب نخواهد شد."
+    )
+
+    timeout_seconds = 3600 * min(
+        timeout_hours, float(state["policy"]["max_run_hours"]),
+    )
+    exit_code = 1
+    reason = "analysis failed before process start"
+    try:
+        with log_path.open("w", encoding="utf-8", newline="\n") as log_handle:
+            process = subprocess.run(
+                command,
+                cwd=ROOT,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                env=_worker_environment(),
+                timeout=timeout_seconds,
+                check=False,
+            )
+        exit_code = int(process.returncode)
+        reason = (
+            f"analysis {args.analysis} completed"
+            if exit_code == 0
+            else f"analysis {args.analysis} failed with exit code {exit_code}"
+        )
+    except subprocess.TimeoutExpired:
+        exit_code = 124
+        reason = f"analysis {args.analysis} exceeded its time limit"
+
+    extra_paths = (
+        config_path,
+        log_path,
+        output_path,
+        *(ROOT / path for path in spec["receipt_paths"]),
+    )
+    artifacts = _artifact_receipts(args.analysis, extra_paths=extra_paths)
+    success = exit_code == 0
+    final_state = store.finish_run(
+        success=success,
+        exit_code=exit_code,
+        reason=reason,
+        artifacts=artifacts,
+    )
+    budget = store.budget_snapshot(final_state)
+    if success:
+        _notify(
+            "✅ تحلیل frozen ERes2NetV2 کامل شد\n\n"
+            f"شناسه: {args.analysis}\n"
+            f"artifactهای receipt: {len(artifacts)}\n"
+            f"هزینهٔ تخمینی کمپین: ${budget['estimated_cost_usd']:.2f}\n\n"
+            "نتیجه فقط طبق gate ازپیش‌ثبت‌شده تفسیر می‌شود."
+        )
+    else:
+        _notify(
+            "⛔ تحلیل frozen ERes2NetV2 متوقف شد\n\n"
+            f"شناسه: {args.analysis}\n"
+            f"کد خروج: {exit_code}\n"
+            f"گزارش: {log_path.relative_to(ROOT)}\n\n"
+            "هیچ اجرای جایگزینی خودکار آغاز نشده است."
+        )
+    print(json.dumps(_status_payload(store), indent=2, ensure_ascii=False))
+    return exit_code
+
+
 def cmd_wait(args: argparse.Namespace) -> int:
     store = _store(args)
     state = store.load()
@@ -399,6 +559,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--no-mlflow", action="store_true")
     run.add_argument("--allow-dirty", action="store_true")
     run.set_defaults(func=cmd_run)
+
+    analyze = subparsers.add_parser("analyze")
+    analyze.add_argument("--analysis", required=True, choices=sorted(ANALYSIS_SPECS))
+    analyze.add_argument("--allow-dirty", action="store_true")
+    analyze.set_defaults(func=cmd_analyze)
 
     wait = subparsers.add_parser("wait-leaderboard")
     wait.add_argument("--artifact", required=True)

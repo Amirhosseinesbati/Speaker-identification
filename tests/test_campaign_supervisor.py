@@ -2,6 +2,7 @@ from pathlib import Path
 
 import scripts.campaign_supervisor as supervisor
 from scripts.campaign_supervisor import (
+    ANALYSIS_SPECS,
     _artifact_receipts,
     _dotenv_value,
     build_parser,
@@ -61,3 +62,11 @@ def test_set_max_run_hours_cli_requires_value_and_reason() -> None:
     assert args.hours == 15.0
     assert args.reason == "locked treatment runtime contract"
     assert args.func is supervisor.cmd_set_max_run_hours
+
+
+def test_analyze_cli_accepts_only_allowlisted_preregistration() -> None:
+    analysis = "frozen-eres2netv2-lme20-threefold-v1"
+    assert analysis in ANALYSIS_SPECS
+    args = build_parser().parse_args(["analyze", "--analysis", analysis])
+    assert args.analysis == analysis
+    assert args.func is supervisor.cmd_analyze

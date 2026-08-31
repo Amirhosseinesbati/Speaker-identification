@@ -1,0 +1,58 @@
+{
+  "analysis_id": "frozen-eres2netv2-lme20-threefold-v1",
+  "scientific_change": "replace or equally fuse only the frozen prototype evidence while retaining the locked CAM++ head and decision policy",
+  "encoder": {
+    "type": "eres2net",
+    "local_path": "weights/eres2net",
+    "checkpoint": "weights/eres2net/eres2netv2.ckpt",
+    "checkpoint_sha256": "0eb4057106b2573dd7b132cf0c36273ab29afd192c1610f80baa9c556dbb963c",
+    "freeze_encoder": true,
+    "embedding_dim": 192
+  },
+  "data": {
+    "folds": 3,
+    "seed": 42,
+    "expected_unique_oof_files": 4447,
+    "baseline_cache_dir": "data/experiments/campp_control_centroid_crossfit"
+  },
+  "locked_decision": {
+    "lme_beta": 20.0,
+    "alpha_head": 0.15,
+    "prototype_kappa": 16.0,
+    "ood_tau": 0.5,
+    "unknown_weight": 0.75,
+    "primary_variant": "equal_campp_eres_prototype_evidence",
+    "diagnostic_variants": [
+      "eres_prototype_only",
+      "campp_head_eres_prototype"
+    ]
+  },
+  "baseline": {
+    "oof_macro_f1": 0.9633564052154656,
+    "leaderboard_macro_f1": 0.9667174284505605,
+    "leaderboard_accuracy": 0.9667036625971143,
+    "submission_sha256": "3653d0f4e54433f4096a521d814d5e606c5b9314fefa986b315b7623143a7494"
+  },
+  "gate": {
+    "minimum_aggregate_macro_gain": 0.001,
+    "maximum_aggregate_known_accuracy_drop": 0.001,
+    "maximum_aggregate_ood_f1_drop": 0.001,
+    "minimum_positive_folds": 2,
+    "minimum_fold_macro_delta": -0.001,
+    "minimum_baseline_error_rescue_rate": 0.15,
+    "require_more_rescued_than_introduced": true
+  },
+  "runtime": {
+    "batch_size": 48,
+    "num_workers": 8,
+    "timeout_hours": 1.5,
+    "maximum_incremental_cost_usd": 0.3,
+    "device": "cuda"
+  },
+  "selection_prohibitions": {
+    "leaderboard_tuning": true,
+    "same_fold_parameter_selection": true,
+    "posthoc_variant_promotion": true,
+    "titanet": true
+  }
+}
