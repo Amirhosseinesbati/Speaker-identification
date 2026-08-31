@@ -108,3 +108,49 @@ def test_max_run_hours_policy_update_rejects_active_or_invalid_change(tmp_path):
     store.start_run({"profile": "p0", "git_commit": "abc123"})
     with pytest.raises(CampaignStateError, match="no experiment is active"):
         store.set_max_run_hours(15.0, "must not mutate an active run")
+
+
+def test_campaign_cost_policy_update_is_atomic_evented_and_idempotent(tmp_path):
+    store = _store(tmp_path)
+    initial = _initialize(store)
+    assert initial["policy"]["max_campaign_cost_usd"] == 10.0
+
+    updated = store.set_max_campaign_cost(50.0, "user raised campaign budget")
+    assert updated["policy"]["max_campaign_cost_usd"] == 50.0
+    assert updated["revision"] == 1
+    events = [json.loads(line) for line in store.event_path.read_text().splitlines()]
+    assert events[-1]["event_type"] == "POLICY_UPDATED"
+    assert events[-1]["metadata"] == {
+        "field": "max_campaign_cost_usd",
+        "previous": 10.0,
+        "updated": 50.0,
+    }
+
+    repeated = store.set_max_campaign_cost(50.0, "safe retry")
+    assert repeated["revision"] == 1
+    assert len(store.event_path.read_text().splitlines()) == len(events)
+
+
+def test_campaign_cost_policy_rejects_active_invalid_or_spent_change(tmp_path):
+    store = _store(tmp_path)
+    _initialize(store)
+    with pytest.raises(CampaignStateError, match="positive"):
+        store.set_max_campaign_cost(0.0, "invalid")
+    with pytest.raises(CampaignStateError, match="reason"):
+        store.set_max_campaign_cost(20.0, "")
+
+    state = store.load()
+    state["billing_started_at_utc"] = (
+        datetime.now(timezone.utc) - timedelta(hours=60.0)
+    ).isoformat()
+    store._persist(state)
+    with pytest.raises(CampaignStateError, match="already estimated spend"):
+        store.set_max_campaign_cost(5.0, "cannot undercut spend")
+
+    state = store.load()
+    state["billing_started_at_utc"] = datetime.now(timezone.utc).isoformat()
+    store._persist(state)
+    store.transition("READY", "preflight passed")
+    store.start_run({"profile": "p0", "git_commit": "abc123"})
+    with pytest.raises(CampaignStateError, match="no experiment is active"):
+        store.set_max_campaign_cost(50.0, "must not mutate active run")

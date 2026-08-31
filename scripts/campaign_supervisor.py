@@ -199,6 +199,12 @@ def cmd_set_max_run_hours(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_set_max_campaign_cost(args: argparse.Namespace) -> int:
+    state = _store(args).set_max_campaign_cost(args.cost_usd, args.reason)
+    print(json.dumps(state, indent=2, ensure_ascii=False))
+    return 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     store = _store(args)
     state = store.load()
@@ -380,6 +386,11 @@ def build_parser() -> argparse.ArgumentParser:
     max_run_hours.add_argument("--hours", required=True, type=float)
     max_run_hours.add_argument("--reason", required=True)
     max_run_hours.set_defaults(func=cmd_set_max_run_hours)
+
+    max_campaign_cost = subparsers.add_parser("set-max-campaign-cost")
+    max_campaign_cost.add_argument("--cost-usd", required=True, type=float)
+    max_campaign_cost.add_argument("--reason", required=True)
+    max_campaign_cost.set_defaults(func=cmd_set_max_campaign_cost)
 
     run = subparsers.add_parser("run")
     run.add_argument("--profile", required=True)

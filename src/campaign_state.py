@@ -199,6 +199,52 @@ class CampaignStore:
         })
         return state
 
+    def set_max_campaign_cost(
+        self, cost_usd: float, reason: str,
+    ) -> dict[str, Any]:
+        """Atomically revise the total budget while no experiment is active.
+
+        The update is deliberately separate from scientific profiles: it
+        changes only the supervisor's operational spending guard.  Every
+        effective change is written to the append-only event ledger so a
+        larger budget cannot be introduced by an unaudited JSON edit.
+        """
+        state = self.load()
+        allowed = {
+            "PREFLIGHT", "READY", "ANALYZING", "CAMPAIGN_BLOCKED", "PAUSED",
+        }
+        if state["status"] not in allowed or state.get("current_run"):
+            raise CampaignStateError(
+                "max_campaign_cost can be changed only while no experiment "
+                "is active"
+            )
+        value = float(cost_usd)
+        if not value > 0.0:
+            raise CampaignStateError("max_campaign_cost must be positive")
+        if not str(reason).strip():
+            raise CampaignStateError("policy change reason must be non-empty")
+
+        spent = self.estimate_cost_usd(state)
+        if value < spent:
+            raise CampaignStateError(
+                "max_campaign_cost cannot be lower than already estimated "
+                f"spend: requested=${value:.3f}, spent=${spent:.3f}"
+            )
+        previous = float(state["policy"]["max_campaign_cost_usd"])
+        if value == previous:
+            return state
+        state["revision"] = int(state["revision"]) + 1
+        state["updated_at_utc"] = utc_now()
+        state["last_reason"] = str(reason).strip()
+        state["policy"]["max_campaign_cost_usd"] = value
+        self._persist(state)
+        self._append_event(state, "POLICY_UPDATED", state["last_reason"], {
+            "field": "max_campaign_cost_usd",
+            "previous": previous,
+            "updated": value,
+        })
+        return state
+
     def transition(
         self,
         target: str,
