@@ -5,6 +5,7 @@ import torch
 
 from scripts.audit_frozen_frontend_lme20 import (
     PRIMARY_VARIANT,
+    embedding_cache_file_domain,
     encode_multiwindow,
     evidence_variants,
     evaluate_gate,
@@ -43,6 +44,27 @@ def test_primary_evidence_is_fixed_equal_prototype_average():
     np.testing.assert_array_equal(primary[0], head)
     np.testing.assert_allclose(primary[1], 0.2)
     np.testing.assert_allclose(primary[2], [0.6, 0.4])
+
+
+def test_embedding_cache_includes_train_only_anchors_but_oof_stays_exact():
+    oofs = [
+        {"files": np.asarray(["a.wav", "b.wav"])},
+        {"files": np.asarray(["c.wav"])},
+    ]
+    artifacts = [
+        {"train_files": np.asarray(["b.wav", "c.wav", "anchor.wav"])},
+        {"train_files": np.asarray(["a.wav", "anchor.wav"])},
+    ]
+    oof_files, cache_files = embedding_cache_file_domain(
+        oofs,
+        artifacts,
+        expected_oof_files=3,
+        expected_cache_files=4,
+    )
+    np.testing.assert_array_equal(oof_files, ["a.wav", "b.wav", "c.wav"])
+    np.testing.assert_array_equal(
+        cache_files, ["a.wav", "anchor.wav", "b.wav", "c.wav"]
+    )
 
 
 def test_gate_requires_effect_guardrails_fold_stability_and_rescue():

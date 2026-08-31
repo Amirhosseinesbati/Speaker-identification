@@ -73,6 +73,37 @@ def digest_names(names: Iterable[str]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def embedding_cache_file_domain(
+    oofs: list[dict],
+    artifacts: list[dict],
+    *,
+    expected_oof_files: int,
+    expected_cache_files: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return exact OOF and OOF+enrollment domains with locked cardinality."""
+    oof_names = {
+        name for oof in oofs for name in oof["files"].astype(str).tolist()
+    }
+    if len(oof_names) != int(expected_oof_files):
+        raise RuntimeError(
+            f"Expected {expected_oof_files} OOF files, got {len(oof_names)}"
+        )
+    enrollment_names = {
+        name
+        for artifact in artifacts
+        for name in artifact["train_files"].astype(str).tolist()
+    }
+    cache_names = oof_names | enrollment_names
+    if len(cache_names) != int(expected_cache_files):
+        raise RuntimeError(
+            f"Expected {expected_cache_files} cache files, got {len(cache_names)}"
+        )
+    return (
+        np.asarray(sorted(oof_names), dtype=str),
+        np.asarray(sorted(cache_names), dtype=str),
+    )
+
+
 def resolve_repo_path(value: str | Path) -> Path:
     path = Path(value)
     return path if path.is_absolute() else ROOT / path
@@ -384,12 +415,12 @@ def main() -> int:
     oofs, artifacts, baseline_metadata = load_fold_inputs(
         args.checkpoint_root, baseline_cache_dir
     )
-    expected_count = int(config["data"]["expected_unique_oof_files"])
-    all_files = np.asarray(sorted({
-        name for oof in oofs for name in oof["files"].astype(str).tolist()
-    }), dtype=str)
-    if len(all_files) != expected_count:
-        raise RuntimeError(f"Expected {expected_count} OOF files, got {len(all_files)}")
+    oof_files, all_files = embedding_cache_file_domain(
+        oofs,
+        artifacts,
+        expected_oof_files=int(config["data"]["expected_unique_oof_files"]),
+        expected_cache_files=int(config["data"]["expected_embedding_cache_files"]),
+    )
 
     audio_contract, checkpoint_provenance = control_audio_contract(
         args.checkpoint_root
@@ -528,8 +559,9 @@ def main() -> int:
             "control_checkpoints": checkpoint_provenance,
             "baseline_cache_metadata": baseline_metadata,
             "frontend_cache": cache_metadata,
-            "oof_file_count": int(len(all_files_order)),
+            "oof_file_count": int(len(oof_files)),
             "oof_file_set_sha256": digest_names(all_files_order.astype(str)),
+            "embedding_cache_file_count": int(len(all_files)),
             "leaderboard_used_for_selection": False,
         },
         "folds": [{

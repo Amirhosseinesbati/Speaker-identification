@@ -29,8 +29,11 @@ under the exact clean three-Fold split?
 - Expected held-out union: exactly `4447` unique files with zero overlap.
 - Enrollment membership, known labels and 554 pseudo-unknown group ids come
   from the already hashed Control train artifacts for the matching Fold.
-- The union of held-out filenames is embedded once and indexed by filename;
-  each target Fold then uses only its own train-side enrollment rows.
+- The exact held-out union contains `4447` filenames.  The three immutable
+  enrollment artifacts additionally share four train-only anchors that are
+  deliberately never held out, so the frozen embedding cache contains exactly
+  `4451` unique filenames.  Evaluation remains restricted to the `4447` OOF
+  rows; each target Fold uses only its matching train-side enrollment rows.
 - The waveform/window policy is read from the immutable Control checkpoints
   and must be identical across all three Folds.
 - The official ERes2NetV2 checkpoint must match SHA256

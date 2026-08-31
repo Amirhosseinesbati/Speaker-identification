@@ -13,6 +13,7 @@
     "folds": 3,
     "seed": 42,
     "expected_unique_oof_files": 4447,
+    "expected_embedding_cache_files": 4451,
     "baseline_cache_dir": "data/experiments/campp_control_centroid_crossfit"
   },
   "locked_decision": {
