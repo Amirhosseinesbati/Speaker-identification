@@ -1,0 +1,60 @@
+{
+  "analysis_id": "no-proto-es21-metric-only-es21-paired-f0-v1",
+  "status": "preregistered_before_clean_metric_only_training",
+  "scientific_question": "Does a leak-free metric-only CAM++ reproduce the large fixed-fusion complementarity suggested by the contaminated historical checkpoint?",
+  "split": "kfold/folds3/fold0/seed42",
+  "primary_model": {
+    "profile": "p0-campp-no-proto-repro-es21-oof-f0",
+    "checkpoint_sha256": "4114c2fd20d42593d17ee1ff349f1303803a9066c96667c3574dbda86847c4bd",
+    "selection_epoch": 85,
+    "raw_probability_average_macro_f1": 0.9479404639802496
+  },
+  "secondary_model": {
+    "profile": "p0-campp-metric-only-repro-es21-oof-f0",
+    "selection": "best completed raw probability-average Macro-F1 after early_stopping_start_epoch=21 with patience=20",
+    "checkpoint_sha256": "resolved_only_after_training",
+    "ood_head": false,
+    "prototype_loss": "metric_only_margin_0.2",
+    "training_horizon": 200,
+    "freeze_epochs": 20
+  },
+  "locked_primary_fusion": {
+    "method": "probability_average",
+    "weights": [0.5, 0.5],
+    "search_dimensions": 0,
+    "checkpoint_or_epoch_search": false
+  },
+  "historical_forensic_only": {
+    "checkpoint_sha256": "ead5d1b7af290271db356c9ecf5e980513693d1f793a0c989e98094e8f0f37e5",
+    "aligned_rows": 1632,
+    "historical_train_in_sample_rows": 1285,
+    "historical_val_held_out_rows": 347,
+    "fixed_50_50_macro_f1": 0.9704147992894676,
+    "rescued_errors": 33,
+    "introduced_errors": 3,
+    "selection_or_gate_eligible": false,
+    "reason": "78.7 percent of the aligned target fold was used to train the historical checkpoint."
+  },
+  "expansion_gate": {
+    "all_checks_required": true,
+    "equal_fusion_macro_f1_min": 0.96,
+    "macro_f1_gain_vs_better_single_min": 0.002,
+    "known_accuracy_delta_vs_better_single_min": -0.001,
+    "ood_f1_delta_vs_better_single_min": -0.001,
+    "rescue_rate_vs_better_single_min": 0.25,
+    "rescued_errors_must_exceed_introduced_errors": true,
+    "passing_action": "Preregister and run Fold1/Fold2 for both recipes, then select any final fusion only by leave-one-fold-out cross-fit.",
+    "failing_action": "Close the metric-only pair and advance to the fixed spherical-PLDA known-identity rerank."
+  },
+  "stop_rules": {
+    "immediate": ["NaN", "OOM_recurrence", "split_or_class_map_mismatch", "artifact_corruption"],
+    "metric_early_stopping": "disabled through epoch20; active from epoch21 with patience20",
+    "maximum_training_epochs": 200,
+    "supervisor_timeout_hours": 8
+  },
+  "prohibitions": [
+    "No weight sweep, threshold tuning, checkpoint search, or leaderboard selection.",
+    "The contaminated historical 0.970415 forensic result cannot authorize Fold1/Fold2 or a submission.",
+    "Fold0 alone never authorizes a submission."
+  ]
+}
