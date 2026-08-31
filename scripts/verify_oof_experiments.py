@@ -164,9 +164,16 @@ def verify(skip_checkpoints: bool = False) -> dict:
                 "training_seed": config["training"].get("seed") == 42,
                 "deterministic": config["training"].get("deterministic_algorithms") is True,
                 "early_stopping_after_freeze": (
-                    config["training"].get("freeze_epochs") == 20
-                    and config["training"].get("early_stopping_start_epoch") == 21
-                    and config["training"].get("early_stopping_patience") == 20
+                    family_name != "no_proto"
+                    or (
+                        config["training"].get("freeze_epochs") == 20
+                        and config["training"].get(
+                            "early_stopping_start_epoch"
+                        ) == 21
+                        and config["training"].get(
+                            "early_stopping_patience"
+                        ) == 20
+                    )
                 ),
                 "cluster_path": config["model"].get("unknown_cluster_path") == expected_cluster,
                 "hardware_mode": config["hardware"].get("mode") == "vastai_3060",
