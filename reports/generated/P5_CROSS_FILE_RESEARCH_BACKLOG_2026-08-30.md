@@ -52,26 +52,55 @@ hypotheses if the complete P5 pair fails.
 
 ## Checkpoint-averaging evidence boundary
 
-A targeted SciSpace search during the locked P5 treatment retrieved Model
-Soups (Wortsman et al., ICML 2022, DOI `10.48550/arXiv.2203.05482`) as the
-closest primary evidence.  The paper averages independently fine-tuned models
-that remain in one low-error basin and reports that the resulting single model
-can improve robustness without ensemble inference cost.  The search did not
-retrieve a speaker-identification experiment establishing that the same claim
-holds for a Raw/EMA midpoint from one CAM++ trajectory under open-set
-channel/session shift; SciSpace's methodology-column lookup also returned no
-additional record for the paper.
+A targeted SciSpace search during the locked P5 treatment first retrieved
+Model Soups (Wortsman et al., ICML 2022, DOI
+`10.48550/arXiv.2203.05482`).  The paper averages independently fine-tuned
+models that remain in one low-error basin and reports that the resulting
+single model can improve robustness without ensemble inference cost.
+SciSpace's methodology-column lookup returned no additional record for the
+paper.
 
-This makes parameter averaging a distinct but weakly transferred hypothesis,
-not evidence for changing P5.  The campaign has already rejected fixed Raw/EMA
-probability fusion on all three Control folds, so neither that negative result
-nor the general Model Soups result can be silently reinterpreted as proof for
-or against a weight-space midpoint.  If the hypothesis is ever activated, it
-must be a separately preregistered, fixed `50/50` Raw/EMA parameter midpoint
-evaluated on all three locked Control folds with no coefficient search and the
-same Macro-F1, Known and OOD guardrails.  It cannot outrank the already locked
-P6 pair merely because it is cheap, and it cannot be selected from P5's
+A follow-up of a primary reference in the session-compensation literature then
+found direct speaker-verification evidence: Lin and Mak, *Robust Speaker
+Verification Using Deep Weight Space Ensemble* (IEEE/ACM TASLP 2023, DOI
+`10.1109/TASLP.2022.3233231`).  They linearly interpolate the embedding-network
+parameters of a base model and a low-learning-rate target-domain fine-tune and
+report gains for mixed text-dependent/text-independent, bilingual and
+cross-channel verification.  This is stronger mechanism evidence than the
+general Model Soups transfer.  It is not a fixed recipe, however: the paper
+evaluates ten interpolation coefficients from `0` to `1` in increments of
+`0.1` and selects target or balanced coefficients on independent validation
+sets.  Its classifier head is discarded before target contrastive fine-tuning
+and its decision backend is cosine or LDA/PLDA, unlike the coupled ArcFace,
+binary-OOD and LME20 path here.
+
+Parameter averaging is therefore a distinct but incompletely identified
+hypothesis, not evidence for changing P5.  The campaign has already rejected
+fixed Raw/EMA probability fusion on all three Control folds, so neither that
+negative result nor either weight-space paper can be silently reinterpreted as
+proof for or against a Raw/EMA weight midpoint.  More importantly, P3 exists
+only on Fold 0 and was not obtained by fine-tuning the Fold-0 Control
+checkpoint, while the available P3-to-P5 continuation path has no corresponding
+Fold-1/Fold-2 source models.  Selecting an interpolation coefficient on Fold 0
+would leak the diagnostic Fold into its own policy, and the remaining campaign
+budget cannot create the complete source/adaptation paths needed for a
+three-Fold cross-fit.  The candidate is therefore research-only under the
+current budget.  It cannot outrank the already locked P6 pair merely because a
+single midpoint inference would be cheap, and it cannot be selected from P5's
 observed trajectory.
+
+## Session-embedding compensation boundary
+
+Heo et al., *Rethinking Session Variability* (ICASSP 2024, DOI
+`10.1109/ICASSP48485.2024.10445987`) train a frozen-encoder auxiliary network
+with true same-session/different-session pairs; VoxCeleb video ids supply the
+session labels.  Their linear compensator weight is selected on VOiCES trials,
+and the nonlinear Q-stack is also trained on a separate VOiCES trial set.  The
+local competition data expose no authoritative session or channel id, and the
+campaign's acoustic proxies failed the earlier quality-aware decision gate.
+Consequently this method cannot be reproduced leakage-safely by relabeling
+duration, RMS or codec proxies as sessions.  It remains ineligible unless real
+session metadata is recovered from an authoritative source.
 
 ## Locked decision order after P5
 
