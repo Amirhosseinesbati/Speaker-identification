@@ -221,12 +221,18 @@ def _checkpoint_encoders(checkpoint_paths: List[str]) -> List[str]:
     return encoders
 
 
+def _checkpoint_prototype_names(checkpoint_paths: List[str]) -> List[str]:
+    """Return package-unique prototype keys aligned to checkpoint paths."""
+    return [_encoder_name(path) if path else "" for path in checkpoint_paths]
+
+
 def _load_prototypes(checkpoint_paths: List[str]) -> Optional[dict]:
     """Load packaged multi-enrollment artifacts, or return plain-head mode."""
     directory = PKG_DIR / "prototypes"
     if not directory.exists():
         return None
-    prototypes = load_prototypes(str(directory), _checkpoint_encoders(checkpoint_paths))
+    names = [name for name in _checkpoint_prototype_names(checkpoint_paths) if name]
+    prototypes = load_prototypes(str(directory), names)
     return prototypes or None
 
 
@@ -260,6 +266,7 @@ def predict(data_dir: str) -> np.ndarray:
     fusion_weights = json.loads(
         DEFAULT_FUSION_WEIGHTS.read_text(encoding="utf-8")
     )["weights"]
+    prototype_names = _checkpoint_prototype_names(checkpoint_path)
     prototypes = _load_prototypes(checkpoint_path)
 
     result = score_ensemble(
@@ -270,6 +277,7 @@ def predict(data_dir: str) -> np.ndarray:
         # Prototype and legacy centroid layers are intentionally exclusive.
         centroids=None if prototypes else _load_centroids(checkpoint_path),
         prototypes=prototypes,
+        prototype_names=prototype_names if prototypes else None,
         decision_params=_load_decision_params(),
     )
 

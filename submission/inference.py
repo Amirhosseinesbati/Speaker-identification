@@ -447,6 +447,7 @@ def score_ensemble(
     no_amp: bool = False,
     centroids: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None,
     prototypes: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None,
+    prototype_names: Optional[Sequence[str]] = None,
     decision_params: Optional[dict] = None,
 ) -> dict:
     """Score every file in ``data_dir`` and fuse the ensemble probabilities.
@@ -483,6 +484,8 @@ def score_ensemble(
 
     # ── Filter out zero-weight models (their output is multiplied by 0) ──
     if fusion_method == "weighted_average" and fusion_weights is not None:
+        if prototype_names is not None and len(prototype_names) != len(checkpoint_path):
+            raise RuntimeError("prototype_names must align with checkpoint_path")
         epsilon = 1e-8
         active = [i for i, w in enumerate(fusion_weights)
                   if w > epsilon and checkpoint_path[i] is not None]
@@ -492,6 +495,8 @@ def score_ensemble(
                   f"{len(active)} remaining")
             checkpoint_path = [checkpoint_path[i] for i in active]
             fusion_weights = [fusion_weights[i] for i in active]
+            if prototype_names is not None:
+                prototype_names = [prototype_names[i] for i in active]
             if not checkpoint_path:
                 raise RuntimeError(
                     "All fusion weights are zero — nothing to run. "
@@ -526,6 +531,11 @@ def score_ensemble(
             Path(c).name.replace("_best.pt", "")))
         for c, (_, _, cfg) in zip(checkpoint_path, models)
     ]
+    if prototype_names is None:
+        prototype_names = encoder_names
+    elif len(prototype_names) != len(models):
+        raise RuntimeError("prototype_names must align with active models")
+    prototype_names = list(prototype_names)
 
     # ── Decision-layer setup ──
     do_decision = centroids is not None and decision_params is not None
@@ -581,14 +591,17 @@ def score_ensemble(
         for mi, enc in enumerate(encoder_names):
             source = (
                 centroids.get(enc) if do_decision and centroids is not None
-                else prototypes.get(enc) if prototypes is not None else None
+                else prototypes.get(prototype_names[mi])
+                if prototypes is not None else None
             )
             if source is not None:
                 dim = int(source[0].shape[1])
                 all_model_embs[mi] = np.zeros((n_files, dim), dtype=np.float32)
     if do_prototype and len(all_model_embs) != len(models):
         missing = sorted(
-            enc for enc in encoder_names if prototypes is None or enc not in prototypes
+            name
+            for name in prototype_names
+            if prototypes is None or name not in prototypes
         )
         raise RuntimeError(f"Missing prototype artifacts for active encoders: {missing}")
 
@@ -716,7 +729,7 @@ def score_ensemble(
         p_weights /= p_weights.sum() + 1e-12
         probability_list, max_score_list = [], []
         for mi in all_model_embs:
-            enrollment, group_ids = prototypes[encoder_names[mi]]
+            enrollment, group_ids = prototypes[prototype_names[mi]]
             probability, max_score = prototype_logmeanexp_probs(
                 all_model_embs[mi], enrollment, group_ids, num_classes,
                 beta=beta, kappa=kappa,

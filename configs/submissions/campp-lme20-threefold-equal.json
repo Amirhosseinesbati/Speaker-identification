@@ -1,0 +1,60 @@
+{
+  "package_id": "campp-lme20-threefold-equal-v1",
+  "method": "weighted_average",
+  "encoder_names": [
+    "campp_lme20_f0",
+    "campp_lme20_f1",
+    "campp_lme20_f2"
+  ],
+  "weights": [
+    0.3333333333333333,
+    0.3333333333333333,
+    0.3333333333333333
+  ],
+  "models": [
+    {
+      "name": "campp-lme20-fold0-raw",
+      "source_checkpoint": "p0-campp-known446-ood-control-oof-f0/campp_best_raw.pt",
+      "checkpoint": "campp_lme20_f0_best.pt",
+      "base_encoder": "campp",
+      "prototype_key": "campp_lme20_f0",
+      "weight": 0.3333333333333333
+    },
+    {
+      "name": "campp-lme20-fold1-raw",
+      "source_checkpoint": "p0-campp-known446-ood-control-oof-f1/campp_best_raw.pt",
+      "checkpoint": "campp_lme20_f1_best.pt",
+      "base_encoder": "campp",
+      "prototype_key": "campp_lme20_f1",
+      "weight": 0.3333333333333333
+    },
+    {
+      "name": "campp-lme20-fold2-raw",
+      "source_checkpoint": "p0-campp-known446-ood-control-oof-f2/campp_best_raw.pt",
+      "checkpoint": "campp_lme20_f2_best.pt",
+      "base_encoder": "campp",
+      "prototype_key": "campp_lme20_f2",
+      "weight": 0.3333333333333333
+    }
+  ],
+  "use_decision_layer": false,
+  "use_open_set_rule": false,
+  "use_prototype_layer": true,
+  "prototype_sources": {
+    "campp_lme20_f0": "data/processed/campp_lme20_full_prototypes.npz",
+    "campp_lme20_f1": "data/processed/campp_lme20_full_prototypes_f1.npz",
+    "campp_lme20_f2": "data/processed/campp_lme20_full_prototypes_f2.npz"
+  },
+  "decision_config_source": "configs/submissions/campp-lme20-full-prototypes.decision.json",
+  "evidence": {
+    "selection": "single preregistered equal-weight three-fold bagging candidate",
+    "member_policy": "each member uses its own full-data LME20 prototype space",
+    "oof_limitation": "not estimable without leakage because non-held-out fold models trained on each target OOF row",
+    "leaderboard_tuning": false,
+    "prototype_sha256": {
+      "campp_lme20_f0": "48aee2c65b34b12e193a3eadfcfdf43b38eeef5514597c181da2cffcfc53c531",
+      "campp_lme20_f1": "6e19c32f094168f5dfcfbf61af84296a6d47e7535cf97e85d51d51a180e7a2bd",
+      "campp_lme20_f2": "23eba324cb02ed70158e610e1bd512d5bc2e3e5b210acb3053e00103fc8ffd7d"
+    }
+  }
+}

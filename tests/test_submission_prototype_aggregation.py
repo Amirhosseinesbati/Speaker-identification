@@ -77,3 +77,26 @@ def test_load_prototypes_validates_dense_ids_and_unit_norm(tmp_path) -> None:
     )
     with pytest.raises(RuntimeError, match="not dense"):
         load_prototypes(str(directory), ["campp"], expected_groups=3)
+
+
+def test_load_prototypes_keeps_same_encoder_fold_spaces_separate(tmp_path) -> None:
+    directory = tmp_path / "prototypes"
+    directory.mkdir()
+    speaker_ids = np.array([1, 2, 3], dtype=np.int64)
+    fold0 = np.eye(3, dtype=np.float32)
+    fold1 = np.roll(fold0, 1, axis=1).copy()
+    np.savez_compressed(
+        directory / "prototypes_campp_lme20_f0.npz",
+        embeddings=fold0,
+        speaker_ids=speaker_ids,
+    )
+    np.savez_compressed(
+        directory / "prototypes_campp_lme20_f1.npz",
+        embeddings=fold1,
+        speaker_ids=speaker_ids,
+    )
+    loaded = load_prototypes(
+        str(directory), ["campp_lme20_f0", "campp_lme20_f1"], expected_groups=3
+    )
+    np.testing.assert_array_equal(loaded["campp_lme20_f0"][0], fold0)
+    np.testing.assert_array_equal(loaded["campp_lme20_f1"][0], fold1)

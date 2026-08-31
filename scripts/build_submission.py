@@ -192,6 +192,10 @@ def _fusion_model_specs(fusion: dict, ckpt_src: Path) -> list[dict]:
                 "source_checkpoint": source,
                 "checkpoint": packaged,
                 "base_encoder": str(item.get("base_encoder") or "").strip(),
+                "prototype_key": str(
+                    item.get("prototype_key")
+                    or _encoder_from_checkpoint_name(packaged)
+                ),
                 "weight": float(item.get("weight", 0.0)),
             })
         return specs
@@ -211,6 +215,7 @@ def _fusion_model_specs(fusion: dict, ckpt_src: Path) -> list[dict]:
             "source_checkpoint": source,
             "checkpoint": f"{name}_best.pt",
             "base_encoder": str(name),
+            "prototype_key": str(name),
             "weight": float(weights[i]) if i < len(weights) else 0.0,
         })
     return specs
@@ -383,11 +388,11 @@ def build(skip_weights: bool, fusion_config: Path | None = None,
     # internal identity id.  The scorer performs log-mean-exp pooling at eval.
     prototype_sources = fw.get("prototype_sources") or {}
     if use_prototype_layer and not isinstance(prototype_sources, dict):
-        raise ValueError("prototype_sources must map encoder name to .npz source")
+        raise ValueError("prototype_sources must map prototype key to .npz source")
     proto_dst = SUB / "prototypes"
     proto_dst.mkdir(parents=True, exist_ok=True)
     wanted_prototypes = (
-        {f"prototypes_{enc}.npz" for enc in used_encoders}
+        {f"prototypes_{spec['prototype_key']}.npz" for spec in active_specs}
         if use_prototype_layer else set()
     )
     for stale in list(proto_dst.glob("*.npz")):
@@ -396,14 +401,19 @@ def build(skip_weights: bool, fusion_config: Path | None = None,
             print(f"  🧹 prototypes/{stale.name} removed (stale)")
     shipped_prototypes = 0
     if use_prototype_layer:
-        for enc in sorted(used_encoders):
-            configured = prototype_sources.get(enc)
+        seen_prototype_keys: set[str] = set()
+        for spec in active_specs:
+            key = spec["prototype_key"]
+            if key in seen_prototype_keys:
+                raise ValueError(f"Duplicate prototype_key for active models: {key}")
+            seen_prototype_keys.add(key)
+            configured = prototype_sources.get(key)
             if not configured:
-                raise ValueError(f"Missing prototype source for active encoder {enc}")
+                raise ValueError(f"Missing prototype source for active model {key}")
             source = ROOT / configured
             if not source.exists():
-                raise FileNotFoundError(f"Prototype source for {enc} not found: {source}")
-            destination = proto_dst / f"prototypes_{enc}.npz"
+                raise FileNotFoundError(f"Prototype source for {key} not found: {source}")
+            destination = proto_dst / f"prototypes_{key}.npz"
             shutil.copy2(source, destination)
             shipped_prototypes += 1
             print(f"  ✓ prototypes/{destination.name} ← {source.name}")
