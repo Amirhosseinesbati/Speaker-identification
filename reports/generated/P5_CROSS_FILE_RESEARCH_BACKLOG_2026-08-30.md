@@ -50,6 +50,29 @@ hypotheses if the complete P5 pair fails.
    they are a warning against interpreting positive-pair contraction alone as
    sufficient evidence.
 
+## Checkpoint-averaging evidence boundary
+
+A targeted SciSpace search during the locked P5 treatment retrieved Model
+Soups (Wortsman et al., ICML 2022, DOI `10.48550/arXiv.2203.05482`) as the
+closest primary evidence.  The paper averages independently fine-tuned models
+that remain in one low-error basin and reports that the resulting single model
+can improve robustness without ensemble inference cost.  The search did not
+retrieve a speaker-identification experiment establishing that the same claim
+holds for a Raw/EMA midpoint from one CAM++ trajectory under open-set
+channel/session shift; SciSpace's methodology-column lookup also returned no
+additional record for the paper.
+
+This makes parameter averaging a distinct but weakly transferred hypothesis,
+not evidence for changing P5.  The campaign has already rejected fixed Raw/EMA
+probability fusion on all three Control folds, so neither that negative result
+nor the general Model Soups result can be silently reinterpreted as proof for
+or against a weight-space midpoint.  If the hypothesis is ever activated, it
+must be a separately preregistered, fixed `50/50` Raw/EMA parameter midpoint
+evaluated on all three locked Control folds with no coefficient search and the
+same Macro-F1, Known and OOD guardrails.  It cannot outrank the already locked
+P6 pair merely because it is cheap, and it cannot be selected from P5's
+observed trajectory.
+
 ## Locked decision order after P5
 
 - If P5 passes its complete gate, do not add any of these losses; preregister
