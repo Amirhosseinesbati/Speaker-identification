@@ -198,6 +198,19 @@ _WAVLM_VARIANTS = {
 }
 
 
+def _has_hf_model_weights(target: Path) -> bool:
+    """Return whether a complete Hugging Face weight payload is present.
+
+    Hub snapshots may expose the same model as either safetensors or a PyTorch
+    binary. Both formats are accepted by ``from_pretrained`` and therefore are
+    equivalent provisioning markers for our offline runtime.
+    """
+    return any(
+        (target / filename).is_file()
+        for filename in ("model.safetensors", "pytorch_model.bin")
+    )
+
+
 def download_wavlm(force: bool = False, variant: Optional[str] = None) -> Path:
     """
     Download a WavLM variant into ``weights/<dir>`` (idempotent).
@@ -227,8 +240,7 @@ def download_wavlm(force: bool = False, variant: Optional[str] = None) -> Path:
 
     dir_name, label = _WAVLM_VARIANTS[variant]
     target = WEIGHTS_DIR / dir_name
-    marker = target / "model.safetensors"
-    if marker.exists() and not force:
+    if _has_hf_model_weights(target) and not force:
         print(_marker(label))
         return target
 
