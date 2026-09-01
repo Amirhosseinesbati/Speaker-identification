@@ -264,6 +264,15 @@ def main() -> None:
             "The default preserves the legacy all-encoder bootstrap."
         ),
     )
+    parser.add_argument(
+        "--wavlm-variant",
+        choices=sorted(_WAVLM_VARIANTS),
+        default=None,
+        help=(
+            "Explicit WavLM variant for reproducible campaign provisioning. "
+            "When omitted, the active default config remains authoritative."
+        ),
+    )
     args = parser.parse_args()
 
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -286,7 +295,7 @@ def main() -> None:
         download_titanet(force=args.force)
     # WavLM variant follows the active config (UI's WavLM-variant choice).
     if "wavlm" in selected:
-        download_wavlm(force=args.force)
+        download_wavlm(force=args.force, variant=args.wavlm_variant)
 
     print("\n  Selected weights downloaded. Verify with:")
     print(f"    find {WEIGHTS_DIR} -type f | head -50")
