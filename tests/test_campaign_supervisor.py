@@ -90,6 +90,19 @@ def test_notification_marker_is_atomic_and_deduplicatable(
     assert payload["events"]["p13:start:abc"]["metadata"] == {"profile": "p13"}
 
 
+def test_notify_works_when_supervisor_is_imported_as_module(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import scripts.telegram_notifier as notifier
+
+    marker = tmp_path / "campaign_heartbeat_marker.json"
+    monkeypatch.setattr(supervisor, "DEFAULT_TELEGRAM_MARKER", marker)
+    monkeypatch.setattr(notifier, "send", lambda message: 456)
+
+    assert supervisor._notify("scientific event", event_key="p13:event") == 456
+    assert _notification_receipt("p13:event") == 456
+
+
 def test_cmd_run_loads_resolved_profile_before_notification(
     tmp_path: Path, monkeypatch
 ) -> None:

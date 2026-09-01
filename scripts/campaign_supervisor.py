@@ -131,7 +131,10 @@ def _notify(
     metadata: Optional[dict[str, Any]] = None,
 ) -> Optional[int]:
     try:
-        from telegram_notifier import send
+        try:
+            from telegram_notifier import send
+        except ModuleNotFoundError:
+            from scripts.telegram_notifier import send
 
         if event_key:
             existing = _notification_receipt(event_key)
