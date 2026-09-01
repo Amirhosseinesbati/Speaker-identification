@@ -269,6 +269,34 @@ def test_scheduler_no_warmup_per_group_floor():
     assert math.isclose(optimizer.param_groups[1]["lr"], 3e-4 * 0.05, rel_tol=1e-6)
 
 
+def test_scheduler_preserves_zero_lr_for_fixed_warm_started_heads():
+    adapter = nn.Linear(4, 4)
+    head = nn.Linear(4, 4)
+    optimizer = torch.optim.AdamW([
+        {"params": list(adapter.parameters()), "lr": 1e-5},
+        {"params": list(head.parameters()), "lr": 0.0},
+    ])
+    cfg = {
+        "schedule": "cosine",
+        "warmup_ratio": 0.05,
+        "min_lr_ratio": 0.05,
+        "epochs": 45,
+    }
+    scheduler = build_scheduler(optimizer, cfg, cfg["epochs"])
+
+    adapter_lrs = []
+    head_lrs = []
+    for _ in range(cfg["epochs"]):
+        optimizer.step()
+        scheduler.step()
+        adapter_lrs.append(optimizer.param_groups[0]["lr"])
+        head_lrs.append(optimizer.param_groups[1]["lr"])
+
+    assert all(0.0 < lr <= 1e-5 for lr in adapter_lrs)
+    assert all(lr == 0.0 for lr in head_lrs)
+    assert math.isclose(adapter_lrs[-1], 1e-5 * 0.05, rel_tol=1e-6)
+
+
 def test_exponential_scheduler_reaches_paper_endpoint_for_every_group():
     optimizer = _two_group_optimizer()
     cfg = {
