@@ -5,6 +5,7 @@ from pathlib import Path
 
 import yaml
 
+from src.experiment_config import load_profile
 from src.pipelines.steps import _resume_contract
 
 
@@ -19,8 +20,11 @@ def _load_yaml(path: Path) -> dict:
 
 
 def test_p13c_changes_only_resume_and_early_stopping_dimensions() -> None:
-    source = _load_yaml(P13B)
-    continuation = _load_yaml(P13C)
+    # Compare the exact fully-resolved contracts consumed by the pipeline.
+    # Comparing the sparse profile YAMLs alone can miss a mismatch in an
+    # inherited base-config field.
+    source = load_profile(P13B.stem)
+    continuation = load_profile(P13C.stem)
 
     assert _resume_contract(source) == _resume_contract(continuation)
     training = continuation["training"]

@@ -1,0 +1,81 @@
+{
+  "schema_version": "iaaa-scientific-receipt/v1",
+  "profile": "p13b-wavlm-baseplus-layerweighted-deterministic-known446-ood-complement-oof-f0",
+  "decision": "eligible_for_stateful_p13c_continuation",
+  "decision_policy": "raw_probability_average_argmax",
+  "campaign": {
+    "instance_id": 48886926,
+    "git_commit": "7d0372b6beb24663425848c63814b0e1506b2b93",
+    "config_sha256": "28360e6691a83de7ecb6095b057fd69ef0a8c902e9cd12b1d6dca8873d77f78c",
+    "finished_at_utc": "2026-09-01T14:36:36.609910+00:00",
+    "terminal_campaign_status": "CAMPAIGN_BLOCKED",
+    "current_run": null,
+    "exit_code": 1,
+    "termination_reason": "preregistered_epoch15_futility_boundary_reached; pipeline_child_received_SIGTERM_after_epoch15_checkpoint_validation"
+  },
+  "mlflow": {
+    "run_id": "bc689cf31fac4b06a70502b6fd34e87b",
+    "status": "FINISHED",
+    "parameter_count": 22,
+    "complete_metric_points": 15,
+    "selected_metric_key_count": 6,
+    "artifact_count_before_terminal_append": 5
+  },
+  "epoch_metrics": {
+    "13": {
+      "raw_macro_f1": 0.06835450118797433,
+      "train_loss": 12.900985388755798
+    },
+    "14": {
+      "raw_macro_f1": 0.1275090192587221,
+      "train_loss": 12.510810585021973
+    },
+    "15": {
+      "raw_macro_f1": 0.19581587319027458,
+      "logit_average_macro_f1": 0.23672108332254985,
+      "ema_macro_f1": 0.0013958524319899197,
+      "known_accuracy": 0.17937219730941703,
+      "ood_f1": 0.6630286493860846,
+      "train_loss": 12.106142559051513
+    }
+  },
+  "p13c_activation_gate": {
+    "contracts": {
+      "epoch15_raw_macro_f1_min": 0.1,
+      "require_strict_raw_increase_epochs_13_14_15": true,
+      "train_loss_drop_epoch13_to_epoch15_min": 0.5,
+      "require_stateful_checkpoint": true
+    },
+    "observed": {
+      "epoch15_raw_macro_f1": 0.19581587319027458,
+      "strict_raw_increase_epochs_13_14_15": true,
+      "train_loss_drop_epoch13_to_epoch15": 0.7948428297042847,
+      "stateful_checkpoint_verified": true
+    },
+    "checks": {
+      "epoch15_raw_macro_f1": true,
+      "strict_raw_increase_epochs_13_14_15": true,
+      "train_loss_drop_epoch13_to_epoch15": true,
+      "stateful_checkpoint": true
+    },
+    "passed": true
+  },
+  "stateful_checkpoint": {
+    "path": "checkpoints/p13b-wavlm-baseplus-layerweighted-deterministic-known446-ood-complement-oof-f0/latest_model.pt",
+    "size_bytes": 390655371,
+    "sha256": "33af404260b7455b576adcb0e29f99c94e3098a762af8b47a21b99182e9c3034",
+    "epoch": 15,
+    "training_history_length": 15,
+    "training_history_last_epoch": 15,
+    "contains_model_state": true,
+    "contains_optimizer_state": true,
+    "contains_scheduler_state": true,
+    "contains_rng_state": true
+  },
+  "scientific_interpretation": {
+    "conclusion": "Deterministic frozen-backbone evaluation corrected the stochastic replication defect and exposed a delayed but monotonic learning phase. P13b is not a candidate model; it only authorizes the preregistered stateful P13c continuation.",
+    "standalone_candidate_gate_evaluated": false,
+    "later_folds_authorized": false,
+    "submission_authorized": false
+  }
+}
