@@ -117,3 +117,51 @@ def test_audit_campaign_run_rejects_non_contiguous_history(tmp_path):
 
     with pytest.raises(RuntimeError, match="not contiguous"):
         audit_campaign_run(tmp_path, state_path, PROFILE)
+
+
+def test_audit_campaign_run_accepts_contractual_early_stop(tmp_path):
+    state_path, _ = _fixture(tmp_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    best = tmp_path / "checkpoints" / PROFILE / "campp_best.pt"
+    checkpoint = torch.load(best, map_location="cpu", weights_only=False)
+    checkpoint["config"]["training"].update({
+        "epochs": 10,
+        "early_stopping_start_epoch": 1,
+        "early_stopping_patience": 2,
+    })
+    torch.save(checkpoint, best)
+    receipt = next(
+        item for item in state["completed_runs"][0]["artifacts"]
+        if item["path"].endswith("campp_best.pt")
+    )
+    receipt["size_bytes"] = best.stat().st_size
+    receipt["sha256"] = _sha(best)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result = audit_campaign_run(tmp_path, state_path, PROFILE)
+
+    assert result["canonical_checkpoint"]["early_stopped"] is True
+    assert result["canonical_checkpoint"]["history_points"] == 2
+
+
+def test_audit_campaign_run_rejects_premature_truncation(tmp_path):
+    state_path, _ = _fixture(tmp_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    best = tmp_path / "checkpoints" / PROFILE / "campp_best.pt"
+    checkpoint = torch.load(best, map_location="cpu", weights_only=False)
+    checkpoint["config"]["training"].update({
+        "epochs": 10,
+        "early_stopping_start_epoch": 2,
+        "early_stopping_patience": 3,
+    })
+    torch.save(checkpoint, best)
+    receipt = next(
+        item for item in state["completed_runs"][0]["artifacts"]
+        if item["path"].endswith("campp_best.pt")
+    )
+    receipt["size_bytes"] = best.stat().st_size
+    receipt["sha256"] = _sha(best)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="earliest legal early stop"):
+        audit_campaign_run(tmp_path, state_path, PROFILE)

@@ -82,10 +82,29 @@ def _audit_checkpoint(
         raise RuntimeError("canonical checkpoint has no training history")
     epochs = [int(row.get("epoch", -1)) for row in history]
     expected_epochs = int(training.get("epochs", len(epochs)))
-    if epochs != list(range(1, expected_epochs + 1)):
-        raise RuntimeError(
-            "training history is not contiguous through the configured horizon"
+    if epochs != list(range(1, len(epochs) + 1)):
+        raise RuntimeError("training history is not contiguous")
+    if len(epochs) > expected_epochs:
+        raise RuntimeError("training history exceeds the configured horizon")
+
+    early_stopping_patience = int(training.get("early_stopping_patience", 0))
+    early_stopping_start_epoch = int(
+        training.get("early_stopping_start_epoch", 1)
+    )
+    early_stopped = len(epochs) < expected_epochs
+    if early_stopped:
+        if early_stopping_patience <= 0:
+            raise RuntimeError(
+                "training history ended before the configured horizon without "
+                "early stopping enabled"
+            )
+        earliest_legal_stop = (
+            max(1, early_stopping_start_epoch) + early_stopping_patience - 1
         )
+        if len(epochs) < earliest_legal_stop:
+            raise RuntimeError(
+                "training history ended before the earliest legal early stop"
+            )
 
     class_map = checkpoint.get("class_map")
     if not isinstance(class_map, dict):
@@ -122,6 +141,9 @@ def _audit_checkpoint(
     return {
         "configured_epochs": expected_epochs,
         "history_points": len(history),
+        "early_stopped": early_stopped,
+        "early_stopping_start_epoch": early_stopping_start_epoch,
+        "early_stopping_patience": early_stopping_patience,
         "selected_epoch": int(checkpoint.get("epoch", -1)),
         "weight_variant": actual_variant or None,
         "class_map_size": len(class_map),
