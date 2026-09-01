@@ -142,6 +142,54 @@ class BaseEncoder(nn.Module, ABC):
 #  WavLM Encoder
 # ═══════════════════════════════════════════════════════════
 
+class WavLMLayerAdapter(nn.Module):
+    """Paper-faithful adapter from one WavLM layer to the downstream head.
+
+    The L-adapter variant in ``adapter-wavlm`` projects each transformer-layer
+    output directly into a shared downstream dimension, applies an activation
+    and LayerNorm, then combines all adapted layers with a learned softmax.
+    There is deliberately no up-projection or residual path in this variant.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        activation: str = "relu",
+        use_layer_norm: bool = True,
+        init_std: float = 1.0e-3,
+        layer_norm_eps: float = 1.0e-5,
+    ) -> None:
+        super().__init__()
+        if input_dim <= 0 or output_dim <= 0:
+            raise ValueError("WavLM L-adapter dimensions must be positive")
+        if init_std <= 0.0:
+            raise ValueError("WavLM L-adapter init_std must be positive")
+
+        activation_name = str(activation).lower().strip()
+        if activation_name == "relu":
+            activation_module: nn.Module = nn.ReLU()
+        elif activation_name == "gelu":
+            activation_module = nn.GELU()
+        else:
+            raise ValueError(
+                "WavLM L-adapter activation must be relu or gelu, "
+                f"got {activation!r}"
+            )
+
+        self.projection = nn.Linear(input_dim, output_dim)
+        self.activation = activation_module
+        self.layer_norm = (
+            nn.LayerNorm(output_dim, eps=layer_norm_eps)
+            if use_layer_norm else nn.Identity()
+        )
+        nn.init.normal_(self.projection.weight, mean=0.0, std=float(init_std))
+        nn.init.zeros_(self.projection.bias)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return self.layer_norm(self.activation(self.projection(hidden_states)))
+
+
 class WavLMEncoder(BaseEncoder):
     """
     Microsoft WavLM encoder for speaker recognition.
@@ -164,7 +212,13 @@ class WavLMEncoder(BaseEncoder):
         base_model: str = "microsoft/wavlm-large",
         freeze_feature_extractor: bool = True,
         freeze_encoder: bool = False,
+        frozen_backbone_eval: bool = True,
         layer_aggregation: str = "last_hidden",
+        layer_adapter_dim: int = 512,
+        layer_adapter_activation: str = "relu",
+        layer_adapter_layer_norm: bool = True,
+        layer_adapter_init_std: float = 1.0e-3,
+        layer_adapter_tune_backbone_layer_norms: bool = True,
         local_path: Optional[str] = None,
         allow_hub_download: bool = False,
     ):
@@ -172,11 +226,19 @@ class WavLMEncoder(BaseEncoder):
         self.base_model_name = base_model
         self.local_path = local_path
         self.layer_aggregation = str(layer_aggregation).lower().strip()
-        if self.layer_aggregation not in {"last_hidden", "weighted_sum"}:
+        if self.layer_aggregation not in {
+            "last_hidden", "weighted_sum", "layer_adapter",
+        }:
             raise ValueError(
-                "WavLM layer_aggregation must be last_hidden or weighted_sum, "
+                "WavLM layer_aggregation must be last_hidden, weighted_sum, "
+                "or layer_adapter, "
                 f"got {layer_aggregation!r}"
             )
+        self.layer_adapter_dim = int(layer_adapter_dim)
+        self.layer_adapter_tune_backbone_layer_norms = bool(
+            layer_adapter_tune_backbone_layer_norms
+        )
+        self.frozen_backbone_eval = bool(frozen_backbone_eval)
 
         if local_path is not None and os.path.isdir(local_path):
             # Offline / submission path — never hit the hub.
@@ -198,11 +260,42 @@ class WavLMEncoder(BaseEncoder):
                 "allow_hub_download=True."
             )
 
+        # The reference L-adapter recipe disables transformer LayerDrop.  The
+        # Hugging Face implementation copies this value onto the encoder at
+        # construction time, so keep both locations aligned for an auditable
+        # paper-faithful configuration.
+        if self.layer_aggregation == "layer_adapter":
+            self.wavlm.config.layerdrop = 0.0
+            wavlm_encoder = getattr(self.wavlm, "encoder", None)
+            if wavlm_encoder is not None and hasattr(wavlm_encoder, "layerdrop"):
+                wavlm_encoder.layerdrop = 0.0
+
         if self.layer_aggregation == "weighted_sum":
             layer_count = int(self.wavlm.config.num_hidden_layers) + 1
             self.layer_weights = nn.Parameter(torch.zeros(layer_count))
+            self.layer_adapters = nn.ModuleList()
+        elif self.layer_aggregation == "layer_adapter":
+            layer_count = int(self.wavlm.config.num_hidden_layers)
+            if layer_count <= 0:
+                raise ValueError("WavLM must expose at least one transformer layer")
+            layer_norm_eps = float(
+                getattr(self.wavlm.config, "layer_norm_eps", 1.0e-5)
+            )
+            self.layer_weights = nn.Parameter(torch.zeros(layer_count))
+            self.layer_adapters = nn.ModuleList([
+                WavLMLayerAdapter(
+                    input_dim=int(self.wavlm.config.hidden_size),
+                    output_dim=self.layer_adapter_dim,
+                    activation=layer_adapter_activation,
+                    use_layer_norm=bool(layer_adapter_layer_norm),
+                    init_std=float(layer_adapter_init_std),
+                    layer_norm_eps=layer_norm_eps,
+                )
+                for _ in range(layer_count)
+            ])
         else:
             self.register_parameter("layer_weights", None)
+            self.layer_adapters = nn.ModuleList()
 
         if freeze_encoder:
             self.freeze()
@@ -236,7 +329,9 @@ class WavLMEncoder(BaseEncoder):
         with torch.autocast(device_type=dev.type, enabled=False):
             outputs = self.wavlm(
                 input_values=input_values,
-                output_hidden_states=self.layer_aggregation == "weighted_sum",
+                output_hidden_states=self.layer_aggregation in {
+                    "weighted_sum", "layer_adapter",
+                },
             )
         if self.layer_aggregation == "weighted_sum":
             hidden_layers = outputs.hidden_states
@@ -250,22 +345,77 @@ class WavLMEncoder(BaseEncoder):
             hidden_states = torch.zeros_like(hidden_layers[0])
             for weight, layer in zip(weights, hidden_layers):
                 hidden_states = hidden_states + weight.to(layer.dtype) * layer
+        elif self.layer_aggregation == "layer_adapter":
+            all_hidden_layers = outputs.hidden_states
+            expected_count = len(self.layer_adapters) + 1
+            if (all_hidden_layers is None or
+                    len(all_hidden_layers) != expected_count):
+                observed = (
+                    None if all_hidden_layers is None else len(all_hidden_layers)
+                )
+                raise RuntimeError(
+                    "WavLM L-adapter expects the convolutional state plus one "
+                    "state per transformer layer: "
+                    f"hidden_states={observed}, expected={expected_count}"
+                )
+            # Hugging Face returns the projected convolutional state first.
+            # The reference L-adapter consumes only outputs *after* each
+            # transformer layer, hence the intentional [1:] slice.
+            transformer_layers = all_hidden_layers[1:]
+            adapted_layers = [
+                adapter(layer)
+                for adapter, layer in zip(
+                    self.layer_adapters, transformer_layers,
+                )
+            ]
+            weights = torch.softmax(self.layer_weights, dim=0)
+            hidden_states = torch.zeros_like(adapted_layers[0])
+            for weight, layer in zip(weights, adapted_layers):
+                hidden_states = hidden_states + weight.to(layer.dtype) * layer
         else:
             hidden_states = outputs.last_hidden_state
         return hidden_states, None
 
     @property
     def output_dim(self) -> int:
+        if self.layer_aggregation == "layer_adapter":
+            return self.layer_adapter_dim
         return self.wavlm.config.hidden_size
 
     def freeze(self) -> None:
         """Freeze the complete pretrained WavLM backbone.
 
-        A learnable layer-weight vector, when enabled, intentionally remains
-        trainable because it is the lightweight downstream aggregation module.
+        Lightweight downstream layer weights/adapters intentionally remain
+        trainable.  In ``layer_adapter`` mode the reference recipe also tunes
+        only LayerNorm parameters inside the transformer layers.
         """
         for param in self.wavlm.parameters():
             param.requires_grad = False
+        if (self.layer_aggregation == "layer_adapter" and
+                self.layer_adapter_tune_backbone_layer_norms):
+            for name, param in self.wavlm.named_parameters():
+                if (name.startswith("encoder.layers.") and
+                        "layer_norm" in name):
+                    param.requires_grad = True
+
+    def train(self, mode: bool = True):
+        """Keep a completely frozen WavLM backbone deterministic.
+
+        ``model.train()`` recursively switches every child into train mode.
+        Without this override, a frozen WavLM still applies dropout and
+        LayerDrop, so the lightweight learned aggregation sees a moving feature
+        distribution even though no backbone weight can adapt.  Keep only the
+        pretrained backbone in eval mode when all of its parameters are frozen;
+        downstream layer weights/adapters retain the requested mode.  A
+        paper-faithful L-adapter with trainable transformer LayerNorms remains in
+        train mode (with LayerDrop disabled above).
+        """
+        super().train(mode)
+        if mode and self.frozen_backbone_eval and not any(
+            parameter.requires_grad for parameter in self.wavlm.parameters()
+        ):
+            self.wavlm.eval()
+        return self
 
     def freeze_feature_extractor_only(self) -> None:
         """Freeze only the convolutional feature extractor (legacy full-FT mode)."""
@@ -1498,7 +1648,21 @@ def create_encoder(config: dict) -> BaseEncoder:
             base_model=enc_cfg.get("base_model", "microsoft/wavlm-large"),
             freeze_feature_extractor=enc_cfg.get("freeze_feature_extractor", True),
             freeze_encoder=enc_cfg.get("freeze_encoder", False),
+            frozen_backbone_eval=enc_cfg.get("frozen_backbone_eval", True),
             layer_aggregation=enc_cfg.get("layer_aggregation", "last_hidden"),
+            layer_adapter_dim=enc_cfg.get("layer_adapter_dim", 512),
+            layer_adapter_activation=enc_cfg.get(
+                "layer_adapter_activation", "relu",
+            ),
+            layer_adapter_layer_norm=enc_cfg.get(
+                "layer_adapter_layer_norm", True,
+            ),
+            layer_adapter_init_std=enc_cfg.get(
+                "layer_adapter_init_std", 1.0e-3,
+            ),
+            layer_adapter_tune_backbone_layer_norms=enc_cfg.get(
+                "layer_adapter_tune_backbone_layer_norms", True,
+            ),
             local_path=enc_cfg.get("local_path"),
             allow_hub_download=enc_cfg.get("allow_hub_download", False),
         )

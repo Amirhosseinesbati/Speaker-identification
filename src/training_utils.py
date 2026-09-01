@@ -379,7 +379,15 @@ def encoder_will_train(config: dict) -> bool:
             (config.get("model", {}).get("encoder_config", {}) or {})
             .get("wavlm", {}) or {}
         )
-        return not bool(enc_cfg.get("freeze_encoder", False))
+        if not bool(enc_cfg.get("freeze_encoder", False)):
+            return True
+        # A frozen pretrained backbone can still expose trainable lightweight
+        # aggregation parameters.  Treat these as encoder training so callers
+        # do not incorrectly describe the whole encoder as frozen or allow an
+        # OOD-head-only recipe to update them accidentally.
+        return str(enc_cfg.get("layer_aggregation", "last_hidden")).lower().strip() in {
+            "weighted_sum", "layer_adapter",
+        }
     enc_cfg = (config.get("model", {}).get("encoder_config", {}) or {}).get(enc_type, {}) or {}
     if enc_type == "ecapa" and str(
             enc_cfg.get("adapter_mode", "none")).lower().strip() != "none":

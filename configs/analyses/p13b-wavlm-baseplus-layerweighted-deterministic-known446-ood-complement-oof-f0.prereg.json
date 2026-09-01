@@ -1,0 +1,74 @@
+{
+  "analysis_id": "p13b-wavlm-baseplus-layerweighted-deterministic-known446-ood-complement-oof-f0-v1",
+  "status": "preregistered_before_p13_terminal_result_and_p13b_fold0_metric_evaluation",
+  "created_at_utc": "2026-09-01T12:22:17Z",
+  "leaderboard_used_for_selection": false,
+  "scientific_question": "Does eliminating unrecorded stochastic WavLM backbone behavior rescue the otherwise identical fully frozen weighted-layer P13 recipe?",
+  "causal_precursor_audit": {
+    "p13_runtime_behavior": "model.train recursively left the fully frozen WavLM backbone in train mode",
+    "weight_config": {
+      "layerdrop": 0.05,
+      "hidden_dropout": 0.1,
+      "attention_dropout": 0.1,
+      "feat_proj_dropout": 0.1,
+      "mask_time_prob": 0.05
+    },
+    "interpretation": "P13 mixed frozen-feature transfer with stochastic backbone augmentation. Its terminal score cannot by itself isolate the quality of deterministic WavLM features."
+  },
+  "locked_change": {
+    "single_scientific_change_vs_p13": "After the normal recursive model.train call, keep the fully frozen WavLM child in eval mode so LayerDrop, dropout and model-internal time masking are disabled while the layer weights and downstream heads remain trainable.",
+    "frozen_backbone_eval": true,
+    "all_p13_data_head_loss_optimizer_schedule_and_decision_dimensions_unchanged": true,
+    "decision": "Raw probability-average direct argmax",
+    "ema_role": "diagnostic_only",
+    "logit_average_role": "diagnostic_only",
+    "tuned_thresholds_or_blends": 0
+  },
+  "data_contract": {
+    "split": "kfold/folds3/fold0/seed42",
+    "clean_duplicates": true,
+    "speaker_target_scope": "known",
+    "competition_classes": 447,
+    "same_file_set_and_class_map_as_p0_and_p13_required": true,
+    "leaderboard_tuning": false
+  },
+  "selection": {
+    "checkpoint": "best completed Raw probability-average Macro-F1",
+    "early_stopping_start_epoch": 10,
+    "early_stopping_patience": 8,
+    "maximum_epochs": 40,
+    "earliest_metric_stop_epoch": 18,
+    "futility_check_epoch": 15,
+    "futility_min_best_raw_macro_f1": 0.88
+  },
+  "fold0_gate": {
+    "all_checks_required": true,
+    "standalone_min_raw_macro_f1": 0.9269211906147802,
+    "fixed_50_50_probability_blend_with_p0_min_macro_gain": 0.002,
+    "max_known_accuracy_drop_vs_p0": 0.001,
+    "max_ood_f1_drop_vs_p0": 0.001,
+    "min_p0_error_rescue_rate": 0.25,
+    "require_rescued_errors_gt_introduced": true,
+    "require_backbone_zero_trainable_parameters": true,
+    "require_layer_weight_count": 13,
+    "require_training_probe_wavlm_eval_mode": true,
+    "passing_action": "Permit complementary error analysis only; no automatic later fold or submission.",
+    "failing_action": "Close deterministic weighted-sum WavLM and proceed to separately preregistered L-adapter P14."
+  },
+  "operational_contract": {
+    "weight_directory": "weights/wavlm_base_plus",
+    "reuse_verified_p13_weight_receipt": true,
+    "fresh_measured_batch_preflight_required": true,
+    "provisional_batch_size": 28,
+    "maximum_run_hours": 6.0,
+    "maximum_incremental_cost_usd": 1.1,
+    "immediate_stop": [
+      "NaN or Inf",
+      "OOM after one measured batch correction",
+      "split, class-map, or provenance mismatch",
+      "backbone parameter unexpectedly trainable",
+      "frozen WavLM unexpectedly in train mode after model.train",
+      "artifact corruption"
+    ]
+  }
+}

@@ -110,6 +110,32 @@ def _consistency_settings(config: dict) -> tuple[float, str]:
     return weight, pairing
 
 
+def _encoder_runtime_invariants(model: torch.nn.Module) -> dict[str, Any]:
+    """Capture the actual train-mode policy used by the encoder backbone."""
+    encoder = getattr(model, "encoder", None)
+    wavlm = getattr(encoder, "wavlm", None)
+    if wavlm is None:
+        return {"encoder_type": type(encoder).__name__ if encoder else None}
+    wavlm_encoder = getattr(wavlm, "encoder", None)
+    return {
+        "encoder_type": type(encoder).__name__,
+        "encoder_training": bool(encoder.training),
+        "wavlm_training": bool(wavlm.training),
+        "frozen_backbone_eval": bool(
+            getattr(encoder, "frozen_backbone_eval", False)
+        ),
+        "wavlm_trainable_parameters": sum(
+            parameter.numel()
+            for parameter in wavlm.parameters()
+            if parameter.requires_grad
+        ),
+        "config_layerdrop": float(getattr(wavlm.config, "layerdrop", 0.0)),
+        "runtime_layerdrop": float(
+            getattr(wavlm_encoder, "layerdrop", 0.0)
+        ),
+    }
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -201,6 +227,10 @@ def main() -> int:
         model.encoder.freeze()
     else:
         apply_encoder_finetune_mode(model, base_config)
+    # Reproduce the exact recursive mode switch performed by train_epoch and
+    # record whether a frozen SSL backbone remains deterministic.
+    model.train()
+    encoder_runtime_invariants = _encoder_runtime_invariants(model)
 
     competition_known = int(base_config.get("model", {}).get("competition_num_known", 446))
     adaptive_margin = build_duration_adaptive_margin(base_config)
@@ -408,6 +438,7 @@ def main() -> int:
         "total_vram_gib": total_vram_gib,
         "headroom_fraction": args.headroom_fraction,
         "warm_start": warm_start_receipt,
+        "encoder_runtime_invariants": encoder_runtime_invariants,
         "short_teacher_student_enabled": short_teacher_student is not None,
         "results": rows,
         "recommended_batch_size": recommended,

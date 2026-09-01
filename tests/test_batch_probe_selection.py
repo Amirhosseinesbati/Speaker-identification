@@ -1,7 +1,11 @@
 import pytest
 import torch
 
-from scripts.probe_training_batch import _consistency_settings, _training_view
+from scripts.probe_training_batch import (
+    _consistency_settings,
+    _encoder_runtime_invariants,
+    _training_view,
+)
 from src.batch_probe import select_recommended_batch
 
 
@@ -56,6 +60,29 @@ def test_probe_extracts_supervised_view_from_paired_batch():
 
     with pytest.raises(ValueError, match="exactly"):
         _training_view(({"augmented": augmented}, torch.arange(4)))
+
+
+def test_probe_records_wavlm_runtime_mode_and_layerdrop():
+    wavlm = torch.nn.Module()
+    wavlm.config = type("Config", (), {"layerdrop": 0.0})()
+    wavlm.encoder = torch.nn.Module()
+    wavlm.encoder.layerdrop = 0.0
+    encoder = torch.nn.Module()
+    encoder.wavlm = wavlm
+    encoder.frozen_backbone_eval = True
+    model = torch.nn.Module()
+    model.encoder = encoder
+    model.train()
+    wavlm.eval()
+
+    receipt = _encoder_runtime_invariants(model)
+
+    assert receipt["encoder_training"] is True
+    assert receipt["wavlm_training"] is False
+    assert receipt["frozen_backbone_eval"] is True
+    assert receipt["wavlm_trainable_parameters"] == 0
+    assert receipt["config_layerdrop"] == 0.0
+    assert receipt["runtime_layerdrop"] == 0.0
 
 
 def test_probe_passes_enabled_consistency_weight_and_pairing():

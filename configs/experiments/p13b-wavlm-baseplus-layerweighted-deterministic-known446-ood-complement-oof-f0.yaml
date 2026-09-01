@@ -1,0 +1,96 @@
+_meta:
+  name: p13b-wavlm-baseplus-layerweighted-deterministic-known446-ood-complement-oof-f0
+  base: default_config.yaml
+experiment:
+  priority: P13B-SSL-DETERMINISTIC-REPLICATION-GATE
+  family: wavlm-baseplus-layerweighted-deterministic-known446-ood-complement-oof
+  purpose: >-
+    Repeat P13 with the exact same data, heads, objective and optimizer while
+    keeping the fully frozen WavLM backbone in eval mode during head training.
+  expected_decision: >-
+    Fold0 gate only; no later fold, tuned fusion, or submission is authorized.
+  decision_policy: raw_probability_average_argmax
+  diagnostic_ensemble: fixed_probability_average_50_50_with_campp_control_fold0
+  preregistration: configs/analyses/p13b-wavlm-baseplus-layerweighted-deterministic-known446-ood-complement-oof-f0.prereg.json
+  preregistered_gate:
+    standalone_min_raw_macro_f1: 0.9269211906147802
+    fixed_50_50_min_macro_gain: 0.002
+    max_known_accuracy_drop: 0.001
+    max_ood_f1_drop: 0.001
+    min_campp_error_rescue_rate: 0.25
+    require_rescued_gt_introduced: true
+  stop_rules:
+    futility_epoch: 15
+    minimum_best_raw_macro_f1: 0.88
+    max_epochs: 40
+    early_stopping_start_epoch: 10
+    early_stopping_patience: 8
+    max_run_hours: 6.0
+    max_incremental_cost_usd: 1.1
+  operational_preflight:
+    require_frozen_backbone_eval_mode: true
+    require_zero_trainable_wavlm_backbone_parameters: true
+    require_trainable_layer_weights: 13
+    require_measured_batch: true
+    provisional_batch_size: 28
+data:
+  clean_duplicates: true
+  split: {scheme: kfold, folds: 3, fold: 0, seed: 42}
+model:
+  encoder_type: wavlm
+  competition_num_known: 446
+  num_unknown_clusters: 554
+  unknown_cluster_path: data/processed/unknown_clusters_oof_f0.json
+  speaker_target_scope: known
+  ood_head: true
+  speaker_head_type: arcface
+  speaker_head_config:
+    arcface: {embedding_dim: 192, margin: 0.4, scale: 30.0}
+  encoder_config:
+    wavlm:
+      allow_hub_download: false
+      base_model: microsoft/wavlm-base-plus
+      freeze_encoder: true
+      freeze_feature_extractor: true
+      frozen_backbone_eval: true
+      layer_aggregation: weighted_sum
+      local_path: weights/wavlm_base_plus
+      pooling_type: attentive
+audio:
+  num_train_windows: 2
+  max_eval_windows: 8
+  speech_aware_crop_probability: 0.75
+  eval_speech_aware: true
+  short_audio_mode: pad
+hardware:
+  mode: vastai_3090_wavlm_baseplus_frozen_deterministic
+  profiles:
+    vastai_3090_wavlm_baseplus_frozen_deterministic:
+      batch_size: 28
+      description: Provisional P13-equivalent batch pending deterministic runtime probe
+      device: cuda
+      mixed_precision: true
+      num_workers: 4
+logging:
+  checkpoint_dir: checkpoints/p13b-wavlm-baseplus-layerweighted-deterministic-known446-ood-complement-oof-f0
+  log_dir: logs/p13b-wavlm-baseplus-layerweighted-deterministic-known446-ood-complement-oof-f0
+training:
+  seed: 42
+  deterministic_algorithms: true
+  epochs: 40
+  freeze_epochs: 0
+  early_stopping_start_epoch: 10
+  early_stopping_patience: 8
+  learning_rate: 0.0003
+  encoder_lr: 0.0003
+  weight_decay: 0.0001
+  schedule: cosine
+  warmup_ratio: 0.1
+  min_lr_ratio: 0.05
+  amp_dtype: fp16
+  ema_enabled: true
+  ema_decay: 0.999
+  loss:
+    speaker: {type: ce, label_smoothing: 0.05, weight: 0.85}
+    ood: {type: bce, pos_weight: 1.0, weight: 0.15}
+    proto: {enabled: false}

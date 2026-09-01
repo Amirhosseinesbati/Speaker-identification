@@ -262,10 +262,14 @@ def _encoder_save_config(encoder_type: str, old_enc: dict, ft_mode: str,
         variant = wavlm_variant or "microsoft/wavlm-large"
         new_enc = {
             "base_model": variant,
+            # ``freeze_encoder`` is the authoritative full-backbone switch.
+            # Keep the legacy feature-extractor flag for old profiles, but do
+            # not drop the stronger invariant when saving a modern WavLM
+            # weighted-sum or L-adapter configuration.
+            "freeze_encoder": ft_mode == "Frozen",
             "freeze_feature_extractor": ft_mode == "Frozen",
             "local_path": _wavlm_paths.get(variant, "weights/wavlm_large"),
         }
-        old_enc.pop("freeze_encoder", None)
         old_enc.pop("unfreeze_last_n_blocks", None)
     elif encoder_type == "campp":
         new_enc = {

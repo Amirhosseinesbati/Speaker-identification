@@ -30,16 +30,107 @@ def _model_invariants(model: torch.nn.Module) -> dict[str, Any]:
     wavlm = getattr(encoder, "wavlm", None)
     layer_weights = getattr(encoder, "layer_weights", None)
     if wavlm is None or layer_weights is None:
-        raise RuntimeError("evaluation probe requires a weighted-sum WavLM encoder")
+        raise RuntimeError(
+            "evaluation probe requires a multilayer WavLM encoder"
+        )
+    layer_adapters = getattr(encoder, "layer_adapters", None)
+    adapter_parameters = (
+        list(layer_adapters.parameters())
+        if layer_adapters is not None else []
+    )
+    transformer_layer_norm_parameters = [
+        parameter
+        for name, parameter in wavlm.named_parameters()
+        if name.startswith("encoder.layers.") and "layer_norm" in name
+    ]
+    wavlm_trainable_parameters = sum(
+        parameter.numel() for parameter in wavlm.parameters()
+        if parameter.requires_grad
+    )
+    transformer_layer_norm_trainable_parameters = sum(
+        parameter.numel()
+        for parameter in transformer_layer_norm_parameters
+        if parameter.requires_grad
+    )
     return {
+        "layer_aggregation": str(
+            getattr(encoder, "layer_aggregation", "unknown")
+        ),
         "wavlm_parameters": sum(parameter.numel() for parameter in wavlm.parameters()),
-        "wavlm_trainable_parameters": sum(
-            parameter.numel() for parameter in wavlm.parameters()
-            if parameter.requires_grad
+        "wavlm_trainable_parameters": wavlm_trainable_parameters,
+        "transformer_layer_norm_parameters": sum(
+            parameter.numel()
+            for parameter in transformer_layer_norm_parameters
+        ),
+        "transformer_layer_norm_trainable_parameters": (
+            transformer_layer_norm_trainable_parameters
+        ),
+        "wavlm_other_trainable_parameters": (
+            wavlm_trainable_parameters
+            - transformer_layer_norm_trainable_parameters
         ),
         "layer_weight_count": int(layer_weights.numel()),
         "layer_weight_trainable": bool(layer_weights.requires_grad),
+        "layer_adapter_count": (
+            len(layer_adapters) if layer_adapters is not None else 0
+        ),
+        "layer_adapter_parameters": sum(
+            parameter.numel() for parameter in adapter_parameters
+        ),
+        "layer_adapter_trainable_parameters": sum(
+            parameter.numel() for parameter in adapter_parameters
+            if parameter.requires_grad
+        ),
     }
+
+
+def _validate_model_invariants(model: torch.nn.Module, invariants: dict) -> None:
+    encoder = model.encoder
+    aggregation = invariants["layer_aggregation"]
+    expected_transformer_layers = int(encoder.wavlm.config.num_hidden_layers)
+    if not invariants["layer_weight_trainable"]:
+        raise RuntimeError("WavLM multilayer weights are unexpectedly frozen")
+
+    if aggregation == "weighted_sum":
+        if invariants["wavlm_trainable_parameters"] != 0:
+            raise RuntimeError("WavLM backbone is unexpectedly trainable")
+        if invariants["layer_weight_count"] != expected_transformer_layers + 1:
+            raise RuntimeError("weighted-sum layer parameter invariant failed")
+        if invariants["layer_adapter_parameters"] != 0:
+            raise RuntimeError("weighted-sum encoder unexpectedly has L-adapters")
+        return
+
+    if aggregation == "layer_adapter":
+        if invariants["layer_weight_count"] != expected_transformer_layers:
+            raise RuntimeError("L-adapter layer-weight invariant failed")
+        if invariants["layer_adapter_count"] != expected_transformer_layers:
+            raise RuntimeError("L-adapter transformer-layer coverage failed")
+        if invariants["layer_adapter_parameters"] <= 0:
+            raise RuntimeError("L-adapter parameters are missing")
+        if (invariants["layer_adapter_trainable_parameters"] !=
+                invariants["layer_adapter_parameters"]):
+            raise RuntimeError("some L-adapter parameters are unexpectedly frozen")
+        if invariants["wavlm_other_trainable_parameters"] != 0:
+            raise RuntimeError(
+                "WavLM parameters outside transformer LayerNorm are trainable"
+            )
+        tune_layer_norms = bool(
+            getattr(
+                encoder,
+                "layer_adapter_tune_backbone_layer_norms",
+                False,
+            )
+        )
+        observed_layer_norms = invariants[
+            "transformer_layer_norm_trainable_parameters"
+        ]
+        if tune_layer_norms and observed_layer_norms <= 0:
+            raise RuntimeError("transformer LayerNorm tuning is missing")
+        if not tune_layer_norms and observed_layer_norms != 0:
+            raise RuntimeError("transformer LayerNorm is unexpectedly trainable")
+        return
+
+    raise RuntimeError(f"unsupported WavLM layer aggregation: {aggregation!r}")
 
 
 def main() -> int:
@@ -70,10 +161,7 @@ def main() -> int:
     model = create_model_from_config(base, num_known_speakers=len(class_map) - 1)
     apply_encoder_finetune_mode(model, base)
     invariants = _model_invariants(model)
-    if invariants["wavlm_trainable_parameters"] != 0:
-        raise RuntimeError("WavLM backbone is unexpectedly trainable")
-    if invariants["layer_weight_count"] != 13 or not invariants["layer_weight_trainable"]:
-        raise RuntimeError("weighted-sum layer parameter invariant failed")
+    _validate_model_invariants(model, invariants)
     model = model.to(device).eval()
     total_vram_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
     rows: list[dict[str, Any]] = []
