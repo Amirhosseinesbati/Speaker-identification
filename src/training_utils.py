@@ -370,13 +370,16 @@ def build_amp(
 def encoder_will_train(config: dict) -> bool:
     """True if the configured fine-tune mode leaves encoder params trainable.
 
-    Progressive unfreezing is only meaningful for encoders whose whole trunk can
-    be frozen (ecapa / campp / eres2net / titanet). WavLM keeps its transformer
-    trainable even when ``freeze_feature_extractor`` is on, so it returns False.
+    ``freeze_feature_extractor`` is only a legacy CNN-stem switch for WavLM;
+    ``freeze_encoder`` is the authoritative full-backbone switch.
     """
     enc_type = str(config.get("model", {}).get("encoder_type", "")).lower().strip()
     if enc_type == "wavlm":
-        return False
+        enc_cfg = (
+            (config.get("model", {}).get("encoder_config", {}) or {})
+            .get("wavlm", {}) or {}
+        )
+        return not bool(enc_cfg.get("freeze_encoder", False))
     enc_cfg = (config.get("model", {}).get("encoder_config", {}) or {}).get(enc_type, {}) or {}
     if enc_type == "ecapa" and str(
             enc_cfg.get("adapter_mode", "none")).lower().strip() != "none":
@@ -400,8 +403,16 @@ def apply_encoder_finetune_mode(model: torch.nn.Module, config: dict) -> None:
         encoder.enable_se_bn_adapter()
         return
 
-    freeze_key = "freeze_feature_extractor" if enc_type == "wavlm" else "freeze_encoder"
-    if enc_cfg.get(freeze_key, True):
+    if enc_type == "wavlm":
+        if enc_cfg.get("freeze_encoder", False):
+            encoder.freeze()
+        else:
+            encoder.unfreeze()
+            if enc_cfg.get("freeze_feature_extractor", True):
+                encoder.freeze_feature_extractor_only()
+        return
+
+    if enc_cfg.get("freeze_encoder", True):
         encoder.freeze()
         return
 

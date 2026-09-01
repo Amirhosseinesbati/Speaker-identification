@@ -163,12 +163,20 @@ class WavLMEncoder(BaseEncoder):
         self,
         base_model: str = "microsoft/wavlm-large",
         freeze_feature_extractor: bool = True,
+        freeze_encoder: bool = False,
+        layer_aggregation: str = "last_hidden",
         local_path: Optional[str] = None,
         allow_hub_download: bool = False,
     ):
         super().__init__()
         self.base_model_name = base_model
         self.local_path = local_path
+        self.layer_aggregation = str(layer_aggregation).lower().strip()
+        if self.layer_aggregation not in {"last_hidden", "weighted_sum"}:
+            raise ValueError(
+                "WavLM layer_aggregation must be last_hidden or weighted_sum, "
+                f"got {layer_aggregation!r}"
+            )
 
         if local_path is not None and os.path.isdir(local_path):
             # Offline / submission path — never hit the hub.
@@ -190,8 +198,17 @@ class WavLMEncoder(BaseEncoder):
                 "allow_hub_download=True."
             )
 
-        if freeze_feature_extractor:
+        if self.layer_aggregation == "weighted_sum":
+            layer_count = int(self.wavlm.config.num_hidden_layers) + 1
+            self.layer_weights = nn.Parameter(torch.zeros(layer_count))
+        else:
+            self.register_parameter("layer_weights", None)
+
+        if freeze_encoder:
             self.freeze()
+        elif freeze_feature_extractor:
+            self.unfreeze()
+            self.freeze_feature_extractor_only()
         else:
             self.unfreeze()
 
@@ -219,9 +236,22 @@ class WavLMEncoder(BaseEncoder):
         with torch.autocast(device_type=dev.type, enabled=False):
             outputs = self.wavlm(
                 input_values=input_values,
-                output_hidden_states=False,
+                output_hidden_states=self.layer_aggregation == "weighted_sum",
             )
-        hidden_states = outputs.last_hidden_state  # (batch, seq_len, hidden_dim)
+        if self.layer_aggregation == "weighted_sum":
+            hidden_layers = outputs.hidden_states
+            if hidden_layers is None or len(hidden_layers) != len(self.layer_weights):
+                observed = None if hidden_layers is None else len(hidden_layers)
+                raise RuntimeError(
+                    "WavLM hidden-state count differs from layer weights: "
+                    f"hidden_states={observed}, weights={len(self.layer_weights)}"
+                )
+            weights = torch.softmax(self.layer_weights, dim=0)
+            hidden_states = torch.zeros_like(hidden_layers[0])
+            for weight, layer in zip(weights, hidden_layers):
+                hidden_states = hidden_states + weight.to(layer.dtype) * layer
+        else:
+            hidden_states = outputs.last_hidden_state
         return hidden_states, None
 
     @property
@@ -229,16 +259,30 @@ class WavLMEncoder(BaseEncoder):
         return self.wavlm.config.hidden_size
 
     def freeze(self) -> None:
-        """Freeze only the CNN feature extractor (stem). Transformer stays trainable."""
+        """Freeze the complete pretrained WavLM backbone.
+
+        A learnable layer-weight vector, when enabled, intentionally remains
+        trainable because it is the lightweight downstream aggregation module.
+        """
+        for param in self.wavlm.parameters():
+            param.requires_grad = False
+
+    def freeze_feature_extractor_only(self) -> None:
+        """Freeze only the convolutional feature extractor (legacy full-FT mode)."""
         if hasattr(self.wavlm, "feature_extractor"):
             for param in self.wavlm.feature_extractor.parameters():
                 param.requires_grad = False
 
-    def unfreeze(self) -> None:
-        """Unfreeze CNN feature extractor for full fine-tuning."""
+    def unfreeze_feature_extractor_only(self) -> None:
+        """Unfreeze only the convolutional feature extractor."""
         if hasattr(self.wavlm, "feature_extractor"):
             for param in self.wavlm.feature_extractor.parameters():
                 param.requires_grad = True
+
+    def unfreeze(self) -> None:
+        """Unfreeze the complete pretrained WavLM backbone."""
+        for param in self.wavlm.parameters():
+            param.requires_grad = True
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1453,6 +1497,8 @@ def create_encoder(config: dict) -> BaseEncoder:
         return WavLMEncoder(
             base_model=enc_cfg.get("base_model", "microsoft/wavlm-large"),
             freeze_feature_extractor=enc_cfg.get("freeze_feature_extractor", True),
+            freeze_encoder=enc_cfg.get("freeze_encoder", False),
+            layer_aggregation=enc_cfg.get("layer_aggregation", "last_hidden"),
             local_path=enc_cfg.get("local_path"),
             allow_hub_download=enc_cfg.get("allow_hub_download", False),
         )

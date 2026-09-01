@@ -404,10 +404,10 @@ class TwoHeadedWavLM(TwoHeadedSpeakerModel):
 
     # Keep old method signatures for backward compat
     def _freeze_feature_extractor(self):
-        self.encoder.freeze()
+        self.encoder.freeze_feature_extractor_only()
 
     def unfreeze_feature_extractor(self):
-        self.encoder.unfreeze()
+        self.encoder.unfreeze_feature_extractor_only()
 
     @property
     def wavlm(self):

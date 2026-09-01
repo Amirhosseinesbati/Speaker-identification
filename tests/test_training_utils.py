@@ -78,10 +78,14 @@ def test_encoder_will_train():
     frozen = {"model": {"encoder_type": "campp",
                         "encoder_config": {"campp": {"freeze_encoder": True}}}}
     assert encoder_will_train(frozen) is False
-    # WavLM keeps its transformer trainable → progressive N/A
+    # Legacy WavLM stem-freeze keeps its transformer trainable.
     wavlm = {"model": {"encoder_type": "wavlm", "encoder_config": {
         "wavlm": {"freeze_feature_extractor": True}}}}
-    assert encoder_will_train(wavlm) is False
+    assert encoder_will_train(wavlm) is True
+    wavlm_frozen = {"model": {"encoder_type": "wavlm", "encoder_config": {
+        "wavlm": {"freeze_encoder": True,
+                   "freeze_feature_extractor": True}}}}
+    assert encoder_will_train(wavlm_frozen) is False
     se_bn = {"model": {"encoder_type": "ecapa", "encoder_config": {
         "ecapa": {"freeze_encoder": True, "adapter_mode": "se_bn"}}}}
     assert encoder_will_train(se_bn) is True

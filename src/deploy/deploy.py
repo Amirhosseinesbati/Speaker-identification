@@ -143,7 +143,7 @@ def read_model_selection() -> dict:
         result["UNFREEZE_LAST_N_BLOCKS"] = str(
             int(enc_cfg.get("unfreeze_last_n_blocks", 0)) if not freeze else 0)
     elif enc_type == "wavlm":
-        freeze = bool(enc_cfg.get("freeze_feature_extractor", True))
+        freeze = bool(enc_cfg.get("freeze_encoder", False))
         result["FREEZE_ENCODER"] = str(freeze).lower()
         result["UNFREEZE_LAST_N_BLOCKS"] = "0"
     else:
