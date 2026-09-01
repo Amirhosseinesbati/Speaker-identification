@@ -1,0 +1,145 @@
+{
+  "provenance": {
+    "baseline_oof": "/workspace/iaaa-speaker/checkpoints/p0-campp-known446-ood-control-oof-f0/campp_best_bundle/oof_predictions.npz",
+    "baseline_oof_sha256": "221aa9edb00e13cbf98a629a4dddede8eb5835460fafe513fb5ffc9d1ea89394",
+    "specialist_oof": "/workspace/iaaa-speaker/checkpoints/p11-campp-known446-ood-longshort-ts-oof-f0/campp_best_bundle/oof_predictions.npz",
+    "specialist_oof_sha256": "84441cbeb4dc40dbcf8e7319eb9ff7df7abeb98cee35b4d9090306cff532fd36",
+    "preregistration": "/workspace/iaaa-speaker/configs/analyses/p12-campp-duration-router-f0-prereg.json",
+    "preregistration_sha256": "40308ca780dca402a3846b9f57f03388375dd808f6020d35a4f67b2d1cf3aaf0",
+    "audio_dir": "/workspace/iaaa-speaker/data/processed/audio_wav",
+    "output_oof": "/workspace/iaaa-speaker/reports/generated/p12_campp_duration_router_f0_oof.npz",
+    "output_oof_sha256": "7a761c6e076c7641e07e1de848d7fc078ca5d72f11e2117cdf23f6e9a4e9a735"
+  },
+  "evaluation": {
+    "contract": {
+      "analysis_id": "p12-campp-duration-router-f0-v1",
+      "cutoff_seconds": 8.0,
+      "short_boundary_inclusive": true,
+      "blend": false,
+      "search_dimensions": 0,
+      "decision": "Raw probability-average direct argmax",
+      "leaderboard_used": false,
+      "single_fold_submission_authorized": false
+    },
+    "integrity": {
+      "rows": 1632,
+      "unique_files": 1632,
+      "probability_columns": 447,
+      "split": {
+        "split_fold": 0,
+        "split_folds": 3,
+        "split_seed": 42
+      }
+    },
+    "routing": {
+      "short_specialist_rows": 68,
+      "long_control_rows": 1564,
+      "short_fraction": 0.041666666666666664,
+      "duration_min": 1.024,
+      "duration_max": 117.504
+    },
+    "metrics": {
+      "p0_control": {
+        "macro_f1": 0.9469211906147802,
+        "accuracy": 0.9491421568627451,
+        "known_accuracy": 0.9573991031390134,
+        "ood_f1": 0.9586206896551723,
+        "ood_precision": 0.9788732394366197,
+        "ood_recall": 0.9391891891891891,
+        "known_to_unknown": 15,
+        "known_to_wrong_known": 23,
+        "unknown_to_known": 45
+      },
+      "p12_router": {
+        "macro_f1": 0.9489342270747739,
+        "accuracy": 0.9522058823529411,
+        "known_accuracy": 0.9562780269058296,
+        "ood_f1": 0.9615912208504801,
+        "ood_precision": 0.9763231197771588,
+        "ood_recall": 0.9472972972972973,
+        "known_to_unknown": 17,
+        "known_to_wrong_known": 22,
+        "unknown_to_known": 39
+      },
+      "p12_delta_vs_p0": {
+        "macro_f1": 0.0020130364599937334,
+        "accuracy": 0.0030637254901960675,
+        "known_accuracy": -0.0011210762331838042,
+        "ood_f1": 0.0029705311953077684
+      },
+      "observed_class_macro_f1_descriptive_only": {
+        "p0_control": 0.9469211906147802,
+        "p12_router": 0.9489342270747739
+      }
+    },
+    "global_error_transitions": {
+      "rescued_errors": 9,
+      "introduced_errors": 4,
+      "baseline_errors": 83,
+      "rescue_rate": 0.10843373493975904
+    },
+    "routed_subset": {
+      "coverage": {
+        "rows": 68,
+        "known_rows": 33,
+        "unknown_rows": 35,
+        "unique_known_classes": 29,
+        "known_support_min": 1,
+        "known_support_max": 2
+      },
+      "p0_metrics": {
+        "macro_f1": 0.03038185197021886,
+        "accuracy": 0.4852941176470588,
+        "known_accuracy": 0.5151515151515151,
+        "ood_f1": 0.5925925925925926,
+        "ood_precision": 0.8421052631578947,
+        "ood_recall": 0.45714285714285713,
+        "known_to_unknown": 3,
+        "known_to_wrong_known": 13,
+        "unknown_to_known": 19
+      },
+      "specialist_metrics": {
+        "macro_f1": 0.029705380023121324,
+        "accuracy": 0.5588235294117647,
+        "known_accuracy": 0.48484848484848486,
+        "ood_f1": 0.7096774193548386,
+        "ood_precision": 0.8148148148148148,
+        "ood_recall": 0.6285714285714286,
+        "known_to_unknown": 5,
+        "known_to_wrong_known": 12,
+        "unknown_to_known": 13
+      },
+      "error_transitions": {
+        "rescued_errors": 9,
+        "introduced_errors": 4,
+        "baseline_errors": 35,
+        "rescue_rate": 0.2571428571428571
+      }
+    },
+    "gate": {
+      "contract": {
+        "all_checks_required": true,
+        "min_raw_macro_f1_gain_vs_p0": 0.002,
+        "max_known_accuracy_drop_vs_p0": 0.001,
+        "max_ood_f1_drop_vs_p0": 0.001,
+        "min_routed_subset_p0_error_rescue_rate": 0.25,
+        "require_global_rescued_errors_gt_introduced": true,
+        "require_routed_subset_rescued_errors_gt_introduced": true,
+        "require_identical_file_set_labels_split_and_class_map": true,
+        "passing_action": "Authorize a separate preregistration and training of Fold-1/Fold-2 short specialists for the same fixed 8-second router; do not build a submission yet.",
+        "failing_action": "Close P11/P12 duration routing and move to a genuinely different condition-robust frontend or augmentation hypothesis."
+      },
+      "checks": {
+        "raw_macro_f1_gain_vs_p0": true,
+        "known_accuracy_guardrail_vs_p0": false,
+        "ood_f1_guardrail_vs_p0": true,
+        "routed_subset_p0_error_rescue_rate": true,
+        "global_rescued_errors_exceed_introduced": true,
+        "routed_subset_rescued_errors_exceed_introduced": true,
+        "integrity": true
+      },
+      "passed": false
+    },
+    "scientific_decision": "rejected_fold0_router_gate_close_p11_p12"
+  }
+}
