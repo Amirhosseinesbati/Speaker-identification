@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "source_model_id": "microsoft/wavlm-base-plus",
+  "git_commit": "f405c57ff6b24987795a8f41fe99d8d70680dbc6",
+  "weights_dir": "weights/wavlm_base_plus",
+  "runtime_format": "pytorch_model.bin",
+  "config": {
+    "model_type": "wavlm",
+    "hidden_size": 768,
+    "num_hidden_layers": 12,
+    "weighted_sum_state_count": 13
+  },
+  "files": [
+    {
+      "path": "config.json",
+      "size_bytes": 2232,
+      "sha256": "fea6df1c2700a3954fc07e70588aecc9055eeb28db2ff57151a2db0d19180ed4"
+    },
+    {
+      "path": "preprocessor_config.json",
+      "size_bytes": 215,
+      "sha256": "99272fe8ccfab114b68b478681ea47ee3a1ce62bb788cb92dd6e4f69fb1f1da2"
+    },
+    {
+      "path": "pytorch_model.bin",
+      "size_bytes": 377617425,
+      "sha256": "3bb273a6ace99408b50cfc81afdbb7ef2de02da2eab0234e18db608ce692fe51"
+    }
+  ],
+  "total_size_bytes": 377619872,
+  "tree_sha256": "1c8433565289128a288d6ae60166fa18488fb021a31dbaf7e3bee3ecbfe15a14",
+  "passed": true
+}
