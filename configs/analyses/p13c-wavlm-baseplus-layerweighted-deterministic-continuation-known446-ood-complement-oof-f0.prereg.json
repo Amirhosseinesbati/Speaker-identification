@@ -1,0 +1,64 @@
+{
+  "analysis_id": "p13c-wavlm-baseplus-layerweighted-deterministic-continuation-known446-ood-complement-oof-f0-v1",
+  "status": "preregistered_before_p13b_terminal_result_and_p13c_metric_evaluation",
+  "created_at_utc": "2026-09-01T13:55:00Z",
+  "leaderboard_used_for_selection": false,
+  "scientific_question": "Does deterministic WavLM weighted-sum training remain representation-limited, or was the epoch-15 fixed futility threshold too early for its delayed ArcFace learning curve?",
+  "control_curve_evidence": {
+    "source_run_id": "8b2b01d4a2fe4fc988d3a9554082004f",
+    "source_profile": "p0-campp-known446-ood-control-oof-f0-live-recovery",
+    "epoch15_raw_macro_f1": 0.842106,
+    "epoch20_raw_macro_f1": 0.895254,
+    "best_raw_macro_f1": 0.946921,
+    "interpretation": "The previous 0.88-at-epoch15 futility rule would have rejected the eventual CAM++ control winner and is therefore invalid as a generic convergence gate."
+  },
+  "activation_gate": {
+    "all_checks_required": true,
+    "source_profile": "p13b-wavlm-baseplus-layerweighted-deterministic-known446-ood-complement-oof-f0",
+    "source_complete_epoch": 15,
+    "minimum_epoch15_raw_macro_f1": 0.10,
+    "require_raw_strict_increase_epochs": [13, 14, 15],
+    "minimum_train_loss_drop_epoch13_to_epoch15": 0.50,
+    "require_clean_provenance_and_readable_stateful_checkpoint": true,
+    "failing_action": "Skip P13c and activate the separately preregistered P14 L-adapter probe."
+  },
+  "locked_change": {
+    "single_scientific_change": "Continue the exact P13b Raw model, optimizer, scheduler, RNG and history from completed epoch 15; replace the invalid fixed futility gate with plateau-based early stopping.",
+    "raw_stateful_resume": true,
+    "ema_resume_policy": "EMA is diagnostic only and restarts from resumed Raw weights because the pipeline checkpoint does not persist an EMA shadow.",
+    "data_model_audio_loss_optimizer_schedule_unchanged": true,
+    "decision": "Raw probability-average direct argmax",
+    "tuned_thresholds_or_blends": 0
+  },
+  "selection": {
+    "checkpoint": "best completed Raw probability-average Macro-F1 across the contiguous epoch-1-to-terminal history",
+    "early_stopping_start_epoch": 20,
+    "early_stopping_patience": 10,
+    "maximum_epochs": 40,
+    "fixed_metric_futility_threshold": null
+  },
+  "fold0_gate": {
+    "all_checks_required": true,
+    "standalone_min_raw_macro_f1": 0.9269211906147802,
+    "fixed_50_50_probability_blend_with_p0_min_macro_gain": 0.002,
+    "max_known_accuracy_drop_vs_p0": 0.001,
+    "max_ood_f1_drop_vs_p0": 0.001,
+    "min_p0_error_rescue_rate": 0.25,
+    "require_rescued_errors_gt_introduced": true,
+    "passing_action": "Permit complementary error analysis only; no automatic later fold or submission.",
+    "failing_action": "Close weighted-sum WavLM and activate P14 L-adapter."
+  },
+  "operational_contract": {
+    "resume_checkpoint": "checkpoints/p13b-wavlm-baseplus-layerweighted-deterministic-known446-ood-complement-oof-f0/latest_model.pt",
+    "resume_history_path": "checkpoints/p13b-wavlm-baseplus-layerweighted-deterministic-known446-ood-complement-oof-f0/latest_model.pt",
+    "source_checkpoint_epoch": 15,
+    "maximum_run_hours": 5.0,
+    "maximum_incremental_cost_usd": 0.9,
+    "immediate_stop": [
+      "NaN or Inf",
+      "OOM",
+      "split, class-map, resume-contract, optimizer, scheduler, RNG or history mismatch",
+      "artifact corruption"
+    ]
+  }
+}

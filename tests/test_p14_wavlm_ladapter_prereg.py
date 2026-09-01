@@ -27,7 +27,7 @@ def test_p14_changes_only_the_preregistered_adapter_dimensions() -> None:
     assert p14["model"]["speaker_head_type"] == p13b["model"]["speaker_head_type"]
     assert p14["model"]["speaker_head_config"] == p13b["model"]["speaker_head_config"]
     assert p14["training"]["loss"] == p13b["training"]["loss"]
-    for key in ("seed", "epochs", "early_stopping_start_epoch", "early_stopping_patience", "weight_decay", "schedule", "warmup_ratio", "min_lr_ratio", "ema_enabled", "ema_decay"):
+    for key in ("seed", "epochs", "weight_decay", "schedule", "warmup_ratio", "min_lr_ratio", "ema_enabled", "ema_decay"):
         assert p14["training"][key] == p13b["training"][key]
 
     wavlm = p14["model"]["encoder_config"]["wavlm"]
@@ -38,6 +38,8 @@ def test_p14_changes_only_the_preregistered_adapter_dimensions() -> None:
     assert wavlm["layer_adapter_tune_backbone_layer_norms"] is True
     assert wavlm["frozen_backbone_eval"] is False
     assert p14["experiment"]["operational_preflight"]["require_layer_weight_count"] == 12
+    assert p14["training"]["early_stopping_start_epoch"] == 20
+    assert p14["training"]["early_stopping_patience"] == 10
     assert p14["training"]["learning_rate"] == 5.0e-4
     assert p14["training"]["encoder_lr"] == 5.0e-4
 
@@ -63,5 +65,7 @@ def test_p14_preregistration_locks_parameter_scope_and_gate() -> None:
     assert gate["max_known_accuracy_drop_vs_p0"] == 0.001
     assert gate["max_ood_f1_drop_vs_p0"] == 0.001
     assert gate["min_p0_error_rescue_rate"] == 0.25
-    assert prereg["selection"]["futility_check_epoch"] == 15
-    assert prereg["selection"]["futility_min_best_raw_macro_f1"] == 0.88
+    assert prereg["selection"]["fixed_metric_futility_threshold"] is None
+    assert prereg["selection"]["early_stopping_start_epoch"] == 20
+    assert prereg["selection"]["early_stopping_patience"] == 10
+    assert prereg["convergence_amendment_before_p13b_terminal_and_p14_metrics"]["leaderboard_used"] is False

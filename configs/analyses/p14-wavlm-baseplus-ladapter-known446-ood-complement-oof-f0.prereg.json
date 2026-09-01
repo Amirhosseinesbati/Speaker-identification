@@ -3,7 +3,7 @@
   "status": "preregistered_before_p13b_terminal_result_and_p14_fold0_metric_evaluation",
   "created_at_utc": "2026-09-01T13:10:00Z",
   "leaderboard_used_for_selection": false,
-  "activation_condition": "P13b fails any locked Fold-0 gate or its epoch-15 futility rule.",
+  "activation_condition": "P13b fails the preregistered P13c learning-slope eligibility gate, or a completed P13c stateful continuation fails its locked Fold-0 gate.",
   "scientific_question": "Can the paper-grounded WavLM L-adapter recipe learn speaker-discriminative complementary features on the competition data while updating only small layer adapters and transformer LayerNorms?",
   "research_anchor": {
     "paper": "Parameter Efficient Transfer Learning for Various Speech Processing Tasks",
@@ -48,12 +48,18 @@
   },
   "selection": {
     "checkpoint": "best completed Raw probability-average Macro-F1",
-    "early_stopping_start_epoch": 10,
-    "early_stopping_patience": 8,
+    "early_stopping_start_epoch": 20,
+    "early_stopping_patience": 10,
     "maximum_epochs": 40,
-    "earliest_metric_stop_epoch": 18,
-    "futility_check_epoch": 15,
-    "futility_min_best_raw_macro_f1": 0.88
+    "earliest_metric_stop_epoch": 30,
+    "fixed_metric_futility_threshold": null
+  },
+  "convergence_amendment_before_p13b_terminal_and_p14_metrics": {
+    "amended_at_utc": "2026-09-01T14:05:00Z",
+    "evidence_run_id": "8b2b01d4a2fe4fc988d3a9554082004f",
+    "evidence": "The winning CAM++ Fold-0 control was only 0.842106 Raw Macro-F1 at epoch 15, below the former 0.88 futility threshold, before reaching 0.946921. The fixed threshold would therefore reject a known successful learning curve.",
+    "change": "Remove the fixed epoch-15 futility threshold and use delayed plateau-based early stopping from epoch 20 with patience 10.",
+    "leaderboard_used": false
   },
   "fold0_gate": {
     "all_checks_required": true,
