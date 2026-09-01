@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.campaign_state import CampaignStateError, CampaignStore  # noqa: E402
+from src.experiment_config import load_profile  # noqa: E402
 
 
 DEFAULT_STATE = ROOT / "data" / "experiments" / "campaign_state.json"
@@ -309,6 +310,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     config_path = ROOT / "configs" / "experiments" / f"{args.profile}.yaml"
     if not config_path.is_file():
         raise CampaignStateError(f"unknown experiment profile: {args.profile}")
+    config = load_profile(args.profile)
     config_sha = _sha256(config_path)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

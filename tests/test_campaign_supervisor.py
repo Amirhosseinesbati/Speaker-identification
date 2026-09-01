@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import scripts.campaign_supervisor as supervisor
 from scripts.campaign_supervisor import (
@@ -87,3 +88,74 @@ def test_notification_marker_is_atomic_and_deduplicatable(
     payload = __import__("json").loads(marker.read_text(encoding="utf-8"))
     assert payload["telegram_message_id"] == 123
     assert payload["events"]["p13:start:abc"]["metadata"] == {"profile": "p13"}
+
+
+def test_cmd_run_loads_resolved_profile_before_notification(
+    tmp_path: Path, monkeypatch
+) -> None:
+    profile = "p13-test"
+    config_path = tmp_path / "configs" / "experiments" / f"{profile}.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("experiment: {}\n", encoding="utf-8")
+    resolved = {
+        "experiment": {"purpose": "frozen SSL complement"},
+        "model": {"encoder_type": "wavlm"},
+        "data": {"split": {"fold": 0, "folds": 3, "seed": 42}},
+        "training": {
+            "epochs": 40,
+            "early_stopping_start_epoch": 10,
+            "early_stopping_patience": 8,
+        },
+    }
+
+    class FakeStore:
+        state = {
+            "status": "ANALYZING",
+            "policy": {"max_run_hours": 12.0, "hourly_rate_usd": 0.17},
+            "current_run": None,
+        }
+
+        def load(self):
+            return self.state
+
+        def assert_budget(self, reserve_hours=0.0):
+            return {}
+
+        def start_run(self, run):
+            self.state = {**self.state, "status": "RUNNING_EXPERIMENT"}
+
+        def finish_run(self, **kwargs):
+            self.state = {**self.state, "status": "ANALYZING"}
+            return self.state
+
+        def budget_snapshot(self, state):
+            return {"estimated_cost_usd": 1.0}
+
+    store = FakeStore()
+    notifications = []
+    monkeypatch.setattr(supervisor, "ROOT", tmp_path)
+    monkeypatch.setattr(supervisor, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(supervisor, "load_profile", lambda name: resolved)
+    monkeypatch.setattr(supervisor, "_store", lambda args: store)
+    monkeypatch.setattr(supervisor, "_assert_reproducible_checkout", lambda _: "abc")
+    monkeypatch.setattr(supervisor, "_notify", lambda message, **kwargs: notifications.append((message, kwargs)))
+    monkeypatch.setattr(supervisor, "_worker_environment", lambda: {})
+    monkeypatch.setattr(supervisor, "_artifact_receipts", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        supervisor.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0),
+    )
+    args = SimpleNamespace(
+        profile=profile,
+        stage="eval",
+        timeout_hours=1.0,
+        no_mlflow=True,
+        allow_dirty=False,
+        state="unused",
+        events="unused",
+    )
+
+    assert supervisor.cmd_run(args) == 0
+    assert "Encoder: wavlm" in notifications[0][0]
+    assert notifications[0][1]["event_key"].startswith(f"{profile}:started:")

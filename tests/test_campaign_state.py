@@ -47,6 +47,26 @@ def test_state_transitions_are_atomic_and_evented(tmp_path):
     ]
 
 
+def test_failed_run_can_record_auditable_preprocess_phase(tmp_path):
+    store = _store(tmp_path)
+    _initialize(store)
+    store.transition("READY", "preflight passed")
+    store.start_run({"profile": "p13", "git_commit": "abc123"})
+
+    state = store.finish_run(
+        success=False,
+        exit_code=1,
+        reason="supervisor failed before child process",
+        artifacts=[],
+        metadata={"failure_phase": "before_pipeline_process_start"},
+    )
+
+    assert state["status"] == "CAMPAIGN_BLOCKED"
+    assert state["completed_runs"][0]["failure_phase"] == (
+        "before_pipeline_process_start"
+    )
+
+
 def test_invalid_transition_is_rejected(tmp_path):
     store = _store(tmp_path)
     _initialize(store)

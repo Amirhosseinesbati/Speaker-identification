@@ -294,6 +294,7 @@ class CampaignStore:
         exit_code: int,
         reason: str,
         artifacts: Optional[list[dict[str, Any]]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         state = self.load()
         if state["status"] != "RUNNING_EXPERIMENT" or not state.get("current_run"):
@@ -304,6 +305,7 @@ class CampaignStore:
             "status": "complete" if success else "failed",
             "exit_code": int(exit_code),
             "artifacts": artifacts or [],
+            **(metadata or {}),
         })
         state["completed_runs"].append(run)
         state["current_run"] = None

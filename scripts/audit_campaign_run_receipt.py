@@ -26,18 +26,26 @@ def _one_completed_run(state: dict[str, Any], profile: str) -> dict[str, Any]:
         run for run in state.get("completed_runs", [])
         if run.get("profile") == profile
     ]
-    if len(matches) != 1:
+    successful = [
+        run for run in matches
+        if run.get("status") == "complete" and int(run.get("exit_code", -1)) == 0
+    ]
+    if len(successful) != 1:
         raise RuntimeError(
-            f"expected exactly one completed run for {profile!r}; "
-            f"found {len(matches)}"
+            f"expected exactly one successful run for {profile!r}; "
+            f"found {len(successful)}"
         )
-    run = matches[0]
-    if run.get("status") != "complete" or int(run.get("exit_code", -1)) != 0:
+    unapproved_failures = [
+        run for run in matches
+        if run not in successful
+        and run.get("failure_phase") != "before_pipeline_process_start"
+    ]
+    if unapproved_failures:
         raise RuntimeError(
-            f"run is not a successful completion: status={run.get('status')!r}, "
-            f"exit_code={run.get('exit_code')!r}"
+            "profile has an unapproved additional attempt: "
+            f"{[(run.get('status'), run.get('exit_code')) for run in unapproved_failures]}"
         )
-    return run
+    return successful[0]
 
 
 def _receipt_paths(

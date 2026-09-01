@@ -91,6 +91,36 @@ def test_audit_campaign_run_verifies_receipts_checkpoint_and_oof(tmp_path):
     assert result["oof"]["unique_files"] == 2
 
 
+def test_audit_accepts_tagged_preprocess_failure_before_one_success(tmp_path):
+    state_path, _ = _fixture(tmp_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["completed_runs"].insert(0, {
+        "profile": PROFILE,
+        "status": "failed",
+        "exit_code": 1,
+        "failure_phase": "before_pipeline_process_start",
+        "artifacts": [],
+    })
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    assert audit_campaign_run(tmp_path, state_path, PROFILE)["passed"] is True
+
+
+def test_audit_rejects_untagged_additional_attempt(tmp_path):
+    state_path, _ = _fixture(tmp_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["completed_runs"].insert(0, {
+        "profile": PROFILE,
+        "status": "failed",
+        "exit_code": 1,
+        "artifacts": [],
+    })
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="unapproved additional attempt"):
+        audit_campaign_run(tmp_path, state_path, PROFILE)
+
+
 def test_audit_campaign_run_rejects_corrupted_receipt(tmp_path):
     state_path, bundle = _fixture(tmp_path)
     with bundle.open("ab") as handle:
