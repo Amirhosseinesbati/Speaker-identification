@@ -1695,6 +1695,11 @@ def get_dataloaders(
     disable_train_augmentation = bool(
         adaptive_cfg.get("disable_augmentation", False)
     ) if adaptive_duration_enabled else False
+    short_teacher_student_enabled = bool(
+        (((train_cfg.get("loss", {}) or {}).get(
+            "short_teacher_student", {}
+        ) or {}).get("enabled", False))
+    )
 
     batch_size = hw_profile["batch_size"]
     num_workers = hw_profile["num_workers"]
@@ -1709,6 +1714,8 @@ def get_dataloaders(
     if adaptive_duration_enabled:
         print("  🧭 D-ALMFT: source-duration receipts enabled; "
               f"augmentation={'off' if disable_train_augmentation else 'on'}")
+    if short_teacher_student_enabled:
+        print("  👥 Long/short teacher-student: source-duration receipts enabled")
 
     min_valid_duration = audio_cfg.get("min_valid_duration", 0.0)
 
@@ -1780,7 +1787,9 @@ def get_dataloaders(
         return_clean_aug_pair=(
             consistency_enabled and consistency_pairing == "clean_aug"
         ) or ood_jsd_enabled,
-        return_source_duration=adaptive_duration_enabled,
+        return_source_duration=(
+            adaptive_duration_enabled or short_teacher_student_enabled
+        ),
         apply_augmentation=not disable_train_augmentation,
     )
 

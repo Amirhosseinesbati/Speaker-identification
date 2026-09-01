@@ -26,6 +26,11 @@ from src.adaptive_margin import (
     DurationAdaptiveMargin,
     build_duration_adaptive_margin,
 )
+from src.short_teacher_student import (
+    ShortTeacherStudent,
+    build_short_teacher_student,
+    teacher_student_losses,
+)
 import yaml
 from tqdm import tqdm
 
@@ -870,6 +875,8 @@ def train_epoch(
     ood_jsd_weight: float = 0.0,
     ood_head_only: bool = False,
     adaptive_margin: Optional[DurationAdaptiveMargin] = None,
+    teacher_model: Optional[nn.Module] = None,
+    short_teacher_student: Optional[ShortTeacherStudent] = None,
     training_seed: int = 42,
     epoch: int = 0,
 ) -> Dict[str, float]:
@@ -895,6 +902,14 @@ def train_epoch(
     """
     if consistency_weight < 0:
         raise ValueError("consistency_weight must be non-negative")
+    if (teacher_model is None) != (short_teacher_student is None):
+        raise ValueError(
+            "teacher_model and short_teacher_student must be enabled together"
+        )
+    if short_teacher_student is not None and adaptive_margin is not None:
+        raise ValueError(
+            "short teacher-student and adaptive margin are distinct hypotheses"
+        )
     if not np.isfinite(ood_jsd_weight) or ood_jsd_weight < 0:
         raise ValueError("ood_jsd_weight must be finite and non-negative")
     if ood_jsd_enabled and not criterion.use_ood:
@@ -924,6 +939,10 @@ def train_epoch(
             return autocast()
 
     model.train()
+    if teacher_model is not None:
+        teacher_model.eval()
+        if any(parameter.requires_grad for parameter in teacher_model.parameters()):
+            raise ValueError("teacher_model parameters must all be frozen")
     if ood_head_only:
         encoder = getattr(model, "encoder", None)
         speaker_head = getattr(model, "head_speaker", None)
@@ -973,6 +992,11 @@ def train_epoch(
     total_loss_inter_class_weighted = 0.0
     total_loss_ood_jsd = 0.0
     total_loss_ood_jsd_weighted = 0.0
+    total_loss_teacher_posterior = 0.0
+    total_loss_teacher_posterior_weighted = 0.0
+    total_loss_teacher_embedding = 0.0
+    total_loss_teacher_embedding_weighted = 0.0
+    total_teacher_embedding_cosine = 0.0
     total_adaptive_duration = 0.0
     total_adaptive_margin = 0.0
     total_adaptive_windows = 0
@@ -1025,6 +1049,11 @@ def train_epoch(
                 "D-ALMFT requires source durations from SpeakerDataset; enable "
                 "training.adaptive_margin before constructing the dataloader."
             )
+        if short_teacher_student is not None and source_durations is None:
+            raise RuntimeError(
+                "short teacher-student training requires source durations from "
+                "SpeakerDataset"
+            )
         if adaptive_margin is not None and clean_waveforms is not None:
             raise ValueError(
                 "D-ALMFT disables augmentation and cannot be combined with "
@@ -1059,10 +1088,30 @@ def train_epoch(
         step_loss_inter_class_weighted = 0.0
         step_loss_ood_jsd = 0.0
         step_loss_ood_jsd_weighted = 0.0
+        step_loss_teacher_posterior = 0.0
+        step_loss_teacher_posterior_weighted = 0.0
+        step_loss_teacher_embedding = 0.0
+        step_loss_teacher_embedding_weighted = 0.0
+        step_teacher_embedding_cosine = 0.0
         for w in range(W):
             # SpeakerDataset retains a window axis even for W=1. Always remove
             # it before the encoder, otherwise the singleton case stays 4-D.
             wf = waveforms[:, w] if waveforms.dim() == 4 else waveforms
+            teacher_outputs = None
+            if short_teacher_student is not None:
+                teacher_wf = wf
+                with torch.no_grad(), autocast_fn():
+                    teacher_outputs = teacher_model(
+                        teacher_wf, labels=None, return_embedding=True
+                    )
+                wf = short_teacher_student.crop_student_view(
+                    wf,
+                    source_durations,
+                    training_seed=training_seed,
+                    epoch=epoch,
+                    step=step,
+                    window_index=w,
+                )
             speaker_margins = None
             if adaptive_margin is not None:
                 sampled_duration = adaptive_margin.sample_duration_seconds(
@@ -1129,6 +1178,7 @@ def train_epoch(
                 need_embedding = (
                     proto_criterion is not None
                     or clean_embedding is not None
+                    or short_teacher_student is not None
                     or (consistency_weight > 0
                         and consistency_pairing == "cross_file_batch")
                 )
@@ -1211,11 +1261,40 @@ def train_epoch(
                 weighted_ood_jsd_loss = (
                     criterion.ood_weight * ood_jsd_weight * ood_jsd_loss
                 )
+                teacher_losses = {
+                    "posterior_kl": torch.zeros_like(primary_loss),
+                    "posterior_weighted": torch.zeros_like(primary_loss),
+                    "embedding_loss": torch.zeros_like(primary_loss),
+                    "embedding_weighted": torch.zeros_like(primary_loss),
+                    "embedding_cosine": torch.zeros_like(primary_loss),
+                    "total": torch.zeros_like(primary_loss),
+                }
+                if short_teacher_student is not None:
+                    if teacher_outputs is None or ood_logits is None:
+                        raise ValueError(
+                            "short teacher-student requires teacher outputs and "
+                            "the binary OOD head"
+                        )
+                    teacher_ood, teacher_speaker, teacher_embedding = teacher_outputs
+                    if teacher_ood is None:
+                        raise ValueError(
+                            "short teacher-student requires teacher OOD logits"
+                        )
+                    teacher_losses = teacher_student_losses(
+                        student_model=model,
+                        student_ood_logits=ood_logits,
+                        student_embedding=emb,
+                        teacher_ood_logits=teacher_ood,
+                        teacher_speaker_logits=teacher_speaker,
+                        teacher_embedding=teacher_embedding,
+                        contract=short_teacher_student,
+                    )
                 loss = (
                     primary_loss
                     + weighted_proto_loss
                     + weighted_consistency_loss
                     + weighted_ood_jsd_loss
+                    + teacher_losses["total"]
                 )
 
             # Fail loudly on NaN/Inf instead of silently training a broken model
@@ -1260,6 +1339,21 @@ def train_epoch(
             step_loss_ood_jsd += float(ood_jsd_loss.detach().item())
             step_loss_ood_jsd_weighted += float(
                 weighted_ood_jsd_loss.detach().item()
+            )
+            step_loss_teacher_posterior += float(
+                teacher_losses["posterior_kl"].detach().item()
+            )
+            step_loss_teacher_posterior_weighted += float(
+                teacher_losses["posterior_weighted"].detach().item()
+            )
+            step_loss_teacher_embedding += float(
+                teacher_losses["embedding_loss"].detach().item()
+            )
+            step_loss_teacher_embedding_weighted += float(
+                teacher_losses["embedding_weighted"].detach().item()
+            )
+            step_teacher_embedding_cosine += float(
+                teacher_losses["embedding_cosine"].detach().item()
             )
             step_ood_acc += compute_ood_accuracy(
                 ood_logits, labels, criterion.competition_known_count)
@@ -1313,6 +1407,15 @@ def train_epoch(
         )
         total_loss_ood_jsd += step_loss_ood_jsd / W
         total_loss_ood_jsd_weighted += step_loss_ood_jsd_weighted / W
+        total_loss_teacher_posterior += step_loss_teacher_posterior / W
+        total_loss_teacher_posterior_weighted += (
+            step_loss_teacher_posterior_weighted / W
+        )
+        total_loss_teacher_embedding += step_loss_teacher_embedding / W
+        total_loss_teacher_embedding_weighted += (
+            step_loss_teacher_embedding_weighted / W
+        )
+        total_teacher_embedding_cosine += step_teacher_embedding_cosine / W
 
         # Update progress bar
         progress_bar.set_postfix({
@@ -1321,6 +1424,8 @@ def train_epoch(
             "spk": f"{step_spk_acc / W:.3f}",
             **({"pair": f"{step_pair_cosine / W:.3f}"}
                if clean_waveforms is not None else {}),
+            **({"teacher_cos": f"{step_teacher_embedding_cosine / W:.3f}"}
+               if short_teacher_student is not None else {}),
         })
 
     primary_weight_sum = criterion.ood_weight + criterion.speaker_weight
@@ -1354,6 +1459,21 @@ def train_epoch(
         "loss_ood_jsd": total_loss_ood_jsd / num_batches,
         "loss_ood_jsd_weighted": (
             total_loss_ood_jsd_weighted / num_batches
+        ),
+        "loss_teacher_posterior": (
+            total_loss_teacher_posterior / num_batches
+        ),
+        "loss_teacher_posterior_weighted": (
+            total_loss_teacher_posterior_weighted / num_batches
+        ),
+        "loss_teacher_embedding": (
+            total_loss_teacher_embedding / num_batches
+        ),
+        "loss_teacher_embedding_weighted": (
+            total_loss_teacher_embedding_weighted / num_batches
+        ),
+        "teacher_embedding_cosine": (
+            total_teacher_embedding_cosine / num_batches
         ),
         "ood_acc": total_ood_acc / num_batches,
         "speaker_acc": total_speaker_acc / num_batches,
@@ -1463,6 +1583,13 @@ def train(config_path: str = "configs/default_config.yaml"):
     config = load_config(config_path)
     hw_profile = get_active_profile(config)
     train_cfg = config["training"]
+    short_teacher_student = build_short_teacher_student(config)
+    if short_teacher_student is not None:
+        raise RuntimeError(
+            "short_teacher_student requires the canonical pipeline so the "
+            "frozen teacher is cloned only after the warm-start checkpoint is "
+            "strictly validated; use scripts/run_pipeline.py with this profile"
+        )
     log_cfg = config["logging"]
     consistency_cfg = (
         ((train_cfg.get("loss", {}) or {}).get("consistency", {}) or {})

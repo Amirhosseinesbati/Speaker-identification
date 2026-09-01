@@ -13,6 +13,7 @@ Pipeline flow:
 """
 
 import hashlib
+import copy
 import json
 import os
 import sys
@@ -64,6 +65,7 @@ from src.training_utils import (
 )
 from src.heads import ood_head_enabled
 from src.adaptive_margin import build_duration_adaptive_margin
+from src.short_teacher_student import build_short_teacher_student
 
 
 # ─────────────────────────────────────────────────────────
@@ -705,6 +707,7 @@ def train_model(
     print("=" * 55)
 
     train_cfg = config["training"]
+    short_teacher_student = build_short_teacher_student(config)
     consistency_cfg = (
         ((train_cfg.get("loss", {}) or {}).get("consistency", {}) or {})
     )
@@ -744,6 +747,13 @@ def train_model(
     )
     print(f"  🎲 Training seed: {reproducibility['seed']} | "
           f"deterministic: {reproducibility['deterministic_algorithms']}")
+    if short_teacher_student is not None:
+        print(
+            "  👥 Frozen long-view teacher + short-view student: "
+            f"student={short_teacher_student.student_duration_seconds:g}s, "
+            f"posterior weight={short_teacher_student.posterior_weight:g}, "
+            f"embedding weight={short_teacher_student.embedding_weight:g}"
+        )
 
     # ── Device ──
     device = setup_device(config)
@@ -833,7 +843,9 @@ def train_model(
             (consistency_enabled and consistency_pairing == "clean_aug")
             or ood_jsd_enabled
         ),
-        return_source_duration=adaptive_margin is not None,
+        return_source_duration=(
+            adaptive_margin is not None or short_teacher_student is not None
+        ),
         apply_augmentation=not disable_train_augmentation,
     )
     val_dataset = SpeakerDataset(
@@ -916,6 +928,18 @@ def train_model(
     checkpoint = torch.load(model_checkpoint_path, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)
+    teacher_model = None
+    if short_teacher_student is not None:
+        teacher_model = copy.deepcopy(model).to(device).eval()
+        for parameter in teacher_model.parameters():
+            parameter.requires_grad = False
+        teacher_model.eval()
+        warm_start_source = checkpoint.get("warm_start") or {}
+        print(
+            "  👩‍🏫 Frozen teacher cloned from the exact warm-start weights "
+            f"(source epoch={warm_start_source.get('source_epoch', -1)}, "
+            f"sha256={warm_start_source.get('sha256', 'missing')})"
+        )
 
     if ood_head_only:
         if not ood_head_enabled(config):
@@ -1144,6 +1168,8 @@ def train_model(
             ood_jsd_weight=ood_jsd_weight,
             ood_head_only=ood_head_only,
             adaptive_margin=adaptive_margin,
+            teacher_model=teacher_model,
+            short_teacher_student=short_teacher_student,
             training_seed=int(train_cfg.get("seed", 42)),
             epoch=epoch,
         )
@@ -1228,6 +1254,21 @@ def train_model(
             "train_loss_ood_jsd_weighted": train_metrics[
                 "loss_ood_jsd_weighted"
             ],
+            "train_loss_teacher_posterior": train_metrics[
+                "loss_teacher_posterior"
+            ],
+            "train_loss_teacher_posterior_weighted": train_metrics[
+                "loss_teacher_posterior_weighted"
+            ],
+            "train_loss_teacher_embedding": train_metrics[
+                "loss_teacher_embedding"
+            ],
+            "train_loss_teacher_embedding_weighted": train_metrics[
+                "loss_teacher_embedding_weighted"
+            ],
+            "train_teacher_embedding_cosine": train_metrics[
+                "teacher_embedding_cosine"
+            ],
             "train_ood_acc": train_metrics["ood_acc"],
             "train_speaker_acc": train_metrics["speaker_acc"],
             "val_loss": val_metrics["loss"],
@@ -1282,6 +1323,13 @@ def train_model(
                 "  D-ALMFT — mean effective duration: "
                 f"{train_metrics['adaptive_duration_seconds']:.3f}s | "
                 f"mean margin: {train_metrics['adaptive_margin']:.4f}"
+            )
+        if short_teacher_student is not None:
+            print(
+                "  Long/short teacher-student — posterior KL: "
+                f"{train_metrics['loss_teacher_posterior']:.5f} | "
+                "embedding cosine: "
+                f"{train_metrics['teacher_embedding_cosine']:.5f}"
             )
 
         # Materialise the complete current-epoch row before checkpointing.  A
@@ -1505,6 +1553,23 @@ def train_model(
         "ood_jsd_enabled": ood_jsd_enabled,
         "ood_jsd_type": ood_jsd_type,
         "ood_jsd_weight": ood_jsd_weight,
+        "short_teacher_student_enabled": short_teacher_student is not None,
+        "short_teacher_student_duration_seconds": (
+            short_teacher_student.student_duration_seconds
+            if short_teacher_student is not None else 0.0
+        ),
+        "short_teacher_student_posterior_weight": (
+            short_teacher_student.posterior_weight
+            if short_teacher_student is not None else 0.0
+        ),
+        "short_teacher_student_embedding_weight": (
+            short_teacher_student.embedding_weight
+            if short_teacher_student is not None else 0.0
+        ),
+        "short_teacher_sha256": (
+            ((checkpoint.get("warm_start") or {}).get("sha256", ""))
+            if short_teacher_student is not None else ""
+        ),
         "trainable_parameters": sum(
             parameter.numel() for parameter in model.parameters()
             if parameter.requires_grad

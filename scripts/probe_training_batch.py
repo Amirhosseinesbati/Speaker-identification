@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import copy
 import gc
+import hashlib
 import json
 import sys
 import time
@@ -33,6 +34,7 @@ from src.batch_probe import select_recommended_batch  # noqa: E402
 from src.experiment_config import load_profile  # noqa: E402
 from src.heads import ood_head_enabled  # noqa: E402
 from src.model_factory import create_model_from_config  # noqa: E402
+from src.short_teacher_student import build_short_teacher_student  # noqa: E402
 from src.train import PrototypicalLoss, build_criterion, train_epoch  # noqa: E402
 from src.training_utils import (  # noqa: E402
     apply_encoder_finetune_mode,
@@ -108,6 +110,41 @@ def _consistency_settings(config: dict) -> tuple[float, str]:
     return weight, pairing
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_warm_start_for_probe(
+    model: torch.nn.Module,
+    config: dict,
+    class_map: dict,
+) -> dict[str, Any] | None:
+    """Strictly reproduce the recipe's initial model state for the probe."""
+    configured = config.get("training", {}).get("warm_start_checkpoint")
+    if not configured:
+        return None
+    path = Path(str(configured))
+    if not path.is_file():
+        raise FileNotFoundError(f"Probe warm-start checkpoint not found: {path}")
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    checkpoint_map = checkpoint.get("class_map")
+    if checkpoint_map is not None and checkpoint_map != class_map:
+        raise ValueError("Probe warm-start class_map differs from active profile")
+    state = checkpoint.get("model_state_dict")
+    if not isinstance(state, dict):
+        raise ValueError("Probe warm-start checkpoint lacks model_state_dict")
+    model.load_state_dict(state, strict=True)
+    return {
+        "path": str(path),
+        "sha256": _sha256(path),
+        "source_epoch": int(checkpoint.get("epoch", -1)),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True)
@@ -128,6 +165,7 @@ def main() -> int:
         raise SystemExit("--headroom-fraction must be in [0, 1)")
 
     base_config = load_profile(args.profile)
+    short_teacher_student = build_short_teacher_student(base_config)
     seed_everything(
         base_config["training"].get("seed", 42),
         deterministic=base_config["training"].get("deterministic_algorithms", True),
@@ -145,7 +183,20 @@ def main() -> int:
     num_metric_classes = len(class_map) - 1
     model = create_model_from_config(
         base_config, num_known_speakers=num_metric_classes,
-    ).to(device)
+    )
+    warm_start_receipt = _load_warm_start_for_probe(
+        model, base_config, class_map,
+    )
+    model = model.to(device)
+    teacher_model = None
+    if short_teacher_student is not None:
+        if warm_start_receipt is None:
+            raise RuntimeError(
+                "short teacher-student probe requires a warm-start checkpoint"
+            )
+        teacher_model = copy.deepcopy(model).to(device).eval()
+        for parameter in teacher_model.parameters():
+            parameter.requires_grad = False
     if args.encoder_mode == "frozen":
         model.encoder.freeze()
     else:
@@ -207,6 +258,8 @@ def main() -> int:
                     consistency_weight=consistency_weight,
                     consistency_pairing=consistency_pairing,
                     adaptive_margin=adaptive_margin,
+                    teacher_model=teacher_model,
+                    short_teacher_student=short_teacher_student,
                     training_seed=int(config["training"].get("seed", 42)),
                     epoch=1,
                 )
@@ -224,6 +277,8 @@ def main() -> int:
                     consistency_weight=consistency_weight,
                     consistency_pairing=consistency_pairing,
                     adaptive_margin=adaptive_margin,
+                    teacher_model=teacher_model,
+                    short_teacher_student=short_teacher_student,
                     training_seed=int(config["training"].get("seed", 42)),
                     epoch=1,
                 )
@@ -266,6 +321,31 @@ def main() -> int:
                 "train_adaptive_margin": float(
                     (last_train_metrics or {}).get("adaptive_margin", 0.0)
                 ),
+                "train_loss_teacher_posterior": float(
+                    (last_train_metrics or {}).get(
+                        "loss_teacher_posterior", 0.0
+                    )
+                ),
+                "train_loss_teacher_posterior_weighted": float(
+                    (last_train_metrics or {}).get(
+                        "loss_teacher_posterior_weighted", 0.0
+                    )
+                ),
+                "train_loss_teacher_embedding": float(
+                    (last_train_metrics or {}).get(
+                        "loss_teacher_embedding", 0.0
+                    )
+                ),
+                "train_loss_teacher_embedding_weighted": float(
+                    (last_train_metrics or {}).get(
+                        "loss_teacher_embedding_weighted", 0.0
+                    )
+                ),
+                "train_teacher_embedding_cosine": float(
+                    (last_train_metrics or {}).get(
+                        "teacher_embedding_cosine", 0.0
+                    )
+                ),
             })
             if consistency_weight > 0:
                 values = [
@@ -282,6 +362,26 @@ def main() -> int:
                 if row["train_loss_consistency_weighted"] <= 0:
                     raise RuntimeError(
                         "Enabled consistency objective produced no positive "
+                        "weighted loss in batch probe"
+                    )
+            if short_teacher_student is not None:
+                values = [
+                    row["train_loss_teacher_posterior"],
+                    row["train_loss_teacher_posterior_weighted"],
+                    row["train_loss_teacher_embedding"],
+                    row["train_loss_teacher_embedding_weighted"],
+                    row["train_teacher_embedding_cosine"],
+                ]
+                if not all(torch.isfinite(torch.tensor(values))):
+                    raise RuntimeError(
+                        "Non-finite teacher-student diagnostics in batch probe"
+                    )
+                if (
+                    row["train_loss_teacher_posterior_weighted"] <= 0
+                    or row["train_loss_teacher_embedding_weighted"] <= 0
+                ):
+                    raise RuntimeError(
+                        "Enabled teacher-student objective produced no positive "
                         "weighted loss in batch probe"
                     )
         except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
@@ -307,6 +407,8 @@ def main() -> int:
         "gpu": torch.cuda.get_device_name(0),
         "total_vram_gib": total_vram_gib,
         "headroom_fraction": args.headroom_fraction,
+        "warm_start": warm_start_receipt,
+        "short_teacher_student_enabled": short_teacher_student is not None,
         "results": rows,
         "recommended_batch_size": recommended,
         "warning": (

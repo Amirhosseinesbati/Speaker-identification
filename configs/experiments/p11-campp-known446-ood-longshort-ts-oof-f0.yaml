@@ -1,0 +1,127 @@
+_meta:
+  name: p11-campp-known446-ood-longshort-ts-oof-f0
+  base: default_config.yaml
+experiment:
+  priority: P11-OOD-PRESERVING-DURATION-GATE
+  family: campp-known446-ood-longshort-teacher-student
+  purpose: >-
+    Fold-0 gate for a frozen-long-teacher / short-student recipe derived from
+    Sang, Xia and Hansen (Interspeech 2020, DOI
+    10.21437/Interspeech.2020-2868). The student is optimized on a two-second
+    crop while an immutable eight-second CAM++ teacher supplies both the full
+    447-way known/unknown posterior and the speaker embedding target.
+  challenge_grounding: >-
+    The official task scores short chunks with one aggregated unknown class.
+    P10 improved known discrimination at one-to-five seconds but damaged the
+    known/unknown boundary on full recordings. Distilling the complete fused
+    posterior, rather than only an ArcFace margin, directly tests whether
+    duration robustness can be gained without discarding OOD information.
+  scientific_scope: >-
+    Teacher and student start from the exact selected P0 Fold-0 Raw checkpoint.
+    The teacher remains frozen and consumes the ordinary augmented eight-second
+    view; the student consumes a deterministic two-second crop of that same
+    view. The intervention is the cited joint objective: supervised task loss
+    plus posterior KL plus cosine embedding loss, with unit weights. ArcFace
+    margin, scale, data split, augmentation family, task losses and Raw
+    probability-average decision policy stay locked. No adaptive margin,
+    prototypical loss, generic consistency, EMA selection, L2-SP, calibration
+    or threshold tuning is permitted in this gate.
+  source:
+    title: Short Utterance Speaker Recognition with Teacher-Student Learning
+    venue: Interspeech 2020
+    doi: 10.21437/Interspeech.2020-2868
+    url: https://www.isca-archive.org/interspeech_2020/sang20_interspeech.html
+  preregistered_baseline:
+    profile: p0-campp-known446-ood-control-oof-f0
+    checkpoint: checkpoints/p0-campp-known446-ood-control-oof-f0/campp_best_raw.pt
+    checkpoint_sha256: f50f67f549b913b57111043b43daca1ff8bcbbf49bebe5dccab91ade8b19ae0d
+    epoch: 112
+    raw_probability_macro_f1: 0.9469211906147802
+    known_accuracy: 0.9573991031390134
+    ood_f1: 0.9586206896551724
+  preregistered_gate:
+    min_macro_f1_gain: 0.002
+    max_known_accuracy_drop: 0.001
+    max_ood_f1_drop: 0.001
+    require_raw_probability_average: true
+    full_file_evaluation_is_primary: true
+    fixed_duration_diagnostics:
+      durations_seconds: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+      compare_same_crop_baseline_and_treatment: true
+      tune_or_select_on_diagnostics: false
+    expansion_if_passed: separately_preregister_same_recipe_folds_1_and_2
+    later_folds_automatic: false
+    leaderboard_tuning: false
+  terminal_contract:
+    max_wall_clock_seconds: 14400
+    max_incremental_cost_usd: 0.75
+    immediate_stop_on:
+      [nan, split_or_provenance_mismatch, artifact_corruption, second_oom]
+    early_stopping: >-
+      Raw full-file Macro-F1 only, first eligible after epoch 10, patience 8,
+      maximum 40 epochs. Fixed-duration diagnostics never select an epoch.
+  telegram_events:
+    event_driven_only: true
+    send_once_on:
+      [started_after_preflight, critical_error, terminal_gate_decision, audited_submission_candidate]
+    periodic_heartbeat_messages: false
+data:
+  clean_duplicates: true
+  split: {scheme: kfold, folds: 3, fold: 0, seed: 42}
+model:
+  encoder_type: campp
+  competition_num_known: 446
+  num_unknown_clusters: 554
+  unknown_cluster_path: data/processed/unknown_clusters_oof_f0.json
+  speaker_target_scope: known
+  ood_head: true
+  speaker_head_type: arcface
+  speaker_head_config:
+    arcface: {embedding_dim: 192, margin: 0.4, scale: 30.0}
+  encoder_config:
+    campp: {freeze_encoder: false, unfreeze_last_n_blocks: 0}
+audio:
+  duration_seconds: 8.0
+  num_train_windows: 1
+  speech_aware_crop_probability: 0.75
+  eval_speech_aware: true
+  max_eval_windows: 8
+  short_audio_mode: pad
+hardware:
+  mode: vastai_3090_campp
+  profiles:
+    vastai_3090_campp:
+      batch_size: 32
+      description: RTX 3090 long-teacher/short-student preflight candidate
+      device: cuda
+      mixed_precision: true
+      num_workers: 8
+logging:
+  checkpoint_dir: checkpoints/p11-campp-known446-ood-longshort-ts-oof-f0
+  log_dir: logs/p11-campp-known446-ood-longshort-ts-oof-f0
+training:
+  seed: 42
+  deterministic_algorithms: true
+  warm_start_checkpoint: checkpoints/p0-campp-known446-ood-control-oof-f0/campp_best_raw.pt
+  epochs: 40
+  freeze_epochs: 0
+  early_stopping_start_epoch: 10
+  early_stopping_patience: 8
+  learning_rate: 1.0e-05
+  encoder_lr: 1.0e-05
+  weight_decay: 0.0001
+  schedule: cosine
+  warmup_ratio: 0.1
+  min_lr_ratio: 0.05
+  ema_enabled: false
+  loss:
+    speaker: {type: ce, label_smoothing: 0.05, weight: 0.85}
+    ood: {type: bce, pos_weight: 1.0, weight: 0.15}
+    proto: {enabled: false}
+    consistency: {enabled: false}
+    short_teacher_student:
+      enabled: true
+      student_duration_seconds: 2.0
+      posterior_weight: 1.0
+      embedding_weight: 1.0
+      seed_offset: 91337
