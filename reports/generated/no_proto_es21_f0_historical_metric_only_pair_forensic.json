@@ -1,0 +1,234 @@
+{
+  "contract": {
+    "primary_fusion": {
+      "method": "probability_average",
+      "weights": [
+        0.5,
+        0.5
+      ]
+    },
+    "search_dimensions": 0,
+    "historical_60_40_selection_eligible": false,
+    "leaderboard_used_for_selection": false,
+    "single_fold_submission_authorized": false
+  },
+  "provenance": {
+    "primary": "/workspace/iaaa-speaker/checkpoints/p0-campp-no-proto-repro-es21-oof-f0/campp_best_bundle/oof_predictions.npz",
+    "primary_sha256": "3ca2104aa6151c0e7cc9638b02ec889be2a477ff01bfc9c1afaa10b33128f386",
+    "secondary": "/workspace/iaaa-speaker/data/experiments/historical_metric_only_f0/metric_only_historical_aligned_f0.npz",
+    "secondary_sha256": "46efd9c8ac77467ceb269279ff66df0138d3c23f21ce1ddb22a63807e0b0a4a1"
+  },
+  "evaluation": {
+    "rows": 1632,
+    "better_single": "secondary",
+    "metrics": {
+      "primary": {
+        "macro_f1": 0.9479404639802496,
+        "accuracy": 0.9638480392156863,
+        "known_accuracy": 0.9383408071748879,
+        "ood_f1": 0.9627207325049052,
+        "ood_precision": 0.9328263624841572,
+        "ood_recall": 0.9945945945945946,
+        "known_to_unknown": 53,
+        "known_to_wrong_known": 2,
+        "unknown_to_known": 4
+      },
+      "secondary": {
+        "macro_f1": 0.9580760308397291,
+        "accuracy": 0.9589460784313726,
+        "known_accuracy": 0.9652466367713004,
+        "ood_f1": 0.9552238805970149,
+        "ood_precision": 0.9591280653950953,
+        "ood_recall": 0.9513513513513514,
+        "known_to_unknown": 30,
+        "known_to_wrong_known": 1,
+        "unknown_to_known": 36
+      },
+      "equal_50_50": {
+        "macro_f1": 0.9704147992894676,
+        "accuracy": 0.977328431372549,
+        "known_accuracy": 0.9652466367713004,
+        "ood_f1": 0.9754152823920266,
+        "ood_precision": 0.9594771241830066,
+        "ood_recall": 0.9918918918918919,
+        "known_to_unknown": 31,
+        "known_to_wrong_known": 0,
+        "unknown_to_known": 6
+      },
+      "historical_60_40_diagnostic_only": {
+        "macro_f1": 0.9661586163761938,
+        "accuracy": 0.9748774509803921,
+        "known_accuracy": 0.9585201793721974,
+        "ood_f1": 0.9729015201586253,
+        "ood_precision": 0.9521345407503234,
+        "ood_recall": 0.9945945945945946,
+        "known_to_unknown": 37,
+        "known_to_wrong_known": 0,
+        "unknown_to_known": 4
+      }
+    },
+    "equal_delta_vs_better_single": {
+      "macro_f1": 0.012338768449738469,
+      "accuracy": 0.018382352941176405,
+      "known_accuracy": 0.0,
+      "ood_f1": 0.020191401795011665
+    },
+    "equal_error_transitions": {
+      "rescued_errors": 33,
+      "introduced_errors": 3,
+      "baseline_errors": 67,
+      "rescue_rate": 0.4925373134328358
+    },
+    "gate": {
+      "contract": {
+        "equal_fusion_macro_f1_min": 0.96,
+        "macro_f1_gain_vs_better_single_min": 0.002,
+        "known_accuracy_delta_vs_better_single_min": -0.001,
+        "ood_f1_delta_vs_better_single_min": -0.001,
+        "rescue_rate_vs_better_single_min": 0.25,
+        "rescued_errors_must_exceed_introduced_errors": true,
+        "historical_training_overlap_rows_max": 0
+      },
+      "checks": {
+        "absolute_macro": true,
+        "macro_gain": true,
+        "known_guardrail": true,
+        "ood_guardrail": true,
+        "rescue_rate": true,
+        "rescued_exceed_introduced": true,
+        "provenance_disjoint": false
+      },
+      "passed": false
+    },
+    "selection_verdict": "rejected_historical_full_fold_gate_due_training_overlap",
+    "historical_provenance_audit": {
+      "training_overlap_rows": 1285,
+      "training_overlap_fraction": 0.7873774509803921,
+      "held_out_rows": 347,
+      "held_out_fraction": 0.21262254901960784,
+      "full_coverage": {
+        "rows": 1632,
+        "known_rows": 892,
+        "unknown_rows": 740,
+        "unique_known_classes": 446,
+        "known_support_min": 2,
+        "known_support_max": 2
+      },
+      "training_overlap_subset": {
+        "coverage": {
+          "rows": 1285,
+          "known_rows": 705,
+          "unknown_rows": 580,
+          "unique_known_classes": 446,
+          "known_support_min": 1,
+          "known_support_max": 2
+        },
+        "metrics": {
+          "primary": {
+            "macro_f1": 0.945848174497888,
+            "accuracy": 0.9626459143968872,
+            "known_accuracy": 0.9375886524822695,
+            "ood_f1": 0.9608006672226855,
+            "ood_precision": 0.9305331179321487,
+            "ood_recall": 0.993103448275862,
+            "known_to_unknown": 43,
+            "known_to_wrong_known": 1,
+            "unknown_to_known": 4
+          },
+          "secondary": {
+            "macro_f1": 0.9545624288249542,
+            "accuracy": 0.9595330739299611,
+            "known_accuracy": 0.9617021276595744,
+            "ood_f1": 0.9560723514211886,
+            "ood_precision": 0.955249569707401,
+            "ood_recall": 0.9568965517241379,
+            "known_to_unknown": 26,
+            "known_to_wrong_known": 1,
+            "unknown_to_known": 25
+          },
+          "equal_50_50": {
+            "macro_f1": 0.9684702789469027,
+            "accuracy": 0.9750972762645914,
+            "known_accuracy": 0.9631205673758865,
+            "ood_f1": 0.9728813559322034,
+            "ood_precision": 0.9566666666666667,
+            "ood_recall": 0.9896551724137931,
+            "known_to_unknown": 26,
+            "known_to_wrong_known": 0,
+            "unknown_to_known": 6
+          }
+        },
+        "observed_class_macro_f1_descriptive_only": {
+          "primary": 0.945848174497888,
+          "secondary": 0.9545624288249542,
+          "equal_50_50": 0.9684702789469027,
+          "warning": "This excludes absent competition classes and is not the 447-class competition Macro-F1."
+        },
+        "equal_error_transitions": {
+          "rescued_errors": 22,
+          "introduced_errors": 2,
+          "baseline_errors": 52,
+          "rescue_rate": 0.4230769230769231
+        }
+      },
+      "held_out_subset": {
+        "coverage": {
+          "rows": 347,
+          "known_rows": 187,
+          "unknown_rows": 160,
+          "unique_known_classes": 187,
+          "known_support_min": 1,
+          "known_support_max": 1
+        },
+        "metrics": {
+          "primary": {
+            "macro_f1": 0.39590536234831536,
+            "accuracy": 0.968299711815562,
+            "known_accuracy": 0.9411764705882353,
+            "ood_f1": 0.9696969696969697,
+            "ood_precision": 0.9411764705882353,
+            "ood_recall": 1.0,
+            "known_to_unknown": 10,
+            "known_to_wrong_known": 1,
+            "unknown_to_known": 0
+          },
+          "secondary": {
+            "macro_f1": 0.40928876214164717,
+            "accuracy": 0.9567723342939481,
+            "known_accuracy": 0.9786096256684492,
+            "ood_f1": 0.952076677316294,
+            "ood_precision": 0.9738562091503268,
+            "ood_recall": 0.93125,
+            "known_to_unknown": 4,
+            "known_to_wrong_known": 0,
+            "unknown_to_known": 11
+          },
+          "equal_50_50": {
+            "macro_f1": 0.4093615556702805,
+            "accuracy": 0.9855907780979827,
+            "known_accuracy": 0.9732620320855615,
+            "ood_f1": 0.9846153846153847,
+            "ood_precision": 0.9696969696969697,
+            "ood_recall": 1.0,
+            "known_to_unknown": 5,
+            "known_to_wrong_known": 0,
+            "unknown_to_known": 0
+          }
+        },
+        "observed_class_macro_f1_descriptive_only": {
+          "primary": 0.9363476030142697,
+          "secondary": 0.9430519416356511,
+          "equal_50_50": 0.9733224222585924,
+          "warning": "This excludes absent competition classes and is not the 447-class competition Macro-F1."
+        },
+        "equal_error_transitions": {
+          "rescued_errors": 11,
+          "introduced_errors": 1,
+          "baseline_errors": 15,
+          "rescue_rate": 0.7333333333333333
+        }
+      },
+      "warning": "Full-fold metrics are invalid for selection whenever any row was used to train the historical model. Held-out subset metrics are descriptive only when class coverage is incomplete."
+    }
+  }
+}
