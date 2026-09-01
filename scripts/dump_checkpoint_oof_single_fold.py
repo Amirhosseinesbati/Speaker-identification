@@ -60,6 +60,14 @@ def validate_probability_matrix(probabilities: np.ndarray, rows: int) -> None:
         raise RuntimeError("Checkpoint OOF probability rows do not sum to one")
 
 
+def pickle_free_string_array(values) -> np.ndarray:
+    """Return file ids readable by NumPy with ``allow_pickle=False``."""
+    result = np.asarray([str(value) for value in values], dtype=str)
+    if result.dtype.kind not in {"U", "S"}:
+        raise RuntimeError(f"Unexpected file-id dtype: {result.dtype}")
+    return result
+
+
 def validate_checkpoint_split(config: dict, expected_fold: int) -> dict:
     split = ((config.get("data", {}) or {}).get("split", {}) or {})
     observed = {
@@ -129,7 +137,7 @@ def main() -> int:
     if rebuilt_class_map != class_map:
         raise RuntimeError("Rebuilt class_map does not match the checkpoint class_map")
     validation_frame = validation_loader.dataset.df
-    files = validation_frame["audio_file"].astype(str).to_numpy()
+    files = pickle_free_string_array(validation_frame["audio_file"].tolist())
     if len(set(files.tolist())) != len(files):
         raise RuntimeError("Validation fold contains duplicate file ids")
 

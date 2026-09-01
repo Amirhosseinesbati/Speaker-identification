@@ -44,6 +44,15 @@ def test_dump_contract_collapses_pseudo_labels_and_checks_probabilities() -> Non
         dump.validate_probability_matrix(bad, 2)
 
 
+def test_dump_file_ids_are_pickle_free(tmp_path: Path) -> None:
+    files = dump.pickle_free_string_array(["a.wav", Path("b.wav")])
+    assert files.dtype.kind in {"U", "S"}
+    output = tmp_path / "oof.npz"
+    np.savez_compressed(output, files=files)
+    with np.load(output, allow_pickle=False) as archive:
+        assert archive["files"].tolist() == ["a.wav", "b.wav"]
+
+
 def _record(files: list[str], labels: np.ndarray, predictions: np.ndarray) -> dict:
     probabilities = np.full((len(files), 447), 1e-8, dtype=np.float64)
     probabilities[np.arange(len(files)), predictions] = 1.0
