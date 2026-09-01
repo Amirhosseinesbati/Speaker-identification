@@ -1,0 +1,455 @@
+{
+  "provenance": {
+    "baseline": "/workspace/iaaa-speaker/checkpoints/p0-campp-known446-ood-control-oof-f0/campp_best_bundle/oof_predictions.npz",
+    "baseline_sha256": "221aa9edb00e13cbf98a629a4dddede8eb5835460fafe513fb5ffc9d1ea89394",
+    "candidate": "/workspace/iaaa-speaker/checkpoints/p11-campp-known446-ood-longshort-ts-oof-f0/campp_best_bundle/oof_predictions.npz",
+    "candidate_sha256": "84441cbeb4dc40dbcf8e7319eb9ff7df7abeb98cee35b4d9090306cff532fd36",
+    "audio_dir": "/workspace/iaaa-speaker/data/processed/audio_wav"
+  },
+  "analysis": {
+    "contract": {
+      "analysis_type": "descriptive_actual_duration_oof",
+      "routing_policy_evaluated": false,
+      "threshold_or_bin_selected": false,
+      "duration_bins_fixed_before_reading_results": true,
+      "leaderboard_used": false,
+      "warning": "No bin result may select a routing cutoff on this Fold. Any P12 cutoff must be preregistered or selected on other folds."
+    },
+    "integrity": {
+      "rows": 1632,
+      "unique_files": 1632,
+      "file_set_sha256": "9acce35493c390b55f3e933a6ff1c50357bcaa3c9cfcf740cd0dd27b653d97a3",
+      "split": {
+        "split_fold": 0,
+        "split_folds": 3,
+        "split_seed": 42
+      }
+    },
+    "duration_seconds": {
+      "min": 1.024,
+      "max": 117.504,
+      "mean": 58.85149835324756,
+      "quantiles": {
+        "0.1": 39.944531250000004,
+        "0.25": 50.239984375000006,
+        "0.5": 59.519999999999996,
+        "0.75": 70.8266875,
+        "0.9": 81.664
+      }
+    },
+    "overall": {
+      "coverage": {
+        "rows": 1632,
+        "known_rows": 892,
+        "unknown_rows": 740,
+        "unique_known_classes": 446,
+        "known_support_min": 2,
+        "known_support_max": 2
+      },
+      "metrics": {
+        "baseline": {
+          "macro_f1": 0.9469211906147802,
+          "accuracy": 0.9491421568627451,
+          "known_accuracy": 0.9573991031390134,
+          "ood_f1": 0.9586206896551723,
+          "ood_precision": 0.9788732394366197,
+          "ood_recall": 0.9391891891891891,
+          "known_to_unknown": 15,
+          "known_to_wrong_known": 23,
+          "unknown_to_known": 45
+        },
+        "candidate": {
+          "macro_f1": 0.9475891199081589,
+          "accuracy": 0.9515931372549019,
+          "known_accuracy": 0.9540358744394619,
+          "ood_f1": 0.9603283173734609,
+          "ood_precision": 0.9722991689750693,
+          "ood_recall": 0.9486486486486486,
+          "known_to_unknown": 20,
+          "known_to_wrong_known": 21,
+          "unknown_to_known": 38
+        },
+        "candidate_delta": {
+          "macro_f1": 0.0006679292933786662,
+          "accuracy": 0.002450980392156854,
+          "known_accuracy": -0.0033632286995515237,
+          "ood_f1": 0.0017076277182885846
+        }
+      },
+      "observed_class_macro_f1_descriptive_only": {
+        "baseline": 0.9469211906147802,
+        "candidate": 0.9475891199081589,
+        "warning": "This excludes absent competition classes and is not the 447-class competition Macro-F1."
+      },
+      "candidate_vs_baseline_transitions": {
+        "rescued_errors": 17,
+        "introduced_errors": 13,
+        "baseline_errors": 83,
+        "rescue_rate": 0.20481927710843373
+      },
+      "prediction_disagreements": 43
+    },
+    "bins": {
+      "le_2s": {
+        "bounds_seconds": {
+          "lower_exclusive": 0.0,
+          "upper_inclusive": 2.0
+        },
+        "duration_min": 1.024,
+        "duration_max": 1.792,
+        "evaluation": {
+          "coverage": {
+            "rows": 14,
+            "known_rows": 6,
+            "unknown_rows": 8,
+            "unique_known_classes": 5,
+            "known_support_min": 1,
+            "known_support_max": 2
+          },
+          "metrics": {
+            "baseline": {
+              "macro_f1": 0.0026845637583892616,
+              "accuracy": 0.14285714285714285,
+              "known_accuracy": 0.16666666666666666,
+              "ood_f1": 0.2,
+              "ood_precision": 0.5,
+              "ood_recall": 0.125,
+              "known_to_unknown": 1,
+              "known_to_wrong_known": 4,
+              "unknown_to_known": 7
+            },
+            "candidate": {
+              "macro_f1": 0.0034573927191376857,
+              "accuracy": 0.2857142857142857,
+              "known_accuracy": 0.16666666666666666,
+              "ood_f1": 0.5454545454545454,
+              "ood_precision": 1.0,
+              "ood_recall": 0.375,
+              "known_to_unknown": 0,
+              "known_to_wrong_known": 5,
+              "unknown_to_known": 5
+            },
+            "candidate_delta": {
+              "macro_f1": 0.0007728289607484241,
+              "accuracy": 0.14285714285714285,
+              "known_accuracy": 0.0,
+              "ood_f1": 0.3454545454545454
+            }
+          },
+          "observed_class_macro_f1_descriptive_only": {
+            "baseline": 0.12,
+            "candidate": 0.19318181818181818,
+            "warning": "This excludes absent competition classes and is not the 447-class competition Macro-F1."
+          },
+          "candidate_vs_baseline_transitions": {
+            "rescued_errors": 2,
+            "introduced_errors": 0,
+            "baseline_errors": 12,
+            "rescue_rate": 0.16666666666666666
+          },
+          "prediction_disagreements": 3
+        }
+      },
+      "gt_2_le_4s": {
+        "bounds_seconds": {
+          "lower_exclusive": 2.0,
+          "upper_inclusive": 4.0
+        },
+        "duration_min": 2.1333125,
+        "duration_max": 3.9253125,
+        "evaluation": {
+          "coverage": {
+            "rows": 20,
+            "known_rows": 9,
+            "unknown_rows": 11,
+            "unique_known_classes": 9,
+            "known_support_min": 1,
+            "known_support_max": 1
+          },
+          "metrics": {
+            "baseline": {
+              "macro_f1": 0.004631264963303113,
+              "accuracy": 0.45,
+              "known_accuracy": 0.2222222222222222,
+              "ood_f1": 0.7368421052631579,
+              "ood_precision": 0.875,
+              "ood_recall": 0.6363636363636364,
+              "known_to_unknown": 1,
+              "known_to_wrong_known": 6,
+              "unknown_to_known": 4
+            },
+            "candidate": {
+              "macro_f1": 0.0044742729306487695,
+              "accuracy": 0.45,
+              "known_accuracy": 0.2222222222222222,
+              "ood_f1": 0.6666666666666666,
+              "ood_precision": 0.7,
+              "ood_recall": 0.6363636363636364,
+              "known_to_unknown": 3,
+              "known_to_wrong_known": 4,
+              "unknown_to_known": 4
+            },
+            "candidate_delta": {
+              "macro_f1": -0.00015699203265434353,
+              "accuracy": 0.0,
+              "known_accuracy": 0.0,
+              "ood_f1": -0.07017543859649122
+            }
+          },
+          "observed_class_macro_f1_descriptive_only": {
+            "baseline": 0.13801169590643275,
+            "candidate": 0.15384615384615383,
+            "warning": "This excludes absent competition classes and is not the 447-class competition Macro-F1."
+          },
+          "candidate_vs_baseline_transitions": {
+            "rescued_errors": 2,
+            "introduced_errors": 2,
+            "baseline_errors": 11,
+            "rescue_rate": 0.18181818181818182
+          },
+          "prediction_disagreements": 6
+        }
+      },
+      "gt_4_le_6s": {
+        "bounds_seconds": {
+          "lower_exclusive": 4.0,
+          "upper_inclusive": 6.0
+        },
+        "duration_min": 4.0106875,
+        "duration_max": 5.632,
+        "evaluation": {
+          "coverage": {
+            "rows": 17,
+            "known_rows": 10,
+            "unknown_rows": 7,
+            "unique_known_classes": 10,
+            "known_support_min": 1,
+            "known_support_max": 1
+          },
+          "metrics": {
+            "baseline": {
+              "macro_f1": 0.017524235645041013,
+              "accuracy": 0.7058823529411765,
+              "known_accuracy": 0.8,
+              "ood_f1": 0.6666666666666666,
+              "ood_precision": 0.8,
+              "ood_recall": 0.5714285714285714,
+              "known_to_unknown": 1,
+              "known_to_wrong_known": 1,
+              "unknown_to_known": 3
+            },
+            "candidate": {
+              "macro_f1": 0.019068925109193564,
+              "accuracy": 0.8235294117647058,
+              "known_accuracy": 0.8,
+              "ood_f1": 0.8571428571428571,
+              "ood_precision": 0.8571428571428571,
+              "ood_recall": 0.8571428571428571,
+              "known_to_unknown": 1,
+              "known_to_wrong_known": 1,
+              "unknown_to_known": 1
+            },
+            "candidate_delta": {
+              "macro_f1": 0.0015446894641525516,
+              "accuracy": 0.11764705882352933,
+              "known_accuracy": 0.0,
+              "ood_f1": 0.19047619047619047
+            }
+          },
+          "observed_class_macro_f1_descriptive_only": {
+            "baseline": 0.6527777777777778,
+            "candidate": 0.7103174603174603,
+            "warning": "This excludes absent competition classes and is not the 447-class competition Macro-F1."
+          },
+          "candidate_vs_baseline_transitions": {
+            "rescued_errors": 3,
+            "introduced_errors": 1,
+            "baseline_errors": 5,
+            "rescue_rate": 0.6
+          },
+          "prediction_disagreements": 6
+        }
+      },
+      "gt_6_le_8s": {
+        "bounds_seconds": {
+          "lower_exclusive": 6.0,
+          "upper_inclusive": 8.0
+        },
+        "duration_min": 6.0586875,
+        "duration_max": 7.936,
+        "evaluation": {
+          "coverage": {
+            "rows": 17,
+            "known_rows": 8,
+            "unknown_rows": 9,
+            "unique_known_classes": 8,
+            "known_support_min": 1,
+            "known_support_max": 1
+          },
+          "metrics": {
+            "baseline": {
+              "macro_f1": 0.014799518155222853,
+              "accuracy": 0.5882352941176471,
+              "known_accuracy": 0.75,
+              "ood_f1": 0.6153846153846153,
+              "ood_precision": 1.0,
+              "ood_recall": 0.4444444444444444,
+              "known_to_unknown": 0,
+              "known_to_wrong_known": 2,
+              "unknown_to_known": 5
+            },
+            "candidate": {
+              "macro_f1": 0.012863534675615212,
+              "accuracy": 0.6470588235294118,
+              "known_accuracy": 0.625,
+              "ood_f1": 0.75,
+              "ood_precision": 0.8571428571428571,
+              "ood_recall": 0.6666666666666666,
+              "known_to_unknown": 1,
+              "known_to_wrong_known": 2,
+              "unknown_to_known": 3
+            },
+            "candidate_delta": {
+              "macro_f1": -0.0019359834796076406,
+              "accuracy": 0.05882352941176472,
+              "known_accuracy": -0.125,
+              "ood_f1": 0.1346153846153847
+            }
+          },
+          "observed_class_macro_f1_descriptive_only": {
+            "baseline": 0.441025641025641,
+            "candidate": 0.4107142857142857,
+            "warning": "This excludes absent competition classes and is not the 447-class competition Macro-F1."
+          },
+          "candidate_vs_baseline_transitions": {
+            "rescued_errors": 2,
+            "introduced_errors": 1,
+            "baseline_errors": 7,
+            "rescue_rate": 0.2857142857142857
+          },
+          "prediction_disagreements": 5
+        }
+      },
+      "gt_8_le_12s": {
+        "bounds_seconds": {
+          "lower_exclusive": 8.0,
+          "upper_inclusive": 12.0
+        },
+        "duration_min": 8.0213125,
+        "duration_max": 11.776,
+        "evaluation": {
+          "coverage": {
+            "rows": 23,
+            "known_rows": 11,
+            "unknown_rows": 12,
+            "unique_known_classes": 11,
+            "known_support_min": 1,
+            "known_support_max": 1
+          },
+          "metrics": {
+            "baseline": {
+              "macro_f1": 0.0174496644295302,
+              "accuracy": 0.6521739130434783,
+              "known_accuracy": 0.6363636363636364,
+              "ood_f1": 0.8,
+              "ood_precision": 1.0,
+              "ood_recall": 0.6666666666666666,
+              "known_to_unknown": 0,
+              "known_to_wrong_known": 4,
+              "unknown_to_known": 4
+            },
+            "candidate": {
+              "macro_f1": 0.01757750079897731,
+              "accuracy": 0.6956521739130435,
+              "known_accuracy": 0.6363636363636364,
+              "ood_f1": 0.8571428571428571,
+              "ood_precision": 1.0,
+              "ood_recall": 0.75,
+              "known_to_unknown": 0,
+              "known_to_wrong_known": 4,
+              "unknown_to_known": 3
+            },
+            "candidate_delta": {
+              "macro_f1": 0.00012783636944711102,
+              "accuracy": 0.04347826086956519,
+              "known_accuracy": 0.0,
+              "ood_f1": 0.05714285714285705
+            }
+          },
+          "observed_class_macro_f1_descriptive_only": {
+            "baseline": 0.4588235294117647,
+            "candidate": 0.4910714285714286,
+            "warning": "This excludes absent competition classes and is not the 447-class competition Macro-F1."
+          },
+          "candidate_vs_baseline_transitions": {
+            "rescued_errors": 1,
+            "introduced_errors": 0,
+            "baseline_errors": 8,
+            "rescue_rate": 0.125
+          },
+          "prediction_disagreements": 1
+        }
+      },
+      "gt_12s": {
+        "bounds_seconds": {
+          "lower_exclusive": 12.0,
+          "upper_inclusive": null
+        },
+        "duration_min": 12.3733125,
+        "duration_max": 117.504,
+        "evaluation": {
+          "coverage": {
+            "rows": 1541,
+            "known_rows": 848,
+            "unknown_rows": 693,
+            "unique_known_classes": 438,
+            "known_support_min": 1,
+            "known_support_max": 2
+          },
+          "metrics": {
+            "baseline": {
+              "macro_f1": 0.9514840848674936,
+              "accuracy": 0.9740428293316029,
+              "known_accuracy": 0.9787735849056604,
+              "ood_f1": 0.9752906976744187,
+              "ood_precision": 0.9824304538799414,
+              "ood_recall": 0.9682539682539683,
+              "known_to_unknown": 12,
+              "known_to_wrong_known": 6,
+              "unknown_to_known": 22
+            },
+            "candidate": {
+              "macro_f1": 0.9493913442232182,
+              "accuracy": 0.972744970798183,
+              "known_accuracy": 0.9764150943396226,
+              "ood_f1": 0.9731689630166788,
+              "ood_precision": 0.978134110787172,
+              "ood_recall": 0.9682539682539683,
+              "known_to_unknown": 15,
+              "known_to_wrong_known": 5,
+              "unknown_to_known": 22
+            },
+            "candidate_delta": {
+              "macro_f1": -0.002092740644275337,
+              "accuracy": -0.0012978585334199044,
+              "known_accuracy": -0.002358490566037763,
+              "ood_f1": -0.0021217346577399043
+            }
+          },
+          "observed_class_macro_f1_descriptive_only": {
+            "baseline": 0.9666213316722039,
+            "candidate": 0.9644952974267694,
+            "warning": "This excludes absent competition classes and is not the 447-class competition Macro-F1."
+          },
+          "candidate_vs_baseline_transitions": {
+            "rescued_errors": 7,
+            "introduced_errors": 9,
+            "baseline_errors": 40,
+            "rescue_rate": 0.175
+          },
+          "prediction_disagreements": 22
+        }
+      }
+    }
+  }
+}
