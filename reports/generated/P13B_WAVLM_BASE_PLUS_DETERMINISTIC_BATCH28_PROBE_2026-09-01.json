@@ -1,0 +1,48 @@
+{
+  "created_at_utc": "2026-09-01T12:58:00.822185+00:00",
+  "profile": "p13b-wavlm-baseplus-layerweighted-deterministic-known446-ood-complement-oof-f0",
+  "encoder_mode": "configured",
+  "gpu": "NVIDIA GeForce RTX 3090",
+  "total_vram_gib": 23.55877685546875,
+  "headroom_fraction": 0.1,
+  "warm_start": null,
+  "encoder_runtime_invariants": {
+    "encoder_type": "WavLMEncoder",
+    "encoder_training": true,
+    "wavlm_training": false,
+    "frozen_backbone_eval": true,
+    "wavlm_trainable_parameters": 0,
+    "config_layerdrop": 0.05,
+    "runtime_layerdrop": 0.0
+  },
+  "short_teacher_student_enabled": false,
+  "results": [
+    {
+      "batch_size": 28,
+      "status": "ok",
+      "actual_batch_size": 28,
+      "num_windows": 2,
+      "elapsed_seconds": 1.1817425440531224,
+      "files_per_second": 47.3876482502966,
+      "windows_per_second": 94.7752965005932,
+      "peak_vram_gib": 3.887381076812744,
+      "reserved_vram_gib": 4.54296875,
+      "consistency_weight": 0.0,
+      "consistency_pairing": "clean_aug",
+      "train_loss_consistency": 0.0,
+      "train_loss_consistency_weighted": 0.0,
+      "train_pair_cosine": 0.0,
+      "train_embedding_std_student": 0.0,
+      "train_embedding_std_target": 0.0,
+      "train_adaptive_duration_seconds": 0.0,
+      "train_adaptive_margin": 0.0,
+      "train_loss_teacher_posterior": 0.0,
+      "train_loss_teacher_posterior_weighted": 0.0,
+      "train_loss_teacher_embedding": 0.0,
+      "train_loss_teacher_embedding_weighted": 0.0,
+      "train_teacher_embedding_cosine": 0.0
+    }
+  ],
+  "recommended_batch_size": 28,
+  "warning": "This is an operational throughput recommendation. Commit a derived profile and account for changed optimizer-step frequency before training."
+}

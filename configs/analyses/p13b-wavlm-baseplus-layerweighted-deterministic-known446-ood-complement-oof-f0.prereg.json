@@ -70,5 +70,33 @@
       "frozen WavLM unexpectedly in train mode after model.train",
       "artifact corruption"
     ]
+  },
+  "operational_resolution": {
+    "resolved_at_utc": "2026-09-01T12:59:25Z",
+    "source_commit": "7d678c897dc6985dc330e5dd8f5ce041b3f44945",
+    "scientific_dimensions_changed_after_preregistration": 0,
+    "locked_batch_size": 28,
+    "training_probe": {
+      "path": "reports/generated/P13B_WAVLM_BASE_PLUS_DETERMINISTIC_BATCH28_PROBE_2026-09-01.json",
+      "sha256": "f9e3f1d911701f497585e04f9eec9d8bfed1f0342002a911eec9a5aaeebe6b53",
+      "status": "ok",
+      "peak_vram_gib": 3.887381076812744,
+      "files_per_second": 47.3876482502966,
+      "wavlm_training": false,
+      "frozen_backbone_eval": true,
+      "wavlm_trainable_parameters": 0
+    },
+    "evaluation_probe": {
+      "path": "reports/generated/P13B_WAVLM_BASE_PLUS_DETERMINISTIC_EVAL_BATCH28_PROBE_2026-09-01.json",
+      "sha256": "ec9506de80cde61b6f6804afc7d1a9566d8ede44e66126b1aad3b6432eb2a818",
+      "status": "ok",
+      "peak_vram_gib": 3.917715072631836,
+      "files_per_second": 12.175970292521129,
+      "wavlm_trainable_parameters": 0,
+      "layer_weight_count": 13,
+      "layer_weight_trainable": true,
+      "layer_adapter_count": 0
+    },
+    "decision": "All runtime invariants passed; retain the preregistered batch size and proceed with exactly one Fold-0 P13b run."
   }
 }
