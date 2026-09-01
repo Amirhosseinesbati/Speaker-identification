@@ -76,6 +76,8 @@ class DurationAdaptiveMargin:
 
     min_duration_seconds: float
     max_duration_seconds: float
+    margin_anchor_min_duration_seconds: float
+    margin_anchor_max_duration_seconds: float
     min_margin: float
     max_margin: float
     sample_rate: int = 16_000
@@ -103,6 +105,12 @@ class DurationAdaptiveMargin:
 
         min_duration = float(cfg.get("min_duration_seconds", 1.0))
         max_duration = float(cfg.get("max_duration_seconds", 6.0))
+        anchor_min_duration = float(
+            cfg.get("margin_anchor_min_duration_seconds", 2.0)
+        )
+        anchor_max_duration = float(
+            cfg.get("margin_anchor_max_duration_seconds", 6.0)
+        )
         min_margin = float(cfg.get("min_margin", 0.2))
         max_margin = float(cfg.get("max_margin", 0.5))
         if not (0.0 < min_duration < max_duration):
@@ -115,6 +123,17 @@ class DurationAdaptiveMargin:
                 "adaptive_margin.max_duration_seconds cannot exceed the "
                 f"dataset window ({max_input_duration_seconds}s)."
             )
+        if not (
+            min_duration
+            <= anchor_min_duration
+            < anchor_max_duration
+            <= max_duration
+        ):
+            raise ValueError(
+                "adaptive_margin requires sample_min_duration <= "
+                "margin_anchor_min_duration < margin_anchor_max_duration <= "
+                "sample_max_duration."
+            )
         if not (0.0 <= min_margin < max_margin < 1.5707963267948966):
             raise ValueError(
                 "adaptive_margin requires 0 <= min_margin < max_margin < pi/2."
@@ -125,6 +144,8 @@ class DurationAdaptiveMargin:
         return cls(
             min_duration_seconds=min_duration,
             max_duration_seconds=max_duration,
+            margin_anchor_min_duration_seconds=anchor_min_duration,
+            margin_anchor_max_duration_seconds=anchor_max_duration,
             min_margin=min_margin,
             max_margin=max_margin,
             sample_rate=int(sample_rate),
@@ -132,16 +153,25 @@ class DurationAdaptiveMargin:
         )
 
     def margin_for_duration(self, duration_seconds: torch.Tensor) -> torch.Tensor:
-        """Map each effective duration linearly into ``[min_margin,max_margin]``."""
+        """Map effective duration through the paper's 2s/6s margin anchors.
+
+        Training durations are sampled from 1s to 6s, but Zhang et al. fit the
+        duration-margin line from the established 2s -> 0.2 and 6s -> 0.5
+        operating points.  Values below/above those anchors are clamped, so the
+        advertised margin range remains exactly [0.2, 0.5].
+        """
 
         duration = duration_seconds.to(dtype=torch.float32)
         duration = duration.clamp(
-            min=self.min_duration_seconds,
-            max=self.max_duration_seconds,
+            min=self.margin_anchor_min_duration_seconds,
+            max=self.margin_anchor_max_duration_seconds,
         )
         alpha = (
-            (duration - self.min_duration_seconds)
-            / (self.max_duration_seconds - self.min_duration_seconds)
+            (duration - self.margin_anchor_min_duration_seconds)
+            / (
+                self.margin_anchor_max_duration_seconds
+                - self.margin_anchor_min_duration_seconds
+            )
         )
         return self.min_margin + alpha * (self.max_margin - self.min_margin)
 
@@ -176,6 +206,7 @@ class DurationAdaptiveMargin:
         waveforms: torch.Tensor,
         duration_seconds: float,
         *,
+        source_durations_seconds: Optional[torch.Tensor] = None,
         training_seed: int,
         epoch: int,
         step: int,
@@ -189,10 +220,27 @@ class DurationAdaptiveMargin:
             )
         target = int(round(float(duration_seconds) * self.sample_rate))
         target = max(1, min(target, int(waveforms.shape[-1])))
-        if target == int(waveforms.shape[-1]):
+        if source_durations_seconds is None and target == int(waveforms.shape[-1]):
             return waveforms
+        if source_durations_seconds is None:
+            valid_samples = torch.full(
+                (int(waveforms.shape[0]),),
+                int(waveforms.shape[-1]),
+                dtype=torch.long,
+            )
+        else:
+            if source_durations_seconds.ndim != 1 or int(
+                source_durations_seconds.numel()
+            ) != int(waveforms.shape[0]):
+                raise ValueError(
+                    "source_durations_seconds must be shaped (B,) and match "
+                    "the waveform batch."
+                )
+            valid_samples = torch.round(
+                source_durations_seconds.detach().float().cpu() * self.sample_rate
+            ).to(dtype=torch.long)
+            valid_samples.clamp_(min=1, max=int(waveforms.shape[-1]))
 
-        max_start = int(waveforms.shape[-1]) - target
         payload = (
             f"crop:{int(training_seed)}:{int(epoch)}:{int(step)}:"
             f"{int(window_index)}:{self.seed_offset}"
@@ -200,13 +248,19 @@ class DurationAdaptiveMargin:
         mixed_seed = int.from_bytes(hashlib.sha256(payload).digest()[:8], "little")
         generator = torch.Generator(device="cpu")
         generator.manual_seed(mixed_seed)
-        starts = torch.randint(
-            0,
-            max_start + 1,
-            (int(waveforms.shape[0]),),
-            generator=generator,
-        ).tolist()
-        return torch.stack(
-            [waveforms[i, :, start : start + target] for i, start in enumerate(starts)],
-            dim=0,
-        )
+        units = torch.rand((int(waveforms.shape[0]),), generator=generator)
+        crops = []
+        for i, (valid, unit) in enumerate(zip(valid_samples.tolist(), units.tolist())):
+            available = min(int(valid), int(waveforms.shape[-1]))
+            if available >= target:
+                max_start = available - target
+                start = min(max_start, int(float(unit) * (max_start + 1)))
+                crop = waveforms[i, :, start : start + target]
+            else:
+                # SpeakerDataset right-pads short recordings.  Re-pad from the
+                # declared valid prefix so a random crop can never land wholly
+                # in that padding or consume samples beyond the source length.
+                crop = waveforms[i, :, :available]
+                crop = torch.nn.functional.pad(crop, (0, target - available))
+            crops.append(crop)
+        return torch.stack(crops, dim=0)

@@ -1074,6 +1074,7 @@ def train_epoch(
                 wf = adaptive_margin.crop_batch(
                     wf,
                     sampled_duration,
+                    source_durations_seconds=source_durations,
                     training_seed=training_seed,
                     epoch=epoch,
                     step=step,

@@ -1,18 +1,25 @@
 _meta:
-  name: p7-campp-known446-ood-dalmft-paper-oof-f0
+  name: p10-campp-known446-ood-dalmft-paper-oof-f0
   base: default_config.yaml
 experiment:
-  priority: P7-METHOD-INTEGRITY-GATE
+  priority: P10-METHOD-INTEGRITY-GATE
   family: campp-known446-ood-duration-adaptive-lmft
   purpose: >-
     Fold-0 method-integrity test of duration-adaptive large-margin fine-tuning
     (D-ALMFT, Zhang et al., ICASSP 2023, DOI
     10.1109/ICASSP49357.2023.10094744). This is a distinct hypothesis from the
-    rejected historical margin-only LMFT run.
+    rejected historical fixed-duration, last-block-only margin run.
+  challenge_grounding: >-
+    The official task explicitly scores short audio chunks, while local source
+    recordings have median duration 59.5627 seconds and hidden evaluation
+    durations are unknown. Duration robustness is therefore relevant, but the
+    locked full-file Fold-0 score remains the only primary gate. Fixed-duration
+    scores are preregistered diagnostics and cannot select an epoch or threshold.
   scientific_scope: >-
     Reproduce the causal D-ALMFT components: second-stage warm start; random
-    1-6 second chunks; a linear 0.2-0.5 AAM margin; no train augmentation;
-    full-network fine-tuning; and a 10-epoch exponential 1e-4 to 2.5e-5 LR.
+    1-6 second chunks; AAM margins anchored at 2 seconds -> 0.2 and 6 seconds
+    -> 0.5, clamped to 0.2 for 1-2 seconds; no train augmentation; full-network
+    fine-tuning; and a fixed 10-epoch exponential 1e-4 to 2.5e-5 LR stage.
     Retain the competition-specific binary OOD head, loss weighting, AdamW,
     scale=30 and Raw probability-average decision policy as explicit task
     adaptations rather than claiming a literal VoxCeleb reproduction.
@@ -23,8 +30,9 @@ experiment:
   expected_decision: >-
     Reject the family on Fold 0 unless Raw probability-average Macro-F1 gains
     at least 0.002 while Known Accuracy and OOD-F1 each fall by no more than
-    0.001. Passing authorizes only the same preregistered recipe on Fold 1/2;
-    it never authorizes leaderboard tuning or a submission by itself.
+    0.001. Passing authorizes only a new, separately preregistered decision for
+    Fold 1/2; it never authorizes an automatic run, leaderboard tuning or a
+    submission by itself.
   preregistered_baseline:
     profile: p0-campp-known446-ood-control-oof-f0
     checkpoint: checkpoints/p0-campp-known446-ood-control-oof-f0/campp_best_raw.pt
@@ -38,14 +46,32 @@ experiment:
     max_known_accuracy_drop: 0.001
     max_ood_f1_drop: 0.001
     require_raw_probability_average: true
-    duration_diagnostics:
-      bins_seconds: [0.0, 2.0, 6.0, .inf]
+    primary_metric_uses_locked_full_file_evaluation: true
+    fixed_duration_diagnostics:
+      durations_seconds: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+      deterministic_crop_per_file: true
+      compare_same_crop_baseline_and_treatment: true
+      report_macro_f1: true
+      report_known_accuracy: true
+      report_ood_f1: true
       report_known_to_unknown_errors: true
       report_unknown_to_known_errors: true
-      tune_on_bins: false
-    expansion_if_passed: same_recipe_folds_1_and_2_only
-    later_folds_automatic: true
+      tune_or_select_on_diagnostics: false
+    expansion_if_passed: separately_preregister_same_recipe_folds_1_and_2
+    later_folds_automatic: false
     leaderboard_tuning: false
+  terminal_contract:
+    max_wall_clock_seconds: 7200
+    max_incremental_cost_usd: 0.40
+    immediate_stop_on: [nan, split_or_provenance_mismatch, artifact_corruption, second_oom]
+    metric_early_stopping_disabled_reason: >-
+      The cited intervention is a fixed causal 10-epoch second stage; shortening
+      it based on Fold-0 Macro-F1 would change the method and introduce
+      within-fold epoch selection. Critical safety stops remain active.
+  telegram_events:
+    event_driven_only: true
+    send_once_on: [started_after_preflight, critical_error, terminal_gate_decision, audited_submission_candidate]
+    periodic_heartbeat_messages: false
 data:
   clean_duplicates: true
   split: {scheme: kfold, folds: 3, fold: 0, seed: 42}
@@ -79,16 +105,14 @@ hardware:
       mixed_precision: true
       num_workers: 8
 logging:
-  checkpoint_dir: checkpoints/p7-campp-known446-ood-dalmft-paper-oof-f0
-  log_dir: logs/p7-campp-known446-ood-dalmft-paper-oof-f0
+  checkpoint_dir: checkpoints/p10-campp-known446-ood-dalmft-paper-oof-f0
+  log_dir: logs/p10-campp-known446-ood-dalmft-paper-oof-f0
 training:
   seed: 42
   deterministic_algorithms: true
   warm_start_checkpoint: checkpoints/p0-campp-known446-ood-control-oof-f0/campp_best_raw.pt
   epochs: 10
   freeze_epochs: 0
-  # The cited method defines a complete 10-epoch second stage. The horizon is
-  # short and causal, so metric early stopping would invalidate the protocol.
   early_stopping_patience: 0
   learning_rate: 0.0001
   encoder_lr: 0.0001
@@ -103,6 +127,8 @@ training:
     disable_augmentation: true
     min_duration_seconds: 1.0
     max_duration_seconds: 6.0
+    margin_anchor_min_duration_seconds: 2.0
+    margin_anchor_max_duration_seconds: 6.0
     min_margin: 0.2
     max_margin: 0.5
     seed_offset: 73921

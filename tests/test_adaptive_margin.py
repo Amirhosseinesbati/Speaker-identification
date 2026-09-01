@@ -17,7 +17,7 @@ from src.train import TwoPartLoss, train_epoch
 ROOT = Path(__file__).resolve().parents[1]
 PAPER_PROFILE = (
     ROOT
-    / "configs/experiments/p7-campp-known446-ood-dalmft-paper-oof-f0.yaml"
+    / "configs/experiments/p10-campp-known446-ood-dalmft-paper-oof-f0.yaml"
 )
 
 
@@ -47,6 +47,8 @@ def _full_config() -> dict:
                 "disable_augmentation": True,
                 "min_duration_seconds": 1.0,
                 "max_duration_seconds": 6.0,
+                "margin_anchor_min_duration_seconds": 2.0,
+                "margin_anchor_max_duration_seconds": 6.0,
                 "min_margin": 0.2,
                 "max_margin": 0.5,
                 "seed_offset": 17,
@@ -59,12 +61,12 @@ def test_duration_margin_mapping_has_paper_endpoints() -> None:
     contract = build_duration_adaptive_margin(_full_config())
     assert contract is not None
 
-    durations = torch.tensor([0.4, 1.0, 3.5, 6.0, 9.0])
+    durations = torch.tensor([0.4, 1.0, 2.0, 4.0, 6.0, 9.0])
     margins = contract.margin_for_duration(durations)
 
     assert torch.allclose(
         margins,
-        torch.tensor([0.2, 0.2, 0.35, 0.5, 0.5]),
+        torch.tensor([0.2, 0.2, 0.2, 0.35, 0.5, 0.5]),
         atol=1e-7,
     )
 
@@ -73,6 +75,8 @@ def test_sampling_and_cropping_are_deterministic_without_global_rng() -> None:
     contract = DurationAdaptiveMargin(
         min_duration_seconds=1.0,
         max_duration_seconds=6.0,
+        margin_anchor_min_duration_seconds=2.0,
+        margin_anchor_max_duration_seconds=6.0,
         min_margin=0.2,
         max_margin=0.5,
         sample_rate=10,
@@ -113,6 +117,36 @@ def test_sampling_and_cropping_are_deterministic_without_global_rng() -> None:
     assert torch.equal(torch.rand(1), expected_next_global_draw)
 
 
+def test_crop_never_uses_right_padding_beyond_source_duration() -> None:
+    contract = DurationAdaptiveMargin(
+        min_duration_seconds=1.0,
+        max_duration_seconds=6.0,
+        margin_anchor_min_duration_seconds=2.0,
+        margin_anchor_max_duration_seconds=6.0,
+        min_margin=0.2,
+        max_margin=0.5,
+        sample_rate=10,
+        seed_offset=29,
+    )
+    waveforms = torch.ones(2, 1, 80)
+    # Deliberately place non-zero sentinel values in the area SpeakerDataset
+    # declares to be padding.  A correct D-ALMFT crop must not consume them.
+    source_durations = torch.tensor([0.5, 8.0])
+    cropped = contract.crop_batch(
+        waveforms,
+        4.0,
+        source_durations_seconds=source_durations,
+        training_seed=42,
+        epoch=1,
+        step=0,
+        window_index=0,
+    )
+    assert cropped.shape == (2, 1, 40)
+    assert torch.equal(cropped[0, 0, :5], torch.ones(5))
+    assert torch.equal(cropped[0, 0, 5:], torch.zeros(35))
+    assert torch.equal(cropped[1], torch.ones_like(cropped[1]))
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
@@ -135,6 +169,12 @@ def test_sampling_and_cropping_are_deterministic_without_global_rng() -> None:
         (
             lambda cfg: cfg["training"]["loss"]["proto"].update(enabled=True),
             "prototype loss",
+        ),
+        (
+            lambda cfg: cfg["training"]["adaptive_margin"].update(
+                margin_anchor_min_duration_seconds=0.5
+            ),
+            "sample_min_duration",
         ),
     ],
 )
@@ -215,6 +255,10 @@ def test_preregistered_profile_matches_published_dalmft_core() -> None:
         1.0,
         6.0,
     )
+    assert (
+        contract.margin_anchor_min_duration_seconds,
+        contract.margin_anchor_max_duration_seconds,
+    ) == (2.0, 6.0)
     assert (contract.min_margin, contract.max_margin) == (0.2, 0.5)
     training = config["training"]
     assert training["epochs"] == 10
@@ -241,6 +285,7 @@ def test_preregistered_profile_locks_competition_guardrails() -> None:
     assert gate["max_known_accuracy_drop"] == 0.001
     assert gate["max_ood_f1_drop"] == 0.001
     assert gate["require_raw_probability_average"] is True
+    assert gate["later_folds_automatic"] is False
     assert gate["leaderboard_tuning"] is False
 
 
@@ -268,6 +313,8 @@ def test_train_epoch_applies_sampled_crop_and_per_sample_margins() -> None:
     contract = DurationAdaptiveMargin(
         min_duration_seconds=1.0,
         max_duration_seconds=6.0,
+        margin_anchor_min_duration_seconds=2.0,
+        margin_anchor_max_duration_seconds=6.0,
         min_margin=0.2,
         max_margin=0.5,
         sample_rate=10,
