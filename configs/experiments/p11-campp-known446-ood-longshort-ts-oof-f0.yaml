@@ -60,6 +60,16 @@ experiment:
     early_stopping: >-
       Raw full-file Macro-F1 only, first eligible after epoch 10, patience 8,
       maximum 40 epochs. Fixed-duration diagnostics never select an epoch.
+  operational_preflight:
+    receipt: reports/generated/p11_longshort_ts_worker_preflight.json
+    receipt_sha256: cd19d4f5ff8e22a69339d62889b8ce9a87604f90457e473222de6b1933e82b03
+    worker_gpu: NVIDIA GeForce RTX 3090
+    candidates_tested: [16, 24, 32, 40, 48]
+    selected_batch_size: 48
+    measured_files_per_second: 197.34701032811898
+    peak_incremental_vram_gib: 2.8419461250305176
+    warm_start_sha256: f50f67f549b913b57111043b43daca1ff8bcbbf49bebe5dccab91ade8b19ae0d
+    positive_teacher_losses_verified: true
   telegram_events:
     event_driven_only: true
     send_once_on:
@@ -91,8 +101,8 @@ hardware:
   mode: vastai_3090_campp
   profiles:
     vastai_3090_campp:
-      batch_size: 32
-      description: RTX 3090 long-teacher/short-student preflight candidate
+      batch_size: 48
+      description: RTX 3090 measured long-teacher/short-student sweet spot
       device: cuda
       mixed_precision: true
       num_workers: 8

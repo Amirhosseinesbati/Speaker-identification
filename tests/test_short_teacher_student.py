@@ -86,6 +86,12 @@ def test_p11_preregistration_is_locked_to_fold0_raw_policy() -> None:
     assert config["training"]["ema_enabled"] is False
     assert config["training"]["early_stopping_start_epoch"] == 10
     assert config["training"]["early_stopping_patience"] == 8
+    assert config["hardware"]["profiles"]["vastai_3090_campp"][
+        "batch_size"
+    ] == 48
+    assert config["experiment"]["operational_preflight"][
+        "positive_teacher_losses_verified"
+    ] is True
     assert config["experiment"]["preregistered_gate"] == {
         "min_macro_f1_gain": 0.002,
         "max_known_accuracy_drop": 0.001,
