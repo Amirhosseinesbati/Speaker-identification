@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.adaptive_margin import build_duration_adaptive_margin  # noqa: E402
 from src.data_pipeline import get_active_profile, get_dataloaders  # noqa: E402
 from src.batch_probe import select_recommended_batch  # noqa: E402
 from src.experiment_config import load_profile  # noqa: E402
@@ -151,6 +152,7 @@ def main() -> int:
         apply_encoder_finetune_mode(model, base_config)
 
     competition_known = int(base_config.get("model", {}).get("competition_num_known", 446))
+    adaptive_margin = build_duration_adaptive_margin(base_config)
     criterion = build_criterion(
         base_config["training"],
         use_ood=ood_head_enabled(base_config),
@@ -204,6 +206,9 @@ def main() -> int:
                     proto_weight=proto_weight,
                     consistency_weight=consistency_weight,
                     consistency_pairing=consistency_pairing,
+                    adaptive_margin=adaptive_margin,
+                    training_seed=int(config["training"].get("seed", 42)),
+                    epoch=1,
                 )
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats()
@@ -218,6 +223,9 @@ def main() -> int:
                     proto_weight=proto_weight,
                     consistency_weight=consistency_weight,
                     consistency_pairing=consistency_pairing,
+                    adaptive_margin=adaptive_margin,
+                    training_seed=int(config["training"].get("seed", 42)),
+                    epoch=1,
                 )
             torch.cuda.synchronize()
             elapsed = time.perf_counter() - started
@@ -251,6 +259,12 @@ def main() -> int:
                 ),
                 "train_embedding_std_target": float(
                     (last_train_metrics or {}).get("embedding_std_clean", 0.0)
+                ),
+                "train_adaptive_duration_seconds": float(
+                    (last_train_metrics or {}).get("adaptive_duration_seconds", 0.0)
+                ),
+                "train_adaptive_margin": float(
+                    (last_train_metrics or {}).get("adaptive_margin", 0.0)
                 ),
             })
             if consistency_weight > 0:
