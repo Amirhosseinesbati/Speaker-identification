@@ -99,5 +99,37 @@
       "backbone parameter unexpectedly trainable",
       "artifact corruption"
     ]
+  },
+  "operational_resolution_before_fold0_metric_evaluation": {
+    "resolved_at_utc": "2026-09-01T10:36:35Z",
+    "weight_receipt": {
+      "path": "reports/generated/P13_WAVLM_BASE_PLUS_WEIGHT_RECEIPT_2026-09-01.json",
+      "sha256": "d1b34fa58b981831b6521ed75b1024516f45d75e3d3431070d13334bdd55cfae",
+      "runtime_tree_sha256": "1c8433565289128a288d6ae60166fa18488fb021a31dbaf7e3bee3ecbfe15a14",
+      "offline_load_verified": true
+    },
+    "training_probe": {
+      "path": "reports/generated/P13_WAVLM_BASE_PLUS_BATCH_PROBE_2026-09-01.json",
+      "sha256": "a6316d0b5ee8f9b8444e8fd7f5f21938486501831c8625d4c30396bc50697c91",
+      "selected_batch_size": 28,
+      "files_per_second": 20.652337649827786,
+      "peak_vram_gib": 14.67324161529541,
+      "reserved_vram_gib": 18.740234375
+    },
+    "evaluation_probe": {
+      "path": "reports/generated/P13_WAVLM_BASE_PLUS_EVAL_BATCH28_CONFIRM_2026-09-01.json",
+      "sha256": "8f8315fc01b0edd2fcb7299d4ef2130fd6943fc7aa9d6ffd1c69a7151df59876",
+      "measured_batch_size": 28,
+      "files_per_second": 12.203913975437567,
+      "peak_vram_gib": 3.917715072631836,
+      "reserved_vram_gib": 4.619140625
+    },
+    "model_invariants": {
+      "wavlm_parameters": 94381936,
+      "wavlm_trainable_parameters": 0,
+      "layer_weight_count": 13,
+      "layer_weights_trainable": true
+    },
+    "optimizer_step_frequency_note": "Batch size is an operational preregistration dimension resolved before any Fold0 metric. Epoch count still represents complete data passes; LR and all scientific dimensions remain unchanged."
   }
 }

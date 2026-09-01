@@ -1,0 +1,28 @@
+{
+  "created_at_utc": "2026-09-01T10:38:59.926462+00:00",
+  "profile": "p13-wavlm-baseplus-layerweighted-known446-ood-complement-oof-f0",
+  "path": "exact_forward_multi_window_evaluation_without_amp",
+  "gpu": "NVIDIA GeForce RTX 3090",
+  "total_vram_gib": 23.55877685546875,
+  "headroom_fraction": 0.1,
+  "model_invariants": {
+    "wavlm_parameters": 94381936,
+    "wavlm_trainable_parameters": 0,
+    "layer_weight_count": 13,
+    "layer_weight_trainable": true
+  },
+  "results": [
+    {
+      "batch_size": 28,
+      "status": "ok",
+      "files": 56,
+      "windows": 448,
+      "elapsed_seconds": 4.588691801065579,
+      "files_per_second": 12.203913975437567,
+      "windows_per_second": 97.63131180350054,
+      "peak_vram_gib": 3.917715072631836,
+      "reserved_vram_gib": 4.619140625
+    }
+  ],
+  "recommended_batch_size": 28
+}

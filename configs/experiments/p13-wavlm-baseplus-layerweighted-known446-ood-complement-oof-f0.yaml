@@ -70,8 +70,8 @@ hardware:
   mode: vastai_3090_wavlm_baseplus_frozen
   profiles:
     vastai_3090_wavlm_baseplus_frozen:
-      batch_size: 4
-      description: Provisional frozen WavLM Base Plus profile; measured preflight required
+      batch_size: 28
+      description: Measured frozen WavLM Base Plus profile; 10% VRAM headroom and exact eval probe passed
       device: cuda
       mixed_precision: true
       num_workers: 4

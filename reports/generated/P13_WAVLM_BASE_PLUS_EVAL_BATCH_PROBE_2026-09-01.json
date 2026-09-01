@@ -1,0 +1,83 @@
+{
+  "created_at_utc": "2026-09-01T10:32:45.801271+00:00",
+  "profile": "p13-wavlm-baseplus-layerweighted-known446-ood-complement-oof-f0",
+  "path": "exact_forward_multi_window_evaluation_without_amp",
+  "gpu": "NVIDIA GeForce RTX 3090",
+  "total_vram_gib": 23.55877685546875,
+  "headroom_fraction": 0.1,
+  "model_invariants": {
+    "wavlm_parameters": 94381936,
+    "wavlm_trainable_parameters": 0,
+    "layer_weight_count": 13,
+    "layer_weight_trainable": true
+  },
+  "results": [
+    {
+      "batch_size": 8,
+      "status": "ok",
+      "files": 16,
+      "windows": 128,
+      "elapsed_seconds": 1.6763637270778418,
+      "files_per_second": 9.544468030151455,
+      "windows_per_second": 76.35574424121164,
+      "peak_vram_gib": 1.4000797271728516,
+      "reserved_vram_gib": 1.59765625
+    },
+    {
+      "batch_size": 10,
+      "status": "ok",
+      "files": 20,
+      "windows": 160,
+      "elapsed_seconds": 2.0728628209326416,
+      "files_per_second": 9.648491833628148,
+      "windows_per_second": 77.18793466902518,
+      "peak_vram_gib": 1.651123046875,
+      "reserved_vram_gib": 2.251953125
+    },
+    {
+      "batch_size": 12,
+      "status": "ok",
+      "files": 24,
+      "windows": 192,
+      "elapsed_seconds": 2.5167425379622728,
+      "files_per_second": 9.536136350058296,
+      "windows_per_second": 76.28909080046637,
+      "peak_vram_gib": 1.9028987884521484,
+      "reserved_vram_gib": 2.544921875
+    },
+    {
+      "batch_size": 16,
+      "status": "ok",
+      "files": 32,
+      "windows": 256,
+      "elapsed_seconds": 3.2756707698572427,
+      "files_per_second": 9.768991528228154,
+      "windows_per_second": 78.15193222582523,
+      "peak_vram_gib": 2.4064502716064453,
+      "reserved_vram_gib": 3.130859375
+    },
+    {
+      "batch_size": 20,
+      "status": "ok",
+      "files": 40,
+      "windows": 320,
+      "elapsed_seconds": 3.7409416870214045,
+      "files_per_second": 10.69249492414532,
+      "windows_per_second": 85.53995939316256,
+      "peak_vram_gib": 2.910001754760742,
+      "reserved_vram_gib": 3.716796875
+    },
+    {
+      "batch_size": 24,
+      "status": "ok",
+      "files": 48,
+      "windows": 384,
+      "elapsed_seconds": 4.15359737793915,
+      "files_per_second": 11.556247664961619,
+      "windows_per_second": 92.44998131969295,
+      "peak_vram_gib": 3.413553237915039,
+      "reserved_vram_gib": 4.3046875
+    }
+  ],
+  "recommended_batch_size": 24
+}

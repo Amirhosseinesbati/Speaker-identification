@@ -36,6 +36,8 @@ def test_p13_profile_matches_preregistered_ssl_frontend() -> None:
     assert wavlm["pooling_type"] == "attentive"
     assert profile["audio"]["num_train_windows"] == 2
     assert profile["audio"]["max_eval_windows"] == 8
+    active = profile["hardware"]["mode"]
+    assert profile["hardware"]["profiles"][active]["batch_size"] == 28
     assert training["epochs"] == 40
     assert training["early_stopping_start_epoch"] == 10
     assert training["early_stopping_patience"] == 8
@@ -46,6 +48,11 @@ def test_p13_profile_matches_preregistered_ssl_frontend() -> None:
     assert gate["min_p0_error_rescue_rate"] == 0.25
     assert gate["require_backbone_zero_trainable_parameters"] is True
     assert gate["require_layer_weight_count"] == 13
+    resolution = prereg["operational_resolution_before_fold0_metric_evaluation"]
+    assert resolution["training_probe"]["selected_batch_size"] == 28
+    assert resolution["evaluation_probe"]["measured_batch_size"] == 28
+    assert resolution["model_invariants"]["wavlm_trainable_parameters"] == 0
+    assert resolution["model_invariants"]["layer_weight_count"] == 13
 
 
 def test_p13_changes_no_posthoc_decision_dimension() -> None:
