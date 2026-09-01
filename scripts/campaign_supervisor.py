@@ -30,6 +30,9 @@ from src.campaign_state import CampaignStateError, CampaignStore  # noqa: E402
 
 DEFAULT_STATE = ROOT / "data" / "experiments" / "campaign_state.json"
 DEFAULT_EVENTS = ROOT / "data" / "experiments" / "campaign_events.jsonl"
+DEFAULT_TELEGRAM_MARKER = (
+    ROOT / "data" / "experiments" / "campaign_heartbeat_marker.json"
+)
 LOG_DIR = ROOT / "data" / "experiments" / "campaign_logs"
 MLFLOW_SECRET_FILE = Path("/root/.iaaa_mlflow.env")
 MLFLOW_SECRET_KEYS = {
@@ -84,14 +87,65 @@ def _dotenv_value(raw_value: str) -> str:
     return value
 
 
-def _notify(message: str) -> None:
+def _notification_receipt(event_key: str) -> Optional[int]:
+    if not DEFAULT_TELEGRAM_MARKER.is_file():
+        return None
+    marker = json.loads(DEFAULT_TELEGRAM_MARKER.read_text(encoding="utf-8"))
+    event = (marker.get("events", {}) or {}).get(event_key, {}) or {}
+    message_id = event.get("message_id")
+    return message_id if isinstance(message_id, int) else None
+
+
+def _record_notification(
+    event_key: str,
+    message_id: int,
+    metadata: Optional[dict[str, Any]] = None,
+) -> None:
+    marker: dict[str, Any] = {}
+    if DEFAULT_TELEGRAM_MARKER.is_file():
+        marker = json.loads(DEFAULT_TELEGRAM_MARKER.read_text(encoding="utf-8"))
+    sent_at = datetime.now(timezone.utc).isoformat()
+    events = marker.setdefault("events", {})
+    events[event_key] = {
+        "message_id": int(message_id),
+        "sent_at_utc": sent_at,
+        "metadata": metadata or {},
+    }
+    marker.update({
+        "last_event_key": event_key,
+        "last_heartbeat_time": sent_at,
+        "telegram_message_id": int(message_id),
+    })
+    DEFAULT_TELEGRAM_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    encoded = json.dumps(marker, ensure_ascii=False, indent=2) + "\n"
+    temporary = DEFAULT_TELEGRAM_MARKER.with_suffix(".json.tmp")
+    temporary.write_text(encoded, encoding="utf-8")
+    os.replace(temporary, DEFAULT_TELEGRAM_MARKER)
+
+
+def _notify(
+    message: str,
+    *,
+    event_key: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> Optional[int]:
     try:
         from telegram_notifier import send
 
-        send(message)
+        if event_key:
+            existing = _notification_receipt(event_key)
+            if existing is not None:
+                return existing
+        message_id = send(message)
+        if not isinstance(message_id, int):
+            raise RuntimeError("Telegram notifier returned no integer message_id")
+        if event_key:
+            _record_notification(event_key, message_id, metadata)
+        return message_id
     except Exception as exc:
         # Notification is best-effort and must never kill a training run.
         print(f"Telegram notification warning: {type(exc).__name__}", flush=True)
+        return None
 
 
 def _git(*args: str) -> str:
@@ -275,13 +329,38 @@ def cmd_run(args: argparse.Namespace) -> int:
         "command": command,
     }
     store.start_run(run_record)
+    experiment = config.get("experiment", {}) or {}
+    model = config.get("model", {}) or {}
+    split = (config.get("data", {}) or {}).get("split", {}) or {}
+    training = config.get("training", {}) or {}
+    gate = experiment.get("preregistered_gate", {}) or {}
     _notify(
         "▶️ آزمایش جدید آغاز شد\n\n"
         f"پروفایل: {args.profile}\n"
         f"مرحله: {args.stage}\n"
         f"نسخهٔ کد: {commit[:8]}\n"
+        f"Encoder: {model.get('encoder_type', 'نامشخص')}\n"
+        f"Split: fold={split.get('fold')}/{split.get('folds')}، seed={split.get('seed')}\n"
+        f"افق: حداکثر {training.get('epochs')} ایپاک با early stopping "
+        f"از {training.get('early_stopping_start_epoch')} و patience="
+        f"{training.get('early_stopping_patience')}\n"
         f"سقف زمان: {args.timeout_hours:g} ساعت\n\n"
-        "پس از پایان، معیارها و artifactهای معتبر گزارش می‌شوند."
+        "🧠 تفسیر علمی\n"
+        f"فرضیه: {experiment.get('purpose', 'آزمایش ازپیش‌ثبت‌شده')}\n"
+        "تصمیم فقط Raw probability-average + argmax است؛ EMA/logit و "
+        "LME20 نقش diagnostic دارند. هیچ threshold یا blend از OOF/leaderboard "
+        "تنظیم نمی‌شود.\n"
+        f"Gate مستقل: {gate.get('standalone_min_raw_macro_f1', 'ثبت نشده')}؛ "
+        f"gain فیوژن ثابت: {gate.get('fixed_50_50_min_macro_gain', 'ثبت نشده')}.\n"
+        "شروع Run به‌معنای تأیید candidate نیست؛ نتیجه فقط پس از audit artifact "
+        "و guardrail هم‌زمان Known/OOD پذیرفته می‌شود.",
+        event_key=f"{args.profile}:started:{config_sha}",
+        metadata={
+            "profile": args.profile,
+            "git_commit": commit,
+            "config_sha256": config_sha,
+            "stage": args.stage,
+        },
     )
 
     timeout_seconds = 3600 * min(
@@ -338,7 +417,18 @@ def cmd_run(args: argparse.Namespace) -> int:
             f"خروجی‌های ثبت‌شده: {len(artifacts)}\n"
             f"هزینهٔ تخمینی کمپین: ${budget['estimated_cost_usd']:.2f}\n"
             f"گزارش اجرا: {log_path.relative_to(ROOT)}\n\n"
-            "وضعیت: تحلیل عمیق نتیجه"
+            "وضعیت: تحلیل عمیق نتیجه\n\n"
+            "🧠 تفسیر علمی\n"
+            "کامل‌شدن process فقط سلامت اجرایی را نشان می‌دهد؛ هنوز هیچ نتیجه‌ای "
+            "پذیرفته نشده و OOF، منحنی کامل، Known/OOD، rescue و hashها باید "
+            "طبق gate ازپیش‌ثبت‌شده audit شوند.",
+            event_key=f"{args.profile}:finished:{config_sha}:0",
+            metadata={
+                "profile": args.profile,
+                "git_commit": commit,
+                "config_sha256": config_sha,
+                "exit_code": 0,
+            },
         )
     else:
         _notify(
@@ -347,7 +437,17 @@ def cmd_run(args: argparse.Namespace) -> int:
             f"کد خروج: {exit_code}\n"
             f"علت: {telegram_reason}\n"
             f"گزارش: {log_path.relative_to(ROOT)}\n\n"
-            "هیچ اجرای بعدی تا تحلیل علت آغاز نمی‌شود."
+            "هیچ اجرای بعدی تا تحلیل علت آغاز نمی‌شود.\n\n"
+            "🧠 تفسیر علمی\n"
+            "این رخداد به‌تنهایی شکست فرضیه نیست؛ ابتدا باید مشخص شود توقف ناشی "
+            "از futility علمی، timeout، OOM یا خطای provenance بوده است.",
+            event_key=f"{args.profile}:finished:{config_sha}:{exit_code}",
+            metadata={
+                "profile": args.profile,
+                "git_commit": commit,
+                "config_sha256": config_sha,
+                "exit_code": exit_code,
+            },
         )
     print(json.dumps(_status_payload(store), indent=2, ensure_ascii=False))
     return exit_code

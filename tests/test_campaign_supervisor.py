@@ -5,6 +5,8 @@ from scripts.campaign_supervisor import (
     ANALYSIS_SPECS,
     _artifact_receipts,
     _dotenv_value,
+    _notification_receipt,
+    _record_notification,
     build_parser,
 )
 
@@ -70,3 +72,18 @@ def test_analyze_cli_accepts_only_allowlisted_preregistration() -> None:
     args = build_parser().parse_args(["analyze", "--analysis", analysis])
     assert args.analysis == analysis
     assert args.func is supervisor.cmd_analyze
+
+
+def test_notification_marker_is_atomic_and_deduplicatable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    marker = tmp_path / "campaign_heartbeat_marker.json"
+    monkeypatch.setattr(supervisor, "DEFAULT_TELEGRAM_MARKER", marker)
+
+    _record_notification("p13:start:abc", 123, {"profile": "p13"})
+
+    assert _notification_receipt("p13:start:abc") == 123
+    assert _notification_receipt("different") is None
+    payload = __import__("json").loads(marker.read_text(encoding="utf-8"))
+    assert payload["telegram_message_id"] == 123
+    assert payload["events"]["p13:start:abc"]["metadata"] == {"profile": "p13"}
