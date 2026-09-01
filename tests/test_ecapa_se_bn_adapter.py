@@ -56,3 +56,65 @@ def test_se_bn_adapter_training_mode_updates_only_adapter_modules() -> None:
 
     _set_se_bn_adapter_mode(model, training=False)
     assert all(module.training is False for module in model.modules())
+
+
+def test_zero_lr_warm_started_head_passes_gradient_without_updating() -> None:
+    """P9 can keep its trained heads fixed while adapting SE/BN.
+
+    A zero-LR AdamW group must neither apply the gradient nor weight decay to
+    the warm-started heads, while the classifier operation still propagates a
+    useful gradient into the adapter parameters.
+    """
+    torch.manual_seed(7)
+    encoder = ToyEcapaEmbedding()
+    head = nn.Linear(2, 3)
+    _enable_se_bn_adapter_parameters(encoder)
+    _set_se_bn_adapter_mode(encoder, training=True)
+
+    adapter_parameters = [
+        parameter for parameter in encoder.parameters()
+        if parameter.requires_grad
+    ]
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": adapter_parameters, "lr": 1e-3},
+            {"params": head.parameters(), "lr": 0.0},
+        ],
+        weight_decay=1e-4,
+    )
+
+    head_before = {
+        name: parameter.detach().clone()
+        for name, parameter in head.named_parameters()
+    }
+    adapter_before = [parameter.detach().clone() for parameter in adapter_parameters]
+    stem_before = encoder.stem.weight.detach().clone()
+
+    features = encoder.norm(encoder.stem(torch.randn(6, 4, 8))).mean(dim=-1)
+    gates = torch.sigmoid(
+        encoder.se_block.fc2(torch.relu(encoder.se_block.fc1(features)))
+    )
+    logits = head(encoder.tail(features * gates))
+    loss = logits.square().mean()
+    loss.backward()
+
+    assert any(
+        parameter.grad is not None and torch.count_nonzero(parameter.grad)
+        for parameter in adapter_parameters
+    )
+    assert all(
+        parameter.grad is not None and torch.count_nonzero(parameter.grad)
+        for parameter in head.parameters()
+    )
+
+    optimizer.step()
+
+    assert any(
+        not torch.equal(before, after.detach())
+        for before, after in zip(adapter_before, adapter_parameters)
+    )
+    assert all(
+        torch.equal(head_before[name], parameter.detach())
+        for name, parameter in head.named_parameters()
+    )
+    assert torch.equal(stem_before, encoder.stem.weight.detach())
