@@ -106,3 +106,39 @@ def test_pair_rejects_split_or_file_mismatch() -> None:
     right["split_seed"] = np.asarray([7])
     with pytest.raises(RuntimeError, match="split_seed mismatch"):
         paired.evaluate_pair(left, right)
+
+
+def test_historical_training_overlap_invalidates_full_fold_gate(monkeypatch) -> None:
+    labels = np.array([1, 2, 0, 3], dtype=np.int64)
+    primary = _record(["a", "b", "c", "d"], labels, labels)
+    secondary = _record(["a", "b", "c", "d"], labels, labels)
+    secondary["historical_split"] = np.array(["train", "train", "val", "val"])
+
+    def perfect_metrics(y_true, y_pred):
+        accuracy = float(np.mean(y_true == y_pred))
+        return {
+            "macro_f1": accuracy,
+            "accuracy": accuracy,
+            "known_accuracy": accuracy,
+            "ood_f1": accuracy,
+        }
+
+    monkeypatch.setattr(paired, "metric_bundle", perfect_metrics)
+    result = paired.evaluate_pair(primary, secondary)
+
+    assert result["gate"]["checks"]["provenance_disjoint"] is False
+    assert result["gate"]["passed"] is False
+    assert result["selection_verdict"] == (
+        "rejected_historical_full_fold_gate_due_training_overlap"
+    )
+    audit = result["historical_provenance_audit"]
+    assert audit["training_overlap_rows"] == 2
+    assert audit["held_out_rows"] == 2
+    assert audit["held_out_subset"]["coverage"] == {
+        "rows": 2,
+        "known_rows": 1,
+        "unknown_rows": 1,
+        "unique_known_classes": 1,
+        "known_support_min": 1,
+        "known_support_max": 1,
+    }

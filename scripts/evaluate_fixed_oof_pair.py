@@ -36,6 +36,7 @@ GATE = {
     "ood_f1_delta_vs_better_single_min": -0.001,
     "rescue_rate_vs_better_single_min": 0.25,
     "rescued_errors_must_exceed_introduced_errors": True,
+    "historical_training_overlap_rows_max": 0,
 }
 
 
@@ -90,6 +91,50 @@ def transition_bundle(
     }
 
 
+def class_coverage(labels: np.ndarray) -> dict:
+    labels = np.asarray(labels, dtype=np.int64)
+    known = labels > 0
+    known_labels, known_counts = np.unique(labels[known], return_counts=True)
+    return {
+        "rows": int(len(labels)),
+        "known_rows": int(np.sum(known)),
+        "unknown_rows": int(np.sum(~known)),
+        "unique_known_classes": int(len(known_labels)),
+        "known_support_min": int(known_counts.min()) if len(known_counts) else 0,
+        "known_support_max": int(known_counts.max()) if len(known_counts) else 0,
+    }
+
+
+def subset_evaluation(
+    labels: np.ndarray,
+    p1: np.ndarray,
+    p2: np.ndarray,
+    mask: np.ndarray,
+) -> dict:
+    indices = np.flatnonzero(mask)
+    subset_labels = labels[indices]
+    pred1 = p1[indices].argmax(axis=1).astype(np.int64)
+    pred2 = p2[indices].argmax(axis=1).astype(np.int64)
+    equal_pred = (0.5 * p1[indices] + 0.5 * p2[indices]).argmax(axis=1)
+    metric1 = metric_bundle(subset_labels, pred1)
+    metric2 = metric_bundle(subset_labels, pred2)
+    if metric1["macro_f1"] >= metric2["macro_f1"]:
+        better = pred1
+    else:
+        better = pred2
+    return {
+        "coverage": class_coverage(subset_labels),
+        "metrics": {
+            "primary": metric1,
+            "secondary": metric2,
+            "equal_50_50": metric_bundle(subset_labels, equal_pred),
+        },
+        "equal_error_transitions": transition_bundle(
+            subset_labels, better, equal_pred
+        ),
+    }
+
+
 def evaluate_pair(primary: dict, secondary: dict) -> dict:
     primary_files = primary["files"].astype(str)
     secondary_files = secondary["files"].astype(str)
@@ -134,6 +179,39 @@ def evaluate_pair(primary: dict, secondary: dict) -> dict:
         primary_labels, better_predictions, equal_predictions
     )
     delta = metric_delta(equal_metrics, better_metrics)
+    historical_overlap = None
+    if "historical_split" in secondary:
+        historical_split = secondary["historical_split"].astype(str)[order]
+        unexpected = sorted(set(historical_split.tolist()) - {"train", "val"})
+        if unexpected:
+            raise RuntimeError(
+                f"Historical split contains unexpected values: {unexpected}"
+            )
+        train_mask = historical_split == "train"
+        val_mask = historical_split == "val"
+        historical_overlap = {
+            "training_overlap_rows": int(np.sum(train_mask)),
+            "training_overlap_fraction": float(np.mean(train_mask)),
+            "held_out_rows": int(np.sum(val_mask)),
+            "held_out_fraction": float(np.mean(val_mask)),
+            "full_coverage": class_coverage(primary_labels),
+            "training_overlap_subset": subset_evaluation(
+                primary_labels, p1, p2, train_mask
+            ),
+            "held_out_subset": subset_evaluation(
+                primary_labels, p1, p2, val_mask
+            ),
+            "warning": (
+                "Full-fold metrics are invalid for selection whenever any row "
+                "was used to train the historical model. Held-out subset metrics "
+                "are descriptive only when class coverage is incomplete."
+            ),
+        }
+    provenance_disjoint = (
+        historical_overlap is None
+        or historical_overlap["training_overlap_rows"]
+        <= GATE["historical_training_overlap_rows_max"]
+    )
     checks = {
         "absolute_macro": equal_metrics["macro_f1"] >= GATE["equal_fusion_macro_f1_min"],
         "macro_gain": delta["macro_f1"] >= GATE["macro_f1_gain_vs_better_single_min"],
@@ -141,8 +219,9 @@ def evaluate_pair(primary: dict, secondary: dict) -> dict:
         "ood_guardrail": delta["ood_f1"] >= GATE["ood_f1_delta_vs_better_single_min"],
         "rescue_rate": transitions["rescue_rate"] >= GATE["rescue_rate_vs_better_single_min"],
         "rescued_exceed_introduced": transitions["rescued_errors"] > transitions["introduced_errors"],
+        "provenance_disjoint": provenance_disjoint,
     }
-    return {
+    result = {
         "rows": int(len(primary_files)),
         "better_single": better_name,
         "metrics": {
@@ -158,7 +237,15 @@ def evaluate_pair(primary: dict, secondary: dict) -> dict:
             "checks": checks,
             "passed": all(checks.values()),
         },
+        "selection_verdict": (
+            "eligible_for_preregistered_gate"
+            if provenance_disjoint
+            else "rejected_historical_full_fold_gate_due_training_overlap"
+        ),
     }
+    if historical_overlap is not None:
+        result["historical_provenance_audit"] = historical_overlap
+    return result
 
 
 def main() -> int:
