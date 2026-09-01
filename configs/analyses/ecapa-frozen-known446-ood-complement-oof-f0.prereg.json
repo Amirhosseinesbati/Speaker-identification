@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "profile": "p8-ecapa-frozen-known446-ood-complement-oof-f0",
+  "scientific_question": "Does a fully frozen official SpeechBrain ECAPA-TDNN representation provide useful, leak-free error diversity relative to the locked CAM++ Fold0 known-first/OOD control?",
+  "hypothesis": "ECAPA's SE-Res2 blocks, hierarchical feature aggregation, and channel-dependent attentive statistics pooling will encode complementary speaker cues; a fixed 50/50 probability average may rescue CAM++ errors without degrading Known Accuracy or OOD-F1.",
+  "primary_sources": [
+    {
+      "title": "ECAPA-TDNN: Emphasized Channel Attention, Propagation and Aggregation in TDNN Based Speaker Verification",
+      "doi": "10.21437/Interspeech.2020-2650",
+      "url": "https://arxiv.org/abs/2005.07143"
+    },
+    {
+      "title": "SpeechBrain spkrec-ecapa-voxceleb model card",
+      "url": "https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb",
+      "revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"
+    }
+  ],
+  "data_contract": {
+    "split": "kfold/folds3/fold0/seed42",
+    "clean_duplicates": true,
+    "speaker_target_scope": "known",
+    "competition_num_known": 446,
+    "unknown_cluster_file": "data/processed/unknown_clusters_oof_f0.json",
+    "no_leaderboard_selection": true
+  },
+  "intervention": {
+    "single_scientific_change": "Replace the CAM++ representation with the pinned official SpeechBrain ECAPA representation and keep the ECAPA encoder fully frozen while training only the existing known-speaker and binary-OOD heads.",
+    "encoder": "ecapa",
+    "encoder_frozen": true,
+    "encoder_revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286",
+    "head": "446-way ArcFace plus independent binary OOD",
+    "decision": "raw probability-average over eight evaluation windows followed by direct argmax",
+    "only_ensemble": "fixed 50/50 probability average with locked CAM++ control Fold0",
+    "forbidden": [
+      "threshold tuning",
+      "fusion-weight search",
+      "epoch selection using leaderboard",
+      "logit-average selection",
+      "EMA selection as primary",
+      "prototype or centroid sweep",
+      "encoder unfreezing in this experiment"
+    ]
+  },
+  "locked_comparator": {
+    "profile": "p0-campp-known446-ood-control-oof-f0",
+    "raw_macro_f1": 0.9469211906147802,
+    "known_accuracy": 0.9573991031390134,
+    "ood_f1": 0.9586206896551724
+  },
+  "gate": {
+    "standalone_min_raw_macro_f1": 0.9269211906147802,
+    "fixed_50_50_min_macro_gain": 0.002,
+    "max_known_accuracy_drop": 0.001,
+    "max_ood_f1_drop": 0.001,
+    "min_campp_error_rescue_rate": 0.25,
+    "require_rescued_gt_introduced": true,
+    "all_conditions_required": true
+  },
+  "stopping": {
+    "immediate": ["NaN", "split or provenance mismatch", "artifact corruption", "second OOM"],
+    "futility_epoch": 30,
+    "minimum_best_raw_macro_f1_at_futility": 0.88,
+    "maximum_epochs": 90,
+    "early_stopping_patience": 15,
+    "maximum_run_hours": 4.0,
+    "maximum_incremental_cost_usd": 1.0
+  },
+  "promotion": "Passing Fold0 permits a separately preregistered Fold1/Fold2 validation only; it does not authorize a submission or tuned blend."
+}

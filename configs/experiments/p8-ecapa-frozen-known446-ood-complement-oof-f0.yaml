@@ -1,0 +1,84 @@
+_meta:
+  name: p8-ecapa-frozen-known446-ood-complement-oof-f0
+  base: default_config.yaml
+experiment:
+  priority: P8-COMPLEMENT-GATE
+  family: ecapa-frozen-known446-ood-complement-oof
+  purpose: Test whether a fully frozen official SpeechBrain ECAPA representation rescues locked CAM++ Fold0 errors
+  expected_decision: Fold0 gate only; no later fold, tuned fusion, or submission is authorized by this profile
+  decision_policy: raw_probability_average_argmax
+  diagnostic_ensemble: fixed_probability_average_50_50_with_campp_control_fold0
+  source_provenance:
+    paper: https://doi.org/10.21437/Interspeech.2020-2650
+    repository: speechbrain/spkrec-ecapa-voxceleb
+    revision: 0f99f2d0ebe89ac095bcc5903c4dd8f72b367286
+  preregistered_gate:
+    standalone_min_raw_macro_f1: 0.9269211906147802
+    fixed_50_50_min_macro_gain: 0.002
+    max_known_accuracy_drop: 0.001
+    max_ood_f1_drop: 0.001
+    min_campp_error_rescue_rate: 0.25
+    require_rescued_gt_introduced: true
+  stop_rules:
+    futility_epoch: 30
+    minimum_best_raw_macro_f1: 0.88
+    max_epochs: 90
+    early_stopping_patience: 15
+    max_run_hours: 4.0
+    max_incremental_cost_usd: 1.0
+data:
+  clean_duplicates: true
+  split: {scheme: kfold, folds: 3, fold: 0, seed: 42}
+model:
+  encoder_type: ecapa
+  competition_num_known: 446
+  num_unknown_clusters: 554
+  unknown_cluster_path: data/processed/unknown_clusters_oof_f0.json
+  speaker_target_scope: known
+  ood_head: true
+  speaker_head_type: arcface
+  speaker_head_config:
+    arcface: {embedding_dim: 192, margin: 0.4, scale: 30.0}
+  encoder_config:
+    ecapa:
+      allow_hub_download: false
+      freeze_encoder: true
+      local_path: weights/ecapa
+      pooling_type: identity
+      source: speechbrain/spkrec-ecapa-voxceleb
+      unfreeze_last_n_blocks: 0
+audio:
+  num_train_windows: 8
+  speech_aware_crop_probability: 0.75
+  eval_speech_aware: true
+  short_audio_mode: pad
+hardware:
+  mode: vastai_3090_ecapa_frozen
+  profiles:
+    vastai_3090_ecapa_frozen:
+      batch_size: 48
+      description: Provisional frozen-ECAPA profile; batch size must pass measured RTX 3090 preflight
+      device: cuda
+      mixed_precision: true
+      num_workers: 8
+logging:
+  checkpoint_dir: checkpoints/p8-ecapa-frozen-known446-ood-complement-oof-f0
+  log_dir: logs/p8-ecapa-frozen-known446-ood-complement-oof-f0
+training:
+  seed: 42
+  deterministic_algorithms: true
+  epochs: 90
+  freeze_epochs: 0
+  early_stopping_patience: 15
+  learning_rate: 0.0003
+  encoder_lr: 0.000001
+  weight_decay: 0.0001
+  schedule: cosine
+  warmup_ratio: 0.1
+  min_lr_ratio: 0.05
+  ema_enabled: true
+  ema_decay: 0.999
+  loss:
+    speaker: {type: ce, label_smoothing: 0.05, weight: 0.85}
+    ood: {type: bce, pos_weight: 1.0, weight: 0.15}
+    proto: {enabled: false}

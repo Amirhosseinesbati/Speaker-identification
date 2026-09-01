@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "profile": "p8-ecapa-frozen-known446-ood-complement-oof-f0",
+  "status": "passed",
+  "timestamp_utc": "2026-09-01T00:18:20.803Z",
+  "worker": {
+    "instance_id": 48886926,
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "repo_commit_before_prereg": "c9f3fd6c94fc3487cf18426f42f81bba99187523"
+  },
+  "environment": {
+    "python": "/workspace/iaaa-speaker/.venv/bin/python",
+    "torch": "2.13.0+cu130",
+    "speechbrain": "1.1.0",
+    "huggingface_hub": "0.36.2"
+  },
+  "encoder": {
+    "repo_id": "speechbrain/spkrec-ecapa-voxceleb",
+    "revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286",
+    "snapshot_file_count": 10,
+    "snapshot_total_size": 89133738,
+    "snapshot_receipt_sha256": "53d2997208ae564cd3b0f71c072e471de18a18cdd634d6633ce1af92daaffed7",
+    "offline_model_load": true,
+    "trainable_parameters": 0
+  },
+  "measured_profile": {
+    "batch_size": 48,
+    "duration_seconds": 8.0,
+    "iterations": 2,
+    "files_per_second": 85.70610069653935,
+    "peak_allocated_gib": 5.516024112701416,
+    "peak_reserved_gib": 6.4140625,
+    "head_trainable_parameters": 173121,
+    "speaker_logits_shape": [48, 446],
+    "ood_logits_shape": [48, 1],
+    "finite_loss": true
+  },
+  "contracts": {
+    "prereg_tests": "2 passed",
+    "profile_sha256": "d0ea5de3f16fce9968ceaa0c9d756deb8756bc79bc39fe76017c63c852d307e7",
+    "prereg_sha256": "7e3934e65e511c2de18df696d22b1d185a60848eb2ae211d795983c20322ba67",
+    "test_sha256": "fa1a8621ae122e23d6630f0a7121d8f51c4210bb92026b27e0efbb0da786f244",
+    "preflight_script_sha256": "78355d85211c9d388e697803db2614a0b1d5059ffc999df9424afa60b901114b"
+  }
+}
