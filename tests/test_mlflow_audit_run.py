@@ -62,6 +62,21 @@ def test_audit_run_reports_series_and_artifact_inventory():
     assert result["provenance_artifacts"] == ["provenance/config.yaml"]
 
 
+def test_audit_run_can_return_selected_metric_values():
+    result = audit_run(
+        _Client(),
+        "run-1",
+        include_metric_values=True,
+        metric_keys={"val_macro_f1"},
+    )
+
+    assert result["metric_key_count"] == 1
+    assert result["metric_series"]["val_macro_f1"]["values"] == [
+        {"step": 1, "value": 0.8},
+        {"step": 2, "value": 0.9},
+    ]
+
+
 class _SearchClient:
     def __init__(self):
         self.runs = [

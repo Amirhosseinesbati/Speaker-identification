@@ -69,20 +69,35 @@ def resolve_run_id(
     return str(candidates[0].info.run_id)
 
 
-def audit_run(client: MlflowClient, run_id: str) -> dict[str, Any]:
+def audit_run(
+    client: MlflowClient,
+    run_id: str,
+    *,
+    include_metric_values: bool = False,
+    metric_keys: set[str] | None = None,
+) -> dict[str, Any]:
     run = client.get_run(run_id)
     artifacts = _remote_artifacts(client, run_id)
     metric_series: dict[str, Any] = {}
-    for key in sorted(run.data.metrics):
+    selected_keys = sorted(run.data.metrics)
+    if metric_keys:
+        selected_keys = [key for key in selected_keys if key in metric_keys]
+    for key in selected_keys:
         history = client.get_metric_history(run_id, key)
         finite = [item for item in history if math.isfinite(float(item.value))]
-        metric_series[key] = {
+        series = {
             "points": len(history),
             "finite_points": len(finite),
             "min_step": min((int(item.step) for item in history), default=None),
             "max_step": max((int(item.step) for item in history), default=None),
             "last_value": float(history[-1].value) if history else None,
         }
+        if include_metric_values:
+            series["values"] = [
+                {"step": int(item.step), "value": float(item.value)}
+                for item in history
+            ]
+        metric_series[key] = series
 
     artifact_paths = sorted(artifacts)
     return {
@@ -123,6 +138,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--started-after-ms", type=int)
     parser.add_argument("--env-file", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--metric-key",
+        action="append",
+        default=[],
+        help="Restrict metric history to this exact key; repeat as needed.",
+    )
+    parser.add_argument(
+        "--include-metric-values",
+        action="store_true",
+        help="Include every (step, value) point for the selected metrics.",
+    )
     return parser
 
 
@@ -138,7 +164,12 @@ def main() -> int:
         started_after_ms=args.started_after_ms,
     )
     encoded = json.dumps(
-        audit_run(client, run_id),
+        audit_run(
+            client,
+            run_id,
+            include_metric_values=args.include_metric_values,
+            metric_keys=set(args.metric_key) or None,
+        ),
         ensure_ascii=False,
         indent=2,
     ) + "\n"
