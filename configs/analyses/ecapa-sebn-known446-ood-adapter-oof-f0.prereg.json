@@ -1,0 +1,58 @@
+{
+  "status": "preregistered_after_parent_terminal_before_p9_metrics",
+  "profile": "p9-ecapa-sebn-known446-ood-adapter-oof-f0",
+  "profile_path": "configs/experiments/p9-ecapa-sebn-known446-ood-adapter-oof-f0.yaml",
+  "profile_sha256": "c530cd9c8af284313c2617883e76b2bcb4524c5a8eb1df15438c0314612a0326",
+  "parent": {
+    "profile": "p8-ecapa-frozen-known446-ood-complement-oof-f0",
+    "checkpoint_path": "checkpoints/p8-ecapa-frozen-known446-ood-complement-oof-f0/ecapa_best_raw.pt",
+    "checkpoint_sha256": "5a9f95450741ba04048c3cd80e404676f30b85d26bdae37bf1bab729def5ef55",
+    "checkpoint_size_bytes": 91146332,
+    "selected_epoch": 65,
+    "raw_macro_f1": 0.9258302229315528,
+    "known_accuracy": 0.9383408071748879,
+    "ood_f1": 0.9270620313565099,
+    "logit_macro_f1": 0.9170680134940363,
+    "ema_macro_f1": 0.9208233951005929,
+    "history_points_at_selection": 80,
+    "split": {
+      "fold": 0,
+      "folds": 3,
+      "scheme": "kfold",
+      "seed": 42
+    },
+    "class_map_size": 1001
+  },
+  "single_variable": "enable_all_group_ecapa_se_bn_adapter",
+  "trainable_encoder_parameters": "SEBlock parameters plus BN affine parameters",
+  "heads": "warm_started_and_fixed_by_zero_lr",
+  "adapter_lr": 1e-05,
+  "head_lr": 0.0,
+  "max_epochs": 45,
+  "early_stopping_start_epoch": 5,
+  "early_stopping_patience": 12,
+  "no_hyperparameter_sweep": true,
+  "no_leaderboard_selection": true,
+  "fold0_pass_authorizes_only_separate_fold1_fold2_preregistration": true,
+  "gate": {
+    "standalone_min_raw_macro_f1": 0.9278302229315528,
+    "minimum_raw_gain_vs_parent": 0.002,
+    "max_known_accuracy_drop_vs_parent": 0.001,
+    "max_ood_f1_drop_vs_parent": 0.001,
+    "minimum_supporting_epochs": 2,
+    "fixed_50_50_min_macro_gain_vs_campp": 0.002,
+    "fixed_50_50_max_known_accuracy_drop": 0.001,
+    "fixed_50_50_max_ood_f1_drop": 0.001,
+    "min_campp_error_rescue_rate": 0.25,
+    "require_rescued_gt_introduced": true
+  },
+  "stop_rules": {
+    "futility_epoch": 12,
+    "maximum_raw_deficit_vs_parent": 0.003,
+    "early_stopping_start_epoch": 5,
+    "early_stopping_patience": 12,
+    "max_epochs": 45,
+    "max_run_hours": 2.5,
+    "max_incremental_cost_usd": 0.5
+  }
+}

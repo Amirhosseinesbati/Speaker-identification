@@ -1,0 +1,130 @@
+_meta:
+  name: p9-ecapa-sebn-known446-ood-adapter-oof-f0
+  base: default_config.yaml
+experiment:
+  priority: P9-CONDITIONAL-DOMAIN-ADAPTER
+  family: ecapa-sebn-known446-ood-adapter-oof
+  purpose: Test whether all-group SE/BN target-domain adaptation lifts the sub-gate frozen P8 representation
+    without changing its heads
+  expected_decision: Fold0 gate only; no later fold, tuned fusion, or submission is authorized by this
+    profile
+  decision_policy: raw_probability_average_argmax
+  diagnostic_ensemble: fixed_probability_average_50_50_with_campp_control_fold0
+  adapter_evidence:
+    paper: https://doi.org/10.21437/Interspeech.2024-2476
+    arxiv: https://arxiv.org/abs/2406.07832
+    implementation_commit: e125ce6
+    scope: all_native_ecapa_se_blocks_and_bn_affine_statistics
+    optimizer_values_are_campaign_preregistered_not_paper_reported: true
+  preregistered_parent:
+    profile: p8-ecapa-frozen-known446-ood-complement-oof-f0
+    checkpoint_path: checkpoints/p8-ecapa-frozen-known446-ood-complement-oof-f0/ecapa_best_raw.pt
+    checkpoint_sha256: 5a9f95450741ba04048c3cd80e404676f30b85d26bdae37bf1bab729def5ef55
+    checkpoint_size_bytes: 91146332
+    selected_epoch: 65
+    raw_macro_f1: 0.9258302229315528
+    known_accuracy: 0.9383408071748879
+    ood_f1: 0.9270620313565099
+    logit_macro_f1: 0.9170680134940363
+    ema_macro_f1: 0.9208233951005929
+    history_points_at_selection: 80
+    split:
+      fold: 0
+      folds: 3
+      scheme: kfold
+      seed: 42
+    class_map_size: 1001
+  preregistered_gate:
+    standalone_min_raw_macro_f1: 0.9278302229315528
+    minimum_raw_gain_vs_parent: 0.002
+    max_known_accuracy_drop_vs_parent: 0.001
+    max_ood_f1_drop_vs_parent: 0.001
+    minimum_supporting_epochs: 2
+    fixed_50_50_min_macro_gain_vs_campp: 0.002
+    fixed_50_50_max_known_accuracy_drop: 0.001
+    fixed_50_50_max_ood_f1_drop: 0.001
+    min_campp_error_rescue_rate: 0.25
+    require_rescued_gt_introduced: true
+  stop_rules:
+    futility_epoch: 12
+    maximum_raw_deficit_vs_parent: 0.003
+    early_stopping_start_epoch: 5
+    early_stopping_patience: 12
+    max_epochs: 45
+    max_run_hours: 2.5
+    max_incremental_cost_usd: 0.5
+data:
+  clean_duplicates: true
+  split:
+    scheme: kfold
+    folds: 3
+    fold: 0
+    seed: 42
+model:
+  encoder_type: ecapa
+  competition_num_known: 446
+  num_unknown_clusters: 554
+  unknown_cluster_path: data/processed/unknown_clusters_oof_f0.json
+  speaker_target_scope: known
+  ood_head: true
+  speaker_head_type: arcface
+  speaker_head_config:
+    arcface:
+      embedding_dim: 192
+      margin: 0.4
+      scale: 30.0
+  encoder_config:
+    ecapa:
+      allow_hub_download: false
+      freeze_encoder: true
+      local_path: weights/ecapa
+      pooling_type: identity
+      source: speechbrain/spkrec-ecapa-voxceleb
+      unfreeze_last_n_blocks: 0
+      adapter_mode: se_bn
+audio:
+  num_train_windows: 8
+  speech_aware_crop_probability: 0.75
+  eval_speech_aware: true
+  short_audio_mode: pad
+hardware:
+  mode: vastai_3090_ecapa_se_bn
+  profiles:
+    vastai_3090_ecapa_se_bn:
+      batch_size: 48
+      description: Conditional P9 SE/BN adapter profile; must pass a measured RTX 3090 preflight before
+        launch
+      device: cuda
+      mixed_precision: true
+      num_workers: 8
+logging:
+  checkpoint_dir: checkpoints/p9-ecapa-sebn-known446-ood-adapter-oof-f0
+  log_dir: logs/p9-ecapa-sebn-known446-ood-adapter-oof-f0
+training:
+  seed: 42
+  deterministic_algorithms: true
+  epochs: 45
+  freeze_epochs: 0
+  early_stopping_patience: 12
+  learning_rate: 0.0
+  encoder_lr: 1.0e-05
+  weight_decay: 0.0001
+  schedule: cosine
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.05
+  ema_enabled: true
+  ema_decay: 0.999
+  loss:
+    speaker:
+      type: ce
+      label_smoothing: 0.05
+      weight: 0.85
+    ood:
+      type: bce
+      pos_weight: 1.0
+      weight: 0.15
+    proto:
+      enabled: false
+  early_stopping_start_epoch: 5
+  warm_start_checkpoint: checkpoints/p8-ecapa-frozen-known446-ood-complement-oof-f0/ecapa_best_raw.pt
+  selection_variant: raw
