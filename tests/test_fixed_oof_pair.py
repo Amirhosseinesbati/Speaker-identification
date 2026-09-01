@@ -142,3 +142,8 @@ def test_historical_training_overlap_invalidates_full_fold_gate(monkeypatch) -> 
         "known_support_min": 1,
         "known_support_max": 1,
     }
+    diagnostic = audit["held_out_subset"][
+        "observed_class_macro_f1_descriptive_only"
+    ]
+    assert diagnostic["equal_50_50"] == 1.0
+    assert "not the 447-class" in diagnostic["warning"]

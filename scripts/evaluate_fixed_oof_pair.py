@@ -105,6 +105,22 @@ def class_coverage(labels: np.ndarray) -> dict:
     }
 
 
+def observed_class_macro_f1(labels: np.ndarray, predictions: np.ndarray) -> float:
+    """Diagnostic macro-F1 over only labels observed in truth or prediction."""
+    labels = np.asarray(labels, dtype=np.int64)
+    predictions = np.asarray(predictions, dtype=np.int64)
+    scores = []
+    for class_id in np.union1d(labels, predictions):
+        true_class = labels == class_id
+        predicted_class = predictions == class_id
+        tp = int(np.sum(true_class & predicted_class))
+        fp = int(np.sum(~true_class & predicted_class))
+        fn = int(np.sum(true_class & ~predicted_class))
+        denominator = 2 * tp + fp + fn
+        scores.append(0.0 if denominator == 0 else 2.0 * tp / denominator)
+    return float(np.mean(scores)) if scores else 0.0
+
+
 def subset_evaluation(
     labels: np.ndarray,
     p1: np.ndarray,
@@ -128,6 +144,17 @@ def subset_evaluation(
             "primary": metric1,
             "secondary": metric2,
             "equal_50_50": metric_bundle(subset_labels, equal_pred),
+        },
+        "observed_class_macro_f1_descriptive_only": {
+            "primary": observed_class_macro_f1(subset_labels, pred1),
+            "secondary": observed_class_macro_f1(subset_labels, pred2),
+            "equal_50_50": observed_class_macro_f1(
+                subset_labels, equal_pred
+            ),
+            "warning": (
+                "This excludes absent competition classes and is not the "
+                "447-class competition Macro-F1."
+            ),
         },
         "equal_error_transitions": transition_bundle(
             subset_labels, better, equal_pred
@@ -221,6 +248,15 @@ def evaluate_pair(primary: dict, secondary: dict) -> dict:
         "rescued_exceed_introduced": transitions["rescued_errors"] > transitions["introduced_errors"],
         "provenance_disjoint": provenance_disjoint,
     }
+    passed = all(checks.values())
+    if not provenance_disjoint:
+        selection_verdict = (
+            "rejected_historical_full_fold_gate_due_training_overlap"
+        )
+    elif passed:
+        selection_verdict = "passed_preregistered_gate"
+    else:
+        selection_verdict = "rejected_preregistered_gate"
     result = {
         "rows": int(len(primary_files)),
         "better_single": better_name,
@@ -235,13 +271,9 @@ def evaluate_pair(primary: dict, secondary: dict) -> dict:
         "gate": {
             "contract": dict(GATE),
             "checks": checks,
-            "passed": all(checks.values()),
+            "passed": passed,
         },
-        "selection_verdict": (
-            "eligible_for_preregistered_gate"
-            if provenance_disjoint
-            else "rejected_historical_full_fold_gate_due_training_overlap"
-        ),
+        "selection_verdict": selection_verdict,
     }
     if historical_overlap is not None:
         result["historical_provenance_audit"] = historical_overlap
