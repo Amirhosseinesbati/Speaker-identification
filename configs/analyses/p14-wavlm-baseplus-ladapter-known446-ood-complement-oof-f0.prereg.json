@@ -1,0 +1,88 @@
+{
+  "analysis_id": "p14-wavlm-baseplus-ladapter-known446-ood-complement-oof-f0-v1",
+  "status": "preregistered_before_p13b_terminal_result_and_p14_fold0_metric_evaluation",
+  "created_at_utc": "2026-09-01T13:10:00Z",
+  "leaderboard_used_for_selection": false,
+  "activation_condition": "P13b fails any locked Fold-0 gate or its epoch-15 futility rule.",
+  "scientific_question": "Can the paper-grounded WavLM L-adapter recipe learn speaker-discriminative complementary features on the competition data while updating only small layer adapters and transformer LayerNorms?",
+  "research_anchor": {
+    "paper": "Parameter Efficient Transfer Learning for Various Speech Processing Tasks",
+    "paper_url": "https://arxiv.org/abs/2212.02780",
+    "implementation_url": "https://github.com/sinhat98/adapter-wavlm",
+    "locked_asv_choices": {
+      "backbone": "microsoft/wavlm-base-plus",
+      "transformer_outputs": 12,
+      "adapter": "Linear(768,512) + ReLU + LayerNorm per transformer layer",
+      "softmax_weighted_layer_sum": true,
+      "train_transformer_layer_norms": true,
+      "runtime_layerdrop": 0.0,
+      "head_adapter_layernorm_lr": 0.0005
+    }
+  },
+  "locked_change_vs_p13b": {
+    "single_scientific_change": "Replace the fully frozen weighted sum with twelve trainable 768-to-512 L-adapters, trainable softmax layer weights, and trainable WavLM transformer LayerNorms following the cited ASV recipe.",
+    "all_data_audio_head_loss_decision_dimensions_unchanged": true,
+    "decision": "Raw probability-average direct argmax",
+    "ema_role": "diagnostic_only",
+    "logit_average_role": "diagnostic_only",
+    "tuned_thresholds_or_blends": 0
+  },
+  "data_contract": {
+    "split": "kfold/folds3/fold0/seed42",
+    "clean_duplicates": true,
+    "speaker_target_scope": "known",
+    "competition_classes": 447,
+    "same_file_set_and_class_map_as_p0_p13_p13b_required": true,
+    "leaderboard_tuning": false
+  },
+  "parameter_contract": {
+    "wavlm_total_parameters": 94381936,
+    "wavlm_trainable_parameters": 36864,
+    "wavlm_trainable_scope": "transformer encoder layer_norm parameters only",
+    "layer_adapter_count": 12,
+    "layer_adapter_parameters": 4737024,
+    "layer_weight_count": 13,
+    "layer_adapter_activation": "relu",
+    "layer_adapter_output_dim": 512,
+    "runtime_layerdrop": 0.0
+  },
+  "selection": {
+    "checkpoint": "best completed Raw probability-average Macro-F1",
+    "early_stopping_start_epoch": 10,
+    "early_stopping_patience": 8,
+    "maximum_epochs": 40,
+    "earliest_metric_stop_epoch": 18,
+    "futility_check_epoch": 15,
+    "futility_min_best_raw_macro_f1": 0.88
+  },
+  "fold0_gate": {
+    "all_checks_required": true,
+    "standalone_min_raw_macro_f1": 0.9269211906147802,
+    "fixed_50_50_probability_blend_with_p0_min_macro_gain": 0.002,
+    "max_known_accuracy_drop_vs_p0": 0.001,
+    "max_ood_f1_drop_vs_p0": 0.001,
+    "min_p0_error_rescue_rate": 0.25,
+    "require_rescued_errors_gt_introduced": true,
+    "passing_action": "Permit complementary error analysis only; no automatic later fold or submission.",
+    "failing_action": "Close WavLM L-adapter and return to the CAM++ error-forensics hypothesis queue."
+  },
+  "operational_contract": {
+    "weight_directory": "weights/wavlm_base_plus",
+    "reuse_verified_p13_weight_receipt": true,
+    "fresh_measured_batch_preflight_required": true,
+    "fixed_batch_probe_candidates": [4, 6, 8, 10, 12],
+    "batch_selection_rule": "Choose the highest measured files-per-second candidate that is OOM-free and remains below 90 percent of total VRAM; ties choose the smaller batch.",
+    "provisional_batch_size": 8,
+    "maximum_run_hours": 6.0,
+    "maximum_incremental_cost_usd": 1.1,
+    "immediate_stop": [
+      "NaN or Inf",
+      "OOM after one measured batch correction",
+      "split, class-map, or provenance mismatch",
+      "trainable WavLM scope differs from the locked LayerNorm-only contract",
+      "layer adapter or layer weight counts differ from the locked contract",
+      "runtime LayerDrop is nonzero",
+      "artifact corruption"
+    ]
+  }
+}
