@@ -38,6 +38,7 @@ class DummyEncoder(nn.Module):
         super().__init__()
         self.fc = nn.Linear(10, 10)
         self.blocks = nn.ModuleList([nn.Linear(10, 10) for _ in range(4)])
+        self.adapter_enabled = False
 
     def forward(self, x):
         return x
@@ -55,6 +56,10 @@ class DummyEncoder(nn.Module):
         for m in self.blocks[-n:]:
             for p in m.parameters():
                 p.requires_grad = True
+
+    def enable_se_bn_adapter(self):
+        self.freeze()
+        self.adapter_enabled = True
 
 
 class DummyModel(nn.Module):
@@ -77,6 +82,9 @@ def test_encoder_will_train():
     wavlm = {"model": {"encoder_type": "wavlm", "encoder_config": {
         "wavlm": {"freeze_feature_extractor": True}}}}
     assert encoder_will_train(wavlm) is False
+    se_bn = {"model": {"encoder_type": "ecapa", "encoder_config": {
+        "ecapa": {"freeze_encoder": True, "adapter_mode": "se_bn"}}}}
+    assert encoder_will_train(se_bn) is True
 
 
 # ── apply_encoder_finetune_mode ──
@@ -109,6 +117,16 @@ def test_apply_encoder_finetune_mode_frozen():
     cfg = {"model": {"encoder_type": "campp", "encoder_config": {
         "campp": {"freeze_encoder": True}}}}
     apply_encoder_finetune_mode(model, cfg)
+    assert all(not p.requires_grad for p in model.encoder.parameters())
+
+
+def test_apply_encoder_finetune_mode_ecapa_se_bn_adapter():
+    model = DummyModel()
+    model.encoder.unfreeze()
+    cfg = {"model": {"encoder_type": "ecapa", "encoder_config": {
+        "ecapa": {"freeze_encoder": True, "adapter_mode": "se_bn"}}}}
+    apply_encoder_finetune_mode(model, cfg)
+    assert model.encoder.adapter_enabled is True
     assert all(not p.requires_grad for p in model.encoder.parameters())
 
 

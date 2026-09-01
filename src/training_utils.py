@@ -378,6 +378,9 @@ def encoder_will_train(config: dict) -> bool:
     if enc_type == "wavlm":
         return False
     enc_cfg = (config.get("model", {}).get("encoder_config", {}) or {}).get(enc_type, {}) or {}
+    if enc_type == "ecapa" and str(
+            enc_cfg.get("adapter_mode", "none")).lower().strip() != "none":
+        return True
     return not bool(enc_cfg.get("freeze_encoder", True))
 
 
@@ -391,6 +394,11 @@ def apply_encoder_finetune_mode(model: torch.nn.Module, config: dict) -> None:
     enc_type = str(config.get("model", {}).get("encoder_type", "")).lower().strip()
     enc_cfg = (config.get("model", {}).get("encoder_config", {}) or {}).get(enc_type, {}) or {}
     encoder = model.encoder
+
+    adapter_mode = str(enc_cfg.get("adapter_mode", "none")).lower().strip()
+    if enc_type == "ecapa" and adapter_mode == "se_bn":
+        encoder.enable_se_bn_adapter()
+        return
 
     freeze_key = "freeze_feature_extractor" if enc_type == "wavlm" else "freeze_encoder"
     if enc_cfg.get(freeze_key, True):

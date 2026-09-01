@@ -324,6 +324,84 @@ def _patch_speechbrain_lazy_modules():
                         pass
 
 
+def _is_speechbrain_se_block(module: nn.Module) -> bool:
+    """Return True for the pinned SpeechBrain ECAPA squeeze/excitation block."""
+    return module.__class__.__name__.lower() == "seblock"
+
+
+def _enable_se_bn_adapter_parameters(module: nn.Module) -> dict:
+    """Freeze ``module`` except ECAPA SE weights and BN affine parameters.
+
+    The SE/BN adapter paper freezes the core speaker encoder while adapting
+    channel re-weighting (SE) and activation shift/scale (BN). SpeechBrain's
+    ECAPA uses native ``SEBlock`` modules and nested PyTorch BatchNorm layers,
+    so the selection can be made without private parameter names.
+
+    Returns an auditable parameter-count receipt. Parameters shared by nested
+    modules are de-duplicated by identity.
+    """
+    for parameter in module.parameters():
+        parameter.requires_grad = False
+
+    se_parameters = {}
+    bn_parameters = {}
+    se_module_names = []
+    bn_module_names = []
+
+    for name, child in module.named_modules():
+        if _is_speechbrain_se_block(child):
+            se_module_names.append(name)
+            for parameter in child.parameters(recurse=True):
+                parameter.requires_grad = True
+                se_parameters[id(parameter)] = parameter
+        if isinstance(child, nn.modules.batchnorm._BatchNorm):
+            bn_module_names.append(name)
+            if child.affine:
+                for parameter in (child.weight, child.bias):
+                    parameter.requires_grad = True
+                    bn_parameters[id(parameter)] = parameter
+
+    if not se_module_names or not bn_module_names:
+        raise RuntimeError(
+            "SE/BN adapter selection found no SEBlock or BatchNorm modules; "
+            "the pinned SpeechBrain ECAPA structure may have changed."
+        )
+
+    adapter_parameters = dict(se_parameters)
+    adapter_parameters.update(bn_parameters)
+    total = sum(parameter.numel() for parameter in module.parameters())
+    adapter_total = sum(parameter.numel() for parameter in adapter_parameters.values())
+    return {
+        "mode": "se_bn",
+        "total_parameters": total,
+        "se_parameters": sum(parameter.numel() for parameter in se_parameters.values()),
+        "bn_affine_parameters": sum(
+            parameter.numel() for parameter in bn_parameters.values()),
+        "adapter_parameters": adapter_total,
+        "adapter_fraction": adapter_total / total if total else 0.0,
+        "se_module_names": tuple(se_module_names),
+        "bn_module_names": tuple(bn_module_names),
+    }
+
+
+def _set_se_bn_adapter_mode(module: nn.Module, training: bool) -> None:
+    """Keep the ECAPA core in eval, enabling train mode only for SE and BN.
+
+    BN must see target-domain batch statistics during adaptation; forcing the
+    complete SpeechBrain encoder to eval (the legacy partial-FT behaviour)
+    would silently turn the proposed BN adapter into affine-only inference.
+    Validation/inference calls this with ``training=False`` and therefore uses
+    the adapted running statistics without further mutation.
+    """
+    module.eval()
+    if not training:
+        return
+    for child in module.modules():
+        if _is_speechbrain_se_block(child) or isinstance(
+                child, nn.modules.batchnorm._BatchNorm):
+            child.train(True)
+
+
 class ECAPAEncoder(BaseEncoder):
     """
     ECAPA-TDNN encoder from SpeechBrain, pretrained on VoxCeleb.
@@ -355,6 +433,7 @@ class ECAPAEncoder(BaseEncoder):
         source: str = "speechbrain/spkrec-ecapa-voxceleb",
         freeze_encoder: bool = True,
         unfreeze_last_n_blocks: int = 0,
+        adapter_mode: str = "none",
         local_path: Optional[str] = None,
         allow_hub_download: bool = False,
     ):
@@ -364,6 +443,13 @@ class ECAPAEncoder(BaseEncoder):
         self._output_dim = 192  # ECAPA-TDNN embedding dimension
         self._frozen = freeze_encoder
         self._unfreeze_last_n_blocks = max(0, int(unfreeze_last_n_blocks))
+        self._adapter_mode = str(adapter_mode or "none").lower().strip()
+        self._adapter_receipt = None
+        if self._adapter_mode not in {"none", "se_bn"}:
+            raise ValueError(
+                f"Unsupported ECAPA adapter_mode={adapter_mode!r}; "
+                "expected 'none' or 'se_bn'."
+            )
 
         os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
@@ -429,7 +515,9 @@ class ECAPAEncoder(BaseEncoder):
         else:
             self.classifier = EncoderClassifier.from_hparams(**_load_kwargs)
 
-        if freeze_encoder:
+        if self._adapter_mode == "se_bn":
+            self.enable_se_bn_adapter()
+        elif freeze_encoder:
             self.freeze()
         elif self._unfreeze_last_n_blocks > 0:
             self.unfreeze_last_n_blocks(self._unfreeze_last_n_blocks)
@@ -462,7 +550,12 @@ class ECAPAEncoder(BaseEncoder):
         This prevents BatchNorm running stats from being silently corrupted
         by training data flowing through the frozen encoder.
         """
-        super().train(False)  # encoder always stays in eval
+        super().train(False)  # wrapper itself stays deterministic
+        if hasattr(self, "classifier"):
+            self.classifier.mods.eval()
+            if self._adapter_mode == "se_bn":
+                _set_se_bn_adapter_mode(
+                    self.classifier.mods.embedding_model, training=bool(mode))
         return self
 
     def forward(
@@ -519,12 +612,16 @@ class ECAPAEncoder(BaseEncoder):
         for param in self.classifier.parameters():
             param.requires_grad = False
         self._frozen = True
+        self._adapter_mode = "none"
+        self._adapter_receipt = None
 
     def unfreeze(self) -> None:
         """Unfreeze all ECAPA-TDNN parameters (full fine-tune)."""
         for param in self.classifier.parameters():
             param.requires_grad = True
         self._frozen = False
+        self._adapter_mode = "none"
+        self._adapter_receipt = None
 
     def unfreeze_last_n_blocks(self, n: int = 2) -> None:
         """
@@ -550,6 +647,7 @@ class ECAPAEncoder(BaseEncoder):
                 for p in blocks[i].parameters():
                     p.requires_grad = True
             self._frozen = False
+            self._adapter_mode = "none"
             n_train = sum(p.numel() for p in self.classifier.parameters() if p.requires_grad)
             return
 
@@ -563,7 +661,22 @@ class ECAPAEncoder(BaseEncoder):
                 for p in m.parameters():
                     p.requires_grad = True
         self._frozen = False
+        self._adapter_mode = "none"
         n_train = sum(p.numel() for p in self.classifier.parameters() if p.requires_grad)
+
+    def enable_se_bn_adapter(self) -> dict:
+        """Enable paper-motivated SE/BN adaptation on the ECAPA embedding net."""
+        for parameter in self.classifier.parameters():
+            parameter.requires_grad = False
+        receipt = _enable_se_bn_adapter_parameters(
+            self.classifier.mods.embedding_model)
+        self._adapter_mode = "se_bn"
+        self._adapter_receipt = receipt
+        # A graph is required through the frozen core to reach adapter params.
+        self._frozen = False
+        _set_se_bn_adapter_mode(
+            self.classifier.mods.embedding_model, training=False)
+        return dict(receipt)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1348,6 +1461,7 @@ def create_encoder(config: dict) -> BaseEncoder:
             source=enc_cfg.get("source", "speechbrain/spkrec-ecapa-voxceleb"),
             freeze_encoder=enc_cfg.get("freeze_encoder", True),
             unfreeze_last_n_blocks=enc_cfg.get("unfreeze_last_n_blocks", 0),
+            adapter_mode=enc_cfg.get("adapter_mode", "none"),
             local_path=enc_cfg.get("local_path"),
             allow_hub_download=enc_cfg.get("allow_hub_download", False),
         )
