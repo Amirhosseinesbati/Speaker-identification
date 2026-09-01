@@ -37,6 +37,7 @@ def test_p14_changes_only_the_preregistered_adapter_dimensions() -> None:
     assert wavlm["layer_adapter_layer_norm"] is True
     assert wavlm["layer_adapter_tune_backbone_layer_norms"] is True
     assert wavlm["frozen_backbone_eval"] is False
+    assert p14["experiment"]["operational_preflight"]["require_layer_weight_count"] == 12
     assert p14["training"]["learning_rate"] == 5.0e-4
     assert p14["training"]["encoder_lr"] == 5.0e-4
 
@@ -51,7 +52,7 @@ def test_p14_preregistration_locks_parameter_scope_and_gate() -> None:
         "wavlm_trainable_scope": "transformer encoder layer_norm parameters only",
         "layer_adapter_count": 12,
         "layer_adapter_parameters": 4737024,
-        "layer_weight_count": 13,
+        "layer_weight_count": 12,
         "layer_adapter_activation": "relu",
         "layer_adapter_output_dim": 512,
         "runtime_layerdrop": 0.0,

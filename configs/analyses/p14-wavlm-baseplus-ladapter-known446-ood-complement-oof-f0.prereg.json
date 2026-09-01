@@ -41,7 +41,7 @@
     "wavlm_trainable_scope": "transformer encoder layer_norm parameters only",
     "layer_adapter_count": 12,
     "layer_adapter_parameters": 4737024,
-    "layer_weight_count": 13,
+    "layer_weight_count": 12,
     "layer_adapter_activation": "relu",
     "layer_adapter_output_dim": 512,
     "runtime_layerdrop": 0.0

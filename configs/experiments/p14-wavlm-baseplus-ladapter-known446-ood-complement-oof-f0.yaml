@@ -33,7 +33,7 @@ experiment:
     require_wavlm_trainable_parameters: 36864
     require_layer_adapter_count: 12
     require_layer_adapter_parameters: 4737024
-    require_layer_weight_count: 13
+    require_layer_weight_count: 12
     require_runtime_layerdrop: 0.0
     require_measured_batch: true
     batch_probe_candidates: [4, 6, 8, 10, 12]
